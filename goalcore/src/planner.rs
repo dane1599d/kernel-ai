@@ -12,6 +12,7 @@
 //! goal is planned afresh. Its wall time and deadline still bound the wait.
 
 use crate::Goal;
+use crate::Goals;
 use crate::runner::{Plan, Planner};
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -55,6 +56,9 @@ pub struct JobPlanner<L, C> {
     read: fn(&str) -> Plan<C>,
     /// The ticket of each goal's job in flight.
     jobs: Vec<(u64, String)>,
+    /// Tickets of jobs no goal waits for that llm has not said it stopped
+    /// (it was busy, or did not answer): asked again each turn.
+    stopping: Vec<String>,
 }
 
 impl<L: Llm, C> JobPlanner<L, C> {
@@ -68,12 +72,51 @@ impl<L: Llm, C> JobPlanner<L, C> {
             request,
             read,
             jobs: Vec::new(),
+            stopping: Vec::new(),
         }
     }
 
-    /// Forgets `goal`'s job in flight (a cancel).
+    /// Stops `goal`'s job in flight, whose answer will never be taken (a
+    /// cancel). A job left in llm still runs and holds one of the agent's
+    /// `MAX_JOBS` places until llm restarts (bug-hunt-4 H4-14). Until llm says
+    /// `ok` (it may be busy writing the person's app, or not answer in time)
+    /// the ticket is kept and the stop is asked again each turn.
     pub fn forget(&mut self, goal: u64) {
-        self.jobs.retain(|(g, _)| *g != goal);
+        if let Some(at) = self.jobs.iter().position(|(g, _)| *g == goal) {
+            let (_, ticket) = self.jobs.remove(at);
+            self.stopping.push(ticket);
+            self.stop_dropped();
+        }
+    }
+
+    /// Once a turn: stops the jobs of goals that ended or are no longer kept,
+    /// and asks again for the stops llm has not answered `ok`.
+    pub fn drop_ended(&mut self, goals: &Goals) {
+        let ended: Vec<u64> = self
+            .jobs
+            .iter()
+            .map(|(goal, _)| *goal)
+            .filter(|goal| goals.get(*goal).is_none_or(|g| g.state.is_final()))
+            .collect();
+        for goal in ended {
+            self.forget(goal);
+        }
+        self.stop_dropped();
+    }
+
+    /// Asks llm to stop each dropped job; keeps those it did not stop.
+    fn stop_dropped(&mut self) {
+        let mut kept = Vec::new();
+        for ticket in core::mem::take(&mut self.stopping) {
+            match self.llm.call(&format!("agent-stop {ticket}")) {
+                Ok(ok) if ok == "ok" => {}
+                Ok(why) | Err(why) => {
+                    self.llm.note(&format!("agent-stop {ticket}: {why}"));
+                    kept.push(ticket);
+                }
+            }
+        }
+        self.stopping = kept;
     }
 
     /// Starts the job that plans `goal`: its ticket.

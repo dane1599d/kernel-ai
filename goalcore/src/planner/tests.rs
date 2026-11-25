@@ -150,3 +150,52 @@ fn the_jobs_own_failure_still_fails_the_goal() {
     let states = turns(&mut goals, id, &mut planner, 2);
     assert_eq!(states, [State::Active, State::Failed]);
 }
+
+/// bug-hunt-4 H4-14: a goal cancelled with its plan job in flight stops the
+/// job in llm, so it neither runs nor holds one of goals' places there.
+#[test]
+fn a_cancelled_goals_job_is_stopped_in_llm() {
+    let mut goals = Goals::new();
+    let id = approved(&mut goals, 10_000);
+    let mut planner = scripted(&[Ok("ok 7"), Ok("pending"), Ok("ok")]);
+    turns(&mut goals, id, &mut planner, 2);
+    planner.forget(id);
+    planner.forget(id);
+    assert_eq!(planner.llm.asked[2..], ["agent-stop 7"]);
+}
+
+/// A goal that ended any other way has its job stopped too, once.
+#[test]
+fn the_jobs_of_goals_that_ended_are_stopped() {
+    let mut goals = Goals::new();
+    let id = approved(&mut goals, 10_000);
+    let mut planner = scripted(&[Ok("ok 7"), Ok("ok")]);
+    turns(&mut goals, id, &mut planner, 1);
+    planner.drop_ended(&goals);
+    assert_eq!(planner.llm.asked.len(), 1, "a live goal's job is kept");
+    goals.get_mut(id).unwrap().cancel(T0 + 2).unwrap();
+    planner.drop_ended(&goals);
+    planner.drop_ended(&goals);
+    assert_eq!(planner.llm.asked[1..], ["agent-stop 7"]);
+}
+
+/// A stop llm did not answer `ok` (busy writing the person's app, or no
+/// reply) is asked again each turn until it is, and then never again.
+#[test]
+fn a_stop_llm_did_not_take_is_asked_again() {
+    let mut goals = Goals::new();
+    let id = approved(&mut goals, 10_000);
+    let mut planner = scripted(&[
+        Ok("ok 7"),
+        Ok("busy Kai is writing an app"),
+        Err("llm: TimedOut"),
+        Ok("ok"),
+    ]);
+    turns(&mut goals, id, &mut planner, 1);
+    goals.get_mut(id).unwrap().cancel(T0 + 2).unwrap();
+    planner.forget(id);
+    planner.drop_ended(&goals);
+    planner.drop_ended(&goals);
+    planner.drop_ended(&goals);
+    assert_eq!(planner.llm.asked[1..], ["agent-stop 7"; 3]);
+}

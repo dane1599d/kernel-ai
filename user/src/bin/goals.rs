@@ -103,6 +103,8 @@ fn run() -> i32 {
             steps: &mut agent.steps,
         };
         let events = runner.turn(&mut agent.goals, now, Presence::Here, &mut parts);
+        // A goal that ended with its plan job in flight stops that job in llm.
+        agent.planner.drop_ended(&agent.goals);
         // A card whose goal ended (a cancel) is no longer polled.
         let goals = &agent.goals;
         agent
