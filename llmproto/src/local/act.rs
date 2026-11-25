@@ -129,7 +129,8 @@ pub fn actions(rows: &[&'static agentabi::Action]) -> Vec<Action<'static>> {
 /// arguments: the pack shows only its name, so the call stops after it. A
 /// row of those that takes arguments has a second grammar of its own, used
 /// once more with its group's full lines after the request. Installed apps'
-/// rows are all index-only (`pack::apps`).
+/// rows are all index-only (`pack::apps`), except in [`grammar_flat`]'s,
+/// spike S10-2's flat arm, where every app's lines are shown in full.
 pub struct Grammar {
     first: Tagged<'static>,
     second: Vec<(&'static str, Tagged<'static>)>,
