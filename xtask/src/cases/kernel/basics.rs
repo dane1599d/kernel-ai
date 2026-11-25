@@ -120,6 +120,7 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
     TestCase {
         expect: &[
             "console-race: a key reader whose wake came before it blocked looked again, in wait and in wait_unless",
+            "console-race: an armed reader whose slot was taken did not sleep out its poll",
         ],
         ..case("threads", "test=threads")
     },
