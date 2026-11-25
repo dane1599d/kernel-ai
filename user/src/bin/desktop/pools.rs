@@ -27,7 +27,7 @@ pub(super) fn drop_client(state: &mut State, at: usize) {
     let pid = client.pid;
     // A window that never draws again is not waiting on the wheel.
     let gone: Vec<_> = client.windows().collect();
-    state.wheeled.retain(|(w, _)| !gone.contains(w));
+    state.wheeled.retain(|(w, ..)| !gone.contains(w));
     let effects = client.close_all(&mut state.desk);
     deliver(state, &effects);
     state.shown.retain(|(_, owner, ..)| *owner != pid);

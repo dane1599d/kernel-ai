@@ -258,9 +258,14 @@ pub(super) fn wheel_rows(state: &State, window: WindowId) -> Option<Vec<u64>> {
 }
 
 /// The band `wheel_rows` hashes, in logical px from the content's left edge:
-/// inside the left column of Notes' window, which holds the list.
+/// inside the left column of Notes' window, which holds the list. It relies on
+/// distinct note titles inside the band: if CI ever logs "did not scroll",
+/// widen the band before touching `scrolled::MIN_ROWS`.
 const BAND_X: usize = 8;
 const BAND_WIDTH: usize = 88;
+
+/// How many pictures of a window after the wheel are compared for a scroll.
+pub(super) const WHEEL_PICTURES: usize = 4;
 
 /// What `draw` fills a window's content with while the client's own pixels
 /// are to go in it: the window colour with the blue bit flipped, which no

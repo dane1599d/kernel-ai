@@ -91,9 +91,11 @@ pub(super) fn deliver(state: &mut State, effects: &[Effect]) {
             // ring; its next picture says it scrolled.
             Effect::Wheel { window, .. } => {
                 if state.log_wheel {
-                    if !state.wheeled.iter().any(|(w, _)| *w == window) {
+                    if !state.wheeled.iter().any(|(w, ..)| *w == window) {
                         let rows = super::frame::wheel_rows(state, window).unwrap_or_default();
-                        state.wheeled.push((window, rows));
+                        state
+                            .wheeled
+                            .push((window, rows, super::frame::WHEEL_PICTURES));
                     }
                     println!("desktop: the wheel went to window {}", window.0);
                 }
