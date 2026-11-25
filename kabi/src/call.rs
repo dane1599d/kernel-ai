@@ -765,8 +765,9 @@ pub const SHM_INFO: u64 = 200;
 /// raw value past u32; Revoked for one whose grant was revoked.
 pub const ENDPOINT_BADGE: u64 = 201;
 /// `part_peer_caps(partition, pid) -> caps`: live process `pid`'s capability
-/// bits ([`super::cap`]), as its plan line gave them, read from the process
-/// table, for `fs`, which gives the person's own requests (the shell's, with
+/// bits ([`super::cap`]), as the supervisor's SPAWN request gave them (only
+/// the bits the kernel pins to a line, such as [`super::cap::POLICY`], are
+/// kernel facts), read from the process table, for `fs`, which gives the person's own requests (the shell's, with
 /// [`super::cap::POLICY`]) their share of the space reserve by them, never by
 /// a name. Needs a `Partition` handle (any rights), so only `fs` can ask, as
 /// [`PART_PEER_NAME`]. NotFound when `pid` is not running; pid 0, the kernel,
