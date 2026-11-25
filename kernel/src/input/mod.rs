@@ -25,9 +25,11 @@
 //!   sequences, and the console's ring is emptied each time they do.
 
 use crate::{hpet, i8042, threads};
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use kabi::input::{Hands, InputEvent, KeyRoute, Kind, Set1, TAP};
 use spin::Mutex;
+use termcore::keys::Code;
 use termcore::mouse::{Button, Buttons, Decoder};
 
 /// Button bits, as `pointer::Event` has them: 0 left, 1 right, 2 middle.
@@ -92,6 +94,23 @@ static DECODERS: Mutex<Decoders> = Mutex::new(Decoders {
     leased: false,
     hands: Hands::new(),
 });
+
+/// The keys physically held now, as the console's decoder names them: from the
+/// interrupt side's decoder, which is never started afresh, so a key pressed
+/// before the console's own decoder was reset still counts (the menu's gate).
+pub fn held_codes() -> Vec<Code> {
+    let makes: Vec<(bool, u8)> = x86_64::instructions::interrupts::without_interrupts(|| {
+        DECODERS.lock().keys.held_makes().collect()
+    });
+    let mut scratch = termcore::keys::Decoder::new();
+    for (extended, make) in makes {
+        if extended {
+            let _ = scratch.stroke(0xE0);
+        }
+        let _ = scratch.stroke(make);
+    }
+    scratch.held().collect()
+}
 
 /// Whether input goes to `desktop` now.
 pub fn taking() -> bool {

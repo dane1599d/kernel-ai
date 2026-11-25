@@ -505,7 +505,10 @@ fn answer_on_console_after(decoder: &mut Decoder, menu: &mut Menu, shown: &[Stri
     let (prompt, text) = menu.input();
     console::show_input(prompt, &text, text.chars().count());
     decoder.discard_pending();
-    let gate = Gate::new(now_ms(), decoder.held());
+    // The keys held now by the interrupt side's count too: the console's own
+    // decoder starts afresh whenever the keys change hands, and a `y` still
+    // down then must not answer on its first repeat.
+    let gate = Gate::new(now_ms(), decoder.held().chain(crate::input::held_codes()));
     MENU_OPEN_MS.store(gate.open_at_ms(), Ordering::Release);
     menu.arm(gate);
     let answer = loop {
