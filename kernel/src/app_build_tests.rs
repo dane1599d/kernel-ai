@@ -24,7 +24,7 @@
 //!
 //! The host checks comphost's, `desktop`'s and `pkg`'s lines.
 
-use crate::agent_desk_tests::{DESK, KEYS_MS};
+use crate::agent_desk_tests::{DESK, KEYS_MS, OPEN_MS};
 use crate::cc_build_tests::{BUILD_MS, SYNC_MS};
 use crate::display::claim;
 use crate::files_tests::ask;
@@ -130,6 +130,13 @@ fn allowed(case: &str) -> Result<(), &'static str> {
     until(case, "the app to run", STEP_MS, || {
         !process::named(NAME).is_empty()
     })?;
+    // The host waits for its window's "shown at" and "opened at" lines, so
+    // `undo` must not take the app away before it paints: under TCG comphost
+    // takes seconds to load the app after its process starts.
+    until(case, "the app to serve", STEP_MS, || {
+        ipc::server_of(NAME).is_some()
+    })?;
+    threads::sleep_ms(OPEN_MS);
     let installed = generation()?;
     if installed != 2 {
         log!("{case}: packages are generation {installed}");
