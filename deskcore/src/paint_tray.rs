@@ -41,7 +41,7 @@ impl Painter {
             self.memory(c, clip, memory, scene);
         }
         if let Some(utc_s) = scene.bar.utc_s {
-            self.clock(c, clip, t.clock, utc_s);
+            self.clock(c, clip, t.clock, utc_s, scene.bar.zone_min);
         }
     }
 
@@ -105,15 +105,15 @@ impl Painter {
         self.text.draw(c, g(clip), x, y, style, scale, muted, &text);
     }
 
-    /// "14:05" over "14 Nov UTC", right-aligned in the slot, both lines drawn
+    /// "14:05" over "14 Nov UTC" (or "UTC+2"), right-aligned in the slot, both lines drawn
     /// smaller together when they would not fit it.
-    fn clock(&mut self, c: &mut Canvas<'_>, clip: Rect, slot: Rect, utc_s: u64) {
+    fn clock(&mut self, c: &mut Canvas<'_>, clip: Rect, slot: Rect, utc_s: u64, zone: i16) {
         let Some(clip) = slot.intersect(&clip) else {
             return;
         };
         let style = TypeStyle::MonoTitle;
-        let time = crate::clock::time(utc_s);
-        let date = crate::clock::date(utc_s);
+        let time = crate::clock::time_in(utc_s, zone);
+        let date = crate::clock::date_in(utc_s, zone);
         let line = self.text.style(style).line;
         let room_h = (slot.h - 2 * CLOCK_PAD) as f32 / 2.0;
         let scale = self

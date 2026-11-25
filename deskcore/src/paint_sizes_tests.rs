@@ -27,6 +27,7 @@ fn paint(desk: &Desk, panel: &Panel, chat: &Chat, w: i32, h: i32) -> Image {
         chat,
         start: None,
         ask: None,
+        preview: None,
         now_ms: 0,
     };
     painter.paint(

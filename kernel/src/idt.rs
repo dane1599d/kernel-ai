@@ -133,7 +133,7 @@ pub extern "C" fn trap_dispatch(frame: &mut TrapFrame) {
             apic::end_of_interrupt();
         }
         // Another CPU hit a fatal error: stop here so its report is not interleaved.
-        v if v == u64::from(apic::HALT_VECTOR) => crate::halt_forever(),
+        v if v == u64::from(apic::HALT_VECTOR) => crate::smp::on_halt_ipi(),
         v if (u64::from(irq::FIRST)..=u64::from(irq::LAST)).contains(&v) => {
             irq::on_interrupt(v as u8);
             crate::input::wake_pending();

@@ -7,8 +7,9 @@
 //!   with `Inverse::Model`, so `undo` puts the model before back;
 //! - `model_fetch` imports the attached disk's model (`disk`), or downloads a
 //!   signed one (`net`, by its id or the recommended one), held to the signed
-//!   role. It always asks once: gigabytes of new bytes, and no undo yet. The
-//!   download asks with its size and host, as `models download <id>` does.
+//!   role. It always asks once: gigabytes of new bytes. It is logged with
+//!   `Inverse::Fetched`, so `undo` removes the blob, or stops the download.
+//!   The download asks with its size and host, as `models download <id>` does.
 //!
 //! What `updated` answers is the OS's own state, so it is the reply as it is.
 //!
@@ -256,7 +257,11 @@ impl Shell {
     ) -> Reply {
         self.host.audit(&format!("request {id}: {call} asks"));
         let checked = Checked::shown_only(call);
-        let mut reply = self.ask_call(id, request, checked, why, None, subject.clone());
+        // A fetch has an undo, so `Why::NoUndo`'s words would be wrong; it asks
+        // for the gigabytes it brings. Consent's own reasons still win.
+        let own = matches!(waiting, Waiting::Fetch | Waiting::Download { .. })
+            .then(|| String::from(FETCH_REASON));
+        let mut reply = self.ask_call_with(id, request, checked, why, None, subject.clone(), own);
         if let Some(subject) = subject
             && reply.confirm.is_some()
             && reply.text.starts_with("Run ")
@@ -346,7 +351,7 @@ impl Shell {
             res: String::from("model-store"),
             before: String::new(),
             after: String::from(target),
-            inverse: None,
+            inverse: self.fetched(target),
         };
         self.log_change(id, request, call, how, change);
         Reply::ok(format!(
@@ -354,8 +359,8 @@ impl Shell {
         ))
     }
 
-    /// The asked download, started in `updated` after an Allow, and logged:
-    /// it brings a new blob and has no undo yet.
+    /// The asked download, started in `updated` after an Allow, and logged
+    /// with its undo, which stops it or removes the blob it stored.
     fn model_download_run(
         &mut self,
         id: u64,
@@ -378,7 +383,7 @@ impl Shell {
             res: String::from("model-store"),
             before: String::new(),
             after: String::from(name),
-            inverse: None,
+            inverse: self.fetched(name),
         };
         self.log_change(id, request, call, how, change);
         let what = subject.strip_prefix("Download ").unwrap_or(subject);
@@ -389,6 +394,7 @@ impl Shell {
 
     fn log_change(&mut self, id: u64, request: &str, call: &str, how: How, change: Change) {
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id,
             t_ns: self.host.now_ns(),
             form: how.form,
@@ -406,6 +412,27 @@ impl Shell {
 
     /// `undo` of `model_use`: the model before for the next restart, while the
     /// next restart's model is still `from`, or (`anyway`) whatever it is.
+    /// The undo of fetching signed model `id`: the blob the role names for it.
+    /// None when the role does not name it, which `updated` never imports or
+    /// downloads, or when `updated` cannot be asked: the fetch is logged with
+    /// no undo, as before.
+    fn fetched(&self, id: &str) -> Option<Inverse> {
+        let models = self.models_now().ok()?;
+        let signed = models.signed.iter().find(|s| s.id == id)?;
+        Some(Inverse::Fetched { sha: signed.sha256 })
+    }
+
+    /// Undoes a `model_fetch`: `updated` removes blob `sha`, or stops its
+    /// download and drops the part downloaded. It refuses, in its own words,
+    /// while the blob runs or is on trial.
+    pub(crate) fn model_unfetch(&mut self, sha: Sha256) -> Result<String, String> {
+        let answer = self.host.models(&format!("models remove {}", hex(&sha)))?;
+        match answer.strip_prefix("err ") {
+            Some(why) => Err(String::from(why)),
+            None => Ok(String::from(UNFETCHED)),
+        }
+    }
+
     pub(crate) fn model_back(
         &mut self,
         back: Option<Sha256>,
@@ -466,7 +493,7 @@ impl Shell {
     /// line names what it does, through the rows the AI calls. The list
     /// answers, with the signed models this machine may download; a switch
     /// runs, logged as typed, with its undo; an import or a download asks
-    /// once, since it has no undo.
+    /// once, for the gigabytes it brings.
     pub(crate) fn models_line(&mut self, request: &str, parsed: Result<Line, String>) -> Reply {
         let line = match parsed {
             Ok(line) => line,
@@ -488,9 +515,9 @@ impl Shell {
                 }
                 reply
             }
-            Line::Import => self.model_call(id, request, "model_fetch", &[], typed(Why::NoUndo)),
+            Line::Import => self.model_call(id, request, "model_fetch", &[], typed(Why::Asked)),
             Line::Use(name) => self.model_use(id, request, &name, typed(Why::Asked), "typed"),
-            Line::Download(name) => self.model_download(id, request, &name, Why::NoUndo),
+            Line::Download(name) => self.model_download(id, request, &name, Why::Asked),
         }
     }
 
@@ -542,14 +569,26 @@ fn download_call(name: &str) -> String {
         .unwrap_or_else(|| String::from("model_fetch"))
 }
 
-/// Why a `model_fetch` asks: a line that asked for it asks because it has no
-/// undo; one Kai was steered into, or added, says so, and opens on Deny.
+/// Why a `model_fetch` asks: a line that plainly asked for it asks for the
+/// gigabytes it brings ([`FETCH_REASON`]) and opens on Allow. Anything else
+/// keeps consent's reason: one Kai picked for a vague line (`TakenAs`), was
+/// steered into, or added, says so and opens on Deny; a model's own pick never
+/// opens on Allow.
 fn asked_why(why: Why) -> Why {
     match why {
-        Why::TakenAs | Why::Grounded | Why::Read => Why::NoUndo,
+        Why::NoUndo => Why::Asked,
         why => why,
     }
 }
+
+/// What undoing a `model_fetch` says. The store drops the blob from every older
+/// undo snapshot too, so no undo brings it back; its space is free a moment
+/// after, once the store's clean-up has run.
+const UNFETCHED: &str =
+    "the fetched model removed for good (no undo brings it back); its space frees in a moment";
+
+/// A `model_fetch`'s own reason to ask, on its card and its y/n question.
+const FETCH_REASON: &str = "it brings gigabytes; undo removes it";
 
 /// The value of the argument `arg` a row was called with, if given.
 fn value<'a>(values: &'a [(&'static str, String)], arg: &str) -> Option<&'a str> {

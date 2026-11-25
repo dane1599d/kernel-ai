@@ -89,7 +89,16 @@ fn wait(what: &'static str, mut done: impl FnMut() -> bool) -> Result<(), &'stat
 /// The next card, which must name the app and `host`, answered by the
 /// harness's next keys (`allow` says which).
 fn card(host: &str, allow: bool) -> Result<(), &'static str> {
-    wait("a card for the app's next host", ask_box::shown)?;
+    if let Err(why) = wait("a card for the app's next host", ask_box::shown) {
+        // Which side stalled: the shell never said a card waits ("card
+        // waiting false"), or the terminal could not take it. Run
+        // 44386525169's re-ask after the revoke gave no word of which.
+        log!(
+            "net-grant: the card did not come: {}",
+            terminal::card_state()
+        );
+        return Err(why);
+    }
     let question = ask_box::question().unwrap_or_default();
     if !question.contains("net-fixture") || !question.contains(host) {
         log!("net-grant: the card asked {question:?}, not about net-fixture and {host}");
@@ -104,6 +113,11 @@ fn card(host: &str, allow: bool) -> Result<(), &'static str> {
 /// Waits, with no card, until the shell's Deny of the revoked host has
 /// refused the app at least once (`net denied`), well inside its minute.
 fn denied_once() -> Result<(), &'static str> {
+    // Each different answer the shell gave, logged once as it first comes: a
+    // TCG run that timed out here (main runs 43508647923, 43519660175,
+    // 43925679716) had the shell refuse the app twice a second with this Deny
+    // while every answer the case read missed it, and no answer was kept.
+    let mut last = alloc::string::String::new();
     for _ in 0..DENIED_WAIT_MS / DENIED_POLL_MS {
         let said = ipc::call("shell", b"net denied", CARD_MS)
             .map_err(|_| "net-grant: the shell did not answer net denied")?;
@@ -116,6 +130,10 @@ fn denied_once() -> Result<(), &'static str> {
         if let (Some(line), Some(1..)) = (line, count) {
             log!("net-grant: the Deny refused the app's request: {line}");
             return Ok(());
+        }
+        if said != last {
+            log!("net-grant: net denied answered {said:?}");
+            last = said.into_owned();
         }
         quiet(DENIED_POLL_MS)?;
     }

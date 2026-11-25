@@ -13,7 +13,8 @@ mod preempt;
 
 pub use context::{enter_address_space, leave_address_space};
 pub use preempt::{
-    migrations, on_reschedule_ipi, on_tick, preempt_disable, preempt_enable, wake, wake_all,
+    handoffs, migrations, on_reschedule_ipi, on_tick, preempt_disable, preempt_enable, wake,
+    wake_all, wake_here,
 };
 
 use crate::memory::stack::GuardedStack;

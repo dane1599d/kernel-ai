@@ -14,8 +14,8 @@
 //! through RULE_CHECK) runs a firing only for a rule the user allowed, never
 //! for one the shell made up.
 
-use super::HANDLES;
 use super::grant::Kernel;
+use super::lock;
 use alloc::string::String;
 use alloc::vec::Vec;
 use captable::grant::{GrantRef, Live};
@@ -79,7 +79,7 @@ fn keep(node: GrantRef, scope: Scope) -> Result<(), kabi::Error> {
 /// `call`, in canonical text.
 pub fn covers(slot: usize, call: &str) -> bool {
     // The nodes first, under the table's lock alone; then the rules.
-    let nodes: Vec<GrantRef> = match HANDLES[slot].lock().as_ref() {
+    let nodes: Vec<GrantRef> = match lock(slot).as_ref() {
         Some(handles) => handles
             .table
             .iter()

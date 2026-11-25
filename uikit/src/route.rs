@@ -110,9 +110,13 @@ impl Window {
         };
         let mut n = self.tree.get(id).map(|n| n.parent);
         while let Some(p) = n {
-            if let (Some(Widget::Scroll { axis }), Some(view)) =
-                (self.tree.get(p).map(|n| &n.widget), self.rect(p))
-            {
+            // A scroll view, or a list (its rows lie inside its frame).
+            let viewed = match (self.tree.get(p).map(|n| &n.widget), self.rect(p)) {
+                (Some(Widget::Scroll { axis }), Some(view)) => Some((*axis, view)),
+                (Some(Widget::ItemList { .. }), Some(view)) => Some((Axis::Column, view.inset(1))),
+                _ => None,
+            };
+            if let Some((axis, view)) = viewed {
                 let (start, len, vstart, vlen) = match axis {
                     Axis::Row => (target.x, target.w, view.x, view.w),
                     Axis::Column => (target.y, target.h, view.y, view.h),
@@ -189,14 +193,24 @@ impl Window {
                     });
                     return out;
                 }
-                let scroll = self
-                    .hit(at)
-                    .and_then(|h| self.up(h, |w| matches!(w, Widget::Scroll { .. })));
+                let scroll = self.hit(at).and_then(|h| {
+                    self.up(h, |w| {
+                        matches!(w, Widget::Scroll { .. } | Widget::ItemList { .. })
+                    })
+                });
                 if let Some(s) = scroll {
                     let extent = self.places.get(&s).map_or(0, |p| p.extent);
-                    let view = self.rect(s).map_or(0, |r| r.h.max(r.w));
+                    // A list's rows lie inside its 1 px frame.
+                    let list = matches!(
+                        self.tree.get(s).map(|n| &n.widget),
+                        Some(Widget::ItemList { .. })
+                    );
+                    let view = self
+                        .rect(s)
+                        .map_or(0, |r| if list { r.h - 2 } else { r.h.max(r.w) });
                     let off = self.st.scroll.get(&s).copied().unwrap_or(0);
-                    let new = (off + dy * metric::WHEEL_STEP).clamp(0, (extent - view).max(0));
+                    let step = dy.saturating_mul(metric::WHEEL_STEP);
+                    let new = off.saturating_add(step).clamp(0, (extent - view).max(0));
                     if new != off {
                         self.st.scroll.insert(s, new);
                         self.dirty = true;
@@ -263,7 +277,7 @@ impl Window {
         let raw = i64::from(*min) + span.max(0) * dx / w;
         let step = i64::from((*step).max(1));
         let snapped = i64::from(*min) + (raw - i64::from(*min) + step / 2) / step * step;
-        Some(snapped.clamp(i64::from(*min), i64::from(*max)) as i32)
+        Some(snapped.clamp(i64::from(*min), i64::from(*max).max(i64::from(*min))) as i32)
     }
 
     /// The byte offset in `text` nearest `x` px from its start.
@@ -518,7 +532,7 @@ impl Window {
                     _ => return,
                 };
                 let i = (i64::from(selected) + step(back))
-                    .clamp(0, labels.len() as i64 - 1)
+                    .clamp(0, (labels.len() as i64 - 1).max(0))
                     .max(0) as u32;
                 out.extend(self.change(f, Value::Index(i)).ok().flatten());
             }
@@ -560,6 +574,11 @@ impl Window {
             .copied()
             .unwrap_or(value.len())
             .min(value.len());
+        // Never inside a character: a stored caret may predate the text.
+        let mut at = at;
+        while !value.is_char_boundary(at) {
+            at -= 1;
+        }
         let prev = value[..at].char_indices().last().map_or(0, |(i, _)| i);
         let next = value[at..].chars().next().map_or(at, |c| at + c.len_utf8());
         let line_start = value[..at].rfind('\n').map_or(0, |i| i + 1);

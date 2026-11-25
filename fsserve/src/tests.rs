@@ -42,12 +42,12 @@ impl<'d> Client<'d> {
         (decode_reply(&answer.reply).unwrap(), answer.mint)
     }
 
-    fn home(&mut self, request: Request) -> (Reply, Option<Mint>) {
+    pub(crate) fn home(&mut self, request: Request) -> (Reply, Option<Mint>) {
         self.call(ALICE, HOME_USER, DIR_RIGHTS, request)
     }
 
     /// Opens `path` under /home/user; the new handle's badge and rights.
-    fn open(&mut self, path: &str, how: How) -> Result<Mint, Error> {
+    pub(crate) fn open(&mut self, path: &str, how: How) -> Result<Mint, Error> {
         let rights = DIR_RIGHTS.bits();
         match self.home(Request::Open {
             path: path.into(),
@@ -60,7 +60,7 @@ impl<'d> Client<'d> {
         }
     }
 
-    fn write(&mut self, file: &Mint, off: u64, data: &[u8]) -> Reply {
+    pub(crate) fn write(&mut self, file: &Mint, off: u64, data: &[u8]) -> Reply {
         self.call(
             ALICE,
             file.badge,

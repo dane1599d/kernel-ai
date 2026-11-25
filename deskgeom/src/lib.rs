@@ -7,13 +7,16 @@
 //! with its centred items and right-aligned tray (PR 7), the Kai pane down
 //! the right edge (PR 6), windows cascading from 48,52 in steps of 32, and
 //! 40x32 title-bar controls flush in the bar's right end (PR 5). There is no
-//! top bar. All sizes are physical px at scale 1.
+//! top bar. All sizes are logical px, which are physical px at scale 1:
+//! `desktop` lays out on the screen's logical size and turns the frame into
+//! physical px in one place (ADR 0005 §9, `deskcore::upscale`).
 
 #![no_std]
 
 pub mod pane;
 pub mod points;
 mod rect;
+pub mod scale;
 pub mod start;
 pub mod taskbar;
 

@@ -145,6 +145,10 @@ pub struct Menu {
     /// The call the question shows, canonical (`termcore::once::call_text`): what
     /// an Allow's ONCE digest names (`once::digest_call`).
     call: String,
+    /// A line the console shows under the question, outside the `ONCE`
+    /// digest and never on the desk's card ([`Menu::card_reason`]), such as
+    /// the install card's summary; empty for none (`Menu::with_detail`).
+    detail: String,
     choices: Vec<(Answer, String)>,
     selected: usize,
     /// Set by [`Menu::arm`]; no key counts before.
@@ -186,6 +190,7 @@ impl Menu {
             id,
             question: question.to_string(),
             call: String::new(),
+            detail: String::new(),
             choices,
             selected: match origin {
                 Origin::Asked => 0,
@@ -207,13 +212,39 @@ impl Menu {
         })
     }
 
+    /// The menu with `detail` shown under its question: printable ASCII of
+    /// at most [`MAX_TEXT`], as every text a menu shows. It is not in the
+    /// `ONCE` digest, which names the question's call alone.
+    pub fn with_detail(self, detail: &str) -> Result<Self, Refused> {
+        if !detail.is_empty() && !showable(detail) {
+            return Err(Refused::Unshowable);
+        }
+        Ok(Self {
+            detail: detail.to_string(),
+            ..self
+        })
+    }
+
     /// The call the question shows.
     pub fn call(&self) -> &str {
         &self.call
     }
 
+    /// The line shown under the question; empty for none.
+    pub fn detail(&self) -> &str {
+        &self.detail
+    }
+
+    /// What the desk's trusted card shows as the ask's reason: the question
+    /// alone, code's words. The detail never goes there (ADR 0005 section 7):
+    /// a summary in the model's words is not trusted text.
+    pub fn card_reason(&self) -> &str {
+        &self.question
+    }
+
     /// Reads `menu <id> <asked|added>`, then the question, the kind rule, the
-    /// target rule and the call, one line each.
+    /// target rule and the call, one line each, and optionally a detail line
+    /// ([`Menu::encode_detail`]).
     pub fn decode(text: &str) -> Result<Self, Refused> {
         let mut lines = text.split('\n');
         let header = lines.next().ok_or(Refused::Malformed)?;
@@ -230,7 +261,8 @@ impl Menu {
             Some("added") => Origin::Added,
             _ => return Err(Refused::Malformed),
         };
-        let (Some(question), Some(kind), Some(target), Some(call), None, None) = (
+        let (Some(question), Some(kind), Some(target), Some(call), detail, None, None) = (
+            lines.next(),
             lines.next(),
             lines.next(),
             lines.next(),
@@ -240,9 +272,15 @@ impl Menu {
         ) else {
             return Err(Refused::Malformed);
         };
+        // A detail line, when there is one, says something.
+        if detail == Some("") {
+            return Err(Refused::Malformed);
+        }
         let given = |label: &str| Some(label).filter(|l| !l.is_empty()).map(String::from);
         let (kind, target) = (given(kind), given(target));
-        Self::new(id, question, kind.as_deref(), target.as_deref(), origin)?.with_call(call)
+        Self::new(id, question, kind.as_deref(), target.as_deref(), origin)?
+            .with_call(call)?
+            .with_detail(detail.unwrap_or(""))
     }
 
     /// The shell's side of [`Menu::decode`].
@@ -261,9 +299,28 @@ impl Menu {
         format!("menu {id} {origin}\n{question}\n{kind}\n{target}\n{call}")
     }
 
+    /// [`Menu::encode`] with `detail` on a line of its own after the call;
+    /// none for an empty one.
+    pub fn encode_detail(
+        id: u64,
+        origin: Origin,
+        question: &str,
+        call: &str,
+        detail: &str,
+    ) -> String {
+        let menu = Self::encode(id, origin, question, "", "", call);
+        match detail.is_empty() {
+            true => menu,
+            false => format!("{menu}\n{detail}"),
+        }
+    }
+
     /// The `?` rows, printed once: the question, then each choice numbered.
     pub fn rows(&self) -> Vec<String> {
         let mut rows = alloc::vec![format!("? {}", self.question)];
+        if !self.detail.is_empty() {
+            rows.push(format!("?   {}", self.detail));
+        }
         rows.extend(
             self.choices
                 .iter()
@@ -337,6 +394,112 @@ impl Menu {
 }
 
 /// The terminal's answer line.
+/// The lead of a text shown above a menu, outside its card (the P5 send row):
+/// `shown <bytes>`, then that many bytes (a header line code wrote, then the
+/// text), then a newline and the `menu` itself. The person reads the text
+/// where they answer; a terminal that cannot show it all denies the menu.
+pub const SHOWN: &str = "shown ";
+/// The longest shown block.
+pub const SHOWN_MAX: usize = 6 * 1024;
+
+/// A text shown above a menu, and the menu's own wire.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shown<'a> {
+    pub header: &'a str,
+    pub text: &'a str,
+    pub menu: &'a str,
+}
+
+/// `menu`'s wire with `text` shown above it under `header`.
+pub fn encode_shown(header: &str, text: &str, menu: &str) -> String {
+    format!(
+        "{SHOWN}{}\n{header}\n{text}\n{menu}",
+        header.len() + 1 + text.len()
+    )
+}
+
+/// The shown block of `wire`, if it has one: `None` for a plain reply, an error
+/// for a block out of shape or one that is not printable ASCII and newlines.
+pub fn split_shown(wire: &str) -> Option<Result<Shown<'_>, Refused>> {
+    let rest = wire.strip_prefix(SHOWN)?;
+    Some((|| {
+        let (len, rest) = rest.split_once('\n').ok_or(Refused::Malformed)?;
+        let len: usize = len.parse().map_err(|_| Refused::Malformed)?;
+        if len > SHOWN_MAX {
+            return Err(Refused::Unshowable);
+        }
+        let block = rest.get(..len).ok_or(Refused::Malformed)?;
+        let menu = rest[len..].strip_prefix('\n').ok_or(Refused::Malformed)?;
+        if !block
+            .bytes()
+            .all(|b| b == b'\n' || (b' '..=b'~').contains(&b))
+        {
+            return Err(Refused::Unshowable);
+        }
+        let (header, text) = block.split_once('\n').ok_or(Refused::Malformed)?;
+        if header.is_empty() || text.is_empty() || !menu.starts_with("menu ") {
+            return Err(Refused::Malformed);
+        }
+        Ok(Shown { header, text, menu })
+    })())
+}
+
+/// The id of the menu in `wire`, past a shown block's bytes when it has one,
+/// so no `menu N` inside the shown text is read: for the Deny of a menu that
+/// cannot be shown.
+pub fn menu_id(wire: &str) -> Option<u64> {
+    let menu = match wire.strip_prefix(SHOWN) {
+        Some(rest) => {
+            let (len, rest) = rest.split_once('\n')?;
+            let len: usize = len.parse().ok()?;
+            rest.get(len..)?.strip_prefix('\n')?
+        }
+        None => wire,
+    };
+    menu.strip_prefix("menu ")?
+        .split([' ', '\n'])
+        .next()
+        .and_then(|id| id.parse().ok())
+}
+
+/// Whether `call` names the send row (`net_send(...)`): a send's menu is
+/// answered only with its text in view, so one that comes without it (a
+/// desk card, whose text is in the Kai pane) is answered on the card or not
+/// at all, never asked bare on the console (ADR 0005 §7, "Amended
+/// 2026-11-19").
+pub fn names_send(call: &str) -> bool {
+    call.strip_prefix("net_send")
+        .is_some_and(|rest| rest.starts_with('('))
+}
+
+/// Whether a menu for `call`, asked with its `shown` text or not, is a
+/// send's that has no text to show beside it: then it is answered on the
+/// desk card (where its text is in the Kai pane) or denied, never asked on
+/// the console, where it would show bare (#1142's review). The kernel's
+/// terminal asks this before it asks a menu on the console.
+pub fn bare_send(shown: bool, call: &str) -> bool {
+    !shown && names_send(call)
+}
+
+/// Where a menu is answered (ADR 0005 §7).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Surface {
+    /// `desktop`'s trusted card.
+    Card,
+    /// The kernel console.
+    Console,
+}
+
+/// Where a menu is answered: the desk card while it is up, else the console.
+/// A menu with text shown above it is answered only on the console, where
+/// that text is: the card shows none.
+pub fn surface(shown: bool, card_up: bool) -> Surface {
+    match (shown, card_up) {
+        (false, true) => Surface::Card,
+        _ => Surface::Console,
+    }
+}
+
 pub fn answer_line(id: u64, answer: Answer) -> String {
     format!("answer {id} {}", answer.word())
 }
@@ -387,6 +550,61 @@ mod tests {
     /// Presses `key` on a menu whose gate is open.
     fn key(menu: &mut Menu, key: Key) -> Step {
         menu.apply(key)
+    }
+
+    /// A detail line rides after the call, outside the ONCE: shown under the
+    /// question on the console, never in the desk card's reason, and only as
+    /// printable ASCII within the menu's limit. A menu without one reads as
+    /// before.
+    #[test]
+    fn a_detail_line_shows_under_the_question_and_reads_back() {
+        let call = "app_install(\"timer\")";
+        let question = format!("Install {call}?");
+        let wire = Menu::encode_detail(4, Origin::Added, &question, call, "Kai says it: a timer.");
+        let menu = Menu::decode(&wire).unwrap();
+        assert_eq!(menu.detail(), "Kai says it: a timer.");
+        assert_eq!(menu.call(), call);
+        assert_eq!(
+            menu.rows()[..2],
+            [
+                format!("? {question}"),
+                String::from("?   Kai says it: a timer.")
+            ]
+        );
+        // The desk's trusted card carries code's question alone (#1051).
+        assert_eq!(menu.card_reason(), question);
+        assert!(!menu.card_reason().contains("Kai says it"));
+        let plain = Menu::decode(&Menu::encode(4, Origin::Added, &question, "", "", call)).unwrap();
+        assert_eq!(plain.detail(), "");
+        assert_eq!(plain.card_reason(), question);
+        for bad in ["tab\there", "caf\u{e9}", &"x".repeat(MAX_TEXT + 1)] {
+            let wire = Menu::encode_detail(4, Origin::Added, &question, call, bad);
+            assert_eq!(Menu::decode(&wire), Err(Refused::Unshowable), "{bad:?}");
+        }
+        // Nothing may follow the detail line.
+        assert_eq!(
+            Menu::decode(&format!("{wire}\nmore")),
+            Err(Refused::Malformed)
+        );
+    }
+
+    /// A send's menu with its text is the console's; one without it (the
+    /// desk card's) is never asked there; any other menu is as ever.
+    #[test]
+    fn a_sends_menu_without_its_text_is_never_the_consoles() {
+        let send = "net_send(\"a\", \"/b\", \"0123456789abcdef\")";
+        assert!(bare_send(false, send));
+        assert!(!bare_send(true, send));
+        assert!(!bare_send(false, "process_stop(\"x\")"));
+    }
+
+    #[test]
+    fn a_send_is_told_by_its_call() {
+        assert!(names_send("net_send(\"a\", \"/b\", \"0123456789abcdef\")"));
+        assert!(names_send("net_send()"));
+        for call in ["cpus()", "net_sender(\"a\")", "fs_create(\"net_send(\")"] {
+            assert!(!names_send(call), "{call}");
+        }
     }
 
     fn stop(origin: Origin) -> Menu {
@@ -637,7 +855,7 @@ mod tests {
                         .iter()
                         .all(|r| showable(r) || r.len() <= MAX_TEXT + 8)
                 );
-                assert!(menu.rows().len() >= 3 && menu.rows().len() <= 5);
+                assert!(menu.rows().len() >= 3 && menu.rows().len() <= 6);
             }
         }
     }
@@ -671,5 +889,68 @@ mod granted_tests {
         ] {
             assert_eq!(read_answer(bad), None, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_shown_text_reads_back_above_its_menu_or_is_refused() {
+        let menu = Menu::encode(
+            4,
+            Origin::Asked,
+            "Send it with x(\"a\")?",
+            "",
+            "",
+            "x(\"a\")",
+        );
+        let wire = super::encode_shown(
+            "Kai wants to send this text to a.example:",
+            "hello\nthere",
+            &menu,
+        );
+        let shown = super::split_shown(&wire).unwrap().unwrap();
+        assert_eq!(shown.header, "Kai wants to send this text to a.example:");
+        assert_eq!(shown.text, "hello\nthere");
+        assert_eq!(shown.menu, menu);
+        assert!(Menu::decode(shown.menu).is_ok());
+        assert!(
+            super::split_shown(&menu).is_none(),
+            "a plain menu has no block"
+        );
+        let bad = super::encode_shown("h", "caf\u{e9}", &menu);
+        assert_eq!(super::split_shown(&bad), Some(Err(Refused::Unshowable)));
+        let cut = &wire[..wire.len() - menu.len() - 2];
+        assert!(matches!(super::split_shown(cut), Some(Err(_))));
+        assert_eq!(super::menu_id(&wire), Some(4));
+    }
+
+    #[test]
+    fn a_shown_menu_is_answered_only_on_the_console_and_its_id_is_past_the_text() {
+        use super::{Surface, surface};
+        assert_eq!(surface(false, true), Surface::Card);
+        assert_eq!(surface(false, false), Surface::Console);
+        assert_eq!(
+            surface(true, true),
+            Surface::Console,
+            "the card shows no text"
+        );
+        assert_eq!(surface(true, false), Surface::Console);
+        let menu = Menu::encode(
+            7,
+            Origin::Asked,
+            "Send it with x(\"a\")?",
+            "",
+            "",
+            "x(\"a\")",
+        );
+        let wire = super::encode_shown(
+            "Kai wants to send this text to a.example:",
+            "menu 99 asked",
+            &menu,
+        );
+        assert_eq!(
+            super::menu_id(&wire),
+            Some(7),
+            "not the menu inside the text"
+        );
+        assert_eq!(super::menu_id(&menu), Some(7));
     }
 }

@@ -1,7 +1,7 @@
 //! Drawing the desk (ADR 0005 §5, §8): the desk, each window's chrome and
 //! content, the focused window's shadow, the agent's outline, the taskbar and
 //! tray, the Kai pane, Start, a tooltip, the ask card and the cursor, in the
-//! theme's tokens and type (Ember Workbench's dark one until
+//! theme's tokens and type (the dark theme until
 //! [`Painter::set_theme`]). The card is
 //! drawn last but the cursor, so nothing else covers it (ADR 0005 §7).
 //! Pure: the same [`Scene`] gives the same pixels, on the host as in `desktop`,
@@ -56,6 +56,8 @@ pub struct Bar {
     /// Seconds since 1970 UTC, for the tray's clock; none without a wall
     /// clock, and then no clock is drawn.
     pub utc_s: Option<u64>,
+    /// The clock's fixed offset from UTC in minutes (`time_zone`); 0 is UTC.
+    pub zone_min: i16,
 }
 
 /// Everything a frame shows besides the windows' own pixels.
@@ -70,6 +72,9 @@ pub struct Scene<'a> {
     pub start: Option<&'a crate::start::Start>,
     /// The text of the ask card up now, as the kernel posted it.
     pub ask: Option<&'a Card>,
+    /// A send's text, checked against its card's digest: drawn in the pane
+    /// in place of the history while that card is up.
+    pub preview: Option<&'a crate::sendview::SendPreview>,
     /// The clock, for the panel's "thinking 4s".
     pub now_ms: u64,
 }

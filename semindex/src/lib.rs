@@ -20,6 +20,8 @@
 //!   never by the model.
 //! - [`embed`]: the vector slot, a trait S13-3's embedder fills; vectors are
 //!   kept as f16 ([`half`]).
+//! - [`qwen`]: that embedder, Qwen3-Embedding-0.6B run by `infer`: last-token
+//!   pooling, the query instruction, 256 dimensions by MRL.
 //!
 //! The index is derived data: it can always be thrown away and rebuilt. What it
 //! holds is read back as hostile, and nothing here holds a handle: the service
@@ -36,6 +38,7 @@ pub mod embed;
 pub mod format;
 pub mod half;
 pub mod index;
+pub mod qwen;
 pub mod scope;
 pub mod search;
 pub mod since;
@@ -48,5 +51,6 @@ pub use chunk::{Chunk, Estimate, Tokens, chunk};
 pub use embed::{EmbedError, Embedder, EmbedderId};
 pub use format::{Batch, Header, Opened, Record, Refused, fresh, open};
 pub use index::{ChunkEntry, FileEntry, Index, Prepared, prepare};
+pub use qwen::{BpeTokens, Qwen3Embedder};
 pub use scope::{Scope, Skip};
 pub use search::{Hit, Query, search};

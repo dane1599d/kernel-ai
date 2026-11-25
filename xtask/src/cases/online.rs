@@ -252,9 +252,9 @@ const A_FROM_NET: TestCase = TestCase {
             "updated: took update snapshot ",
             "updated: wrote release 2 into B over TLS and checked it: 0 chunks kept, ",
             // The figure the founder's throughput bars read: bytes fetched over the whole
-            // stage, kainet opening a TLS connection for each 2 MiB chunk.
+            // stage, the 2 MiB chunks on kept connections (the split counts them).
             "updated: downloaded ",
-            " chunks of up to 2 MiB, a TLS connection for each)",
+            " chunks of up to 2 MiB, on kept connections)",
             // Where that time went, summed over the stage: the redirect, the assets
             // host's connect, the body, the hash, the slot write and its read-back.
             "updated: split ms: redirect ",

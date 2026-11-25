@@ -123,6 +123,7 @@ fn a_grant_grounds_its_one_host_in_the_shell() {
 #[test]
 fn an_undone_packages_grants_are_dropped_and_no_one_elses() {
     let host = FakeHost::new();
+    let mut shell = shell(&host);
     *host.net_disk.borrow_mut() = Some(file(&[
         ("weather", WEATHER, Life::Persistent),
         ("foo-window", "foo.example", Life::Persistent),
@@ -131,7 +132,7 @@ fn an_undone_packages_grants_are_dropped_and_no_one_elses() {
         ("net-fixture", "a.kai.test", Life::Persistent),
     ]));
     assert_eq!(
-        crate::netask::drop_package_grants(host.as_ref(), "foo", "the undo took foo out"),
+        shell.drop_package_grants("foo", "the undo took foo out"),
         Ok(2)
     );
     let left = crate::netgrant::NetGrants::load(&host.net_disk.borrow().clone().unwrap()).unwrap();
@@ -152,7 +153,9 @@ not a line
 ",
     ));
     assert!(
-        crate::netask::drop_package_grants(host.as_ref(), "foo", "the undo took foo out").is_err()
+        shell
+            .drop_package_grants("foo", "the undo took foo out")
+            .is_err()
     );
 }
 

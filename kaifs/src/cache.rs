@@ -6,7 +6,8 @@
 //! returns, and a flush is the device's flush. So the device sees exactly the
 //! writes and flushes kaifs makes, in the same order, and every crash gate's
 //! result holds over a cached device unchanged; `tests/cache.rs` shows the
-//! logs are identical. A write the device refuses leaves nothing of it cached.
+//! logs are identical. A write or flush the device refuses empties the cache, since
+//! a device that gathers writes may report a lost run on a later call.
 //! Reads are served from the cache when they can be; written blocks are cached
 //! too, since a commit's nodes are read again soon after.
 
@@ -90,20 +91,14 @@ impl<D: BlockDev> Cached<D> {
         self.hand = (self.hand + 1) % self.slots.len();
     }
 
-    /// Forgets block `addr`: the device's copy is all there is.
-    fn forget(&mut self, addr: u64) {
-        let Some(at) = self.index.remove(&addr) else {
-            return;
-        };
-        let last = self.slots.len() - 1;
-        self.slots.swap(at, last);
-        self.slots.pop();
-        if at < self.slots.len() {
-            self.index.insert(self.slots[at].addr, at);
-        }
-        if self.hand >= self.slots.len() {
-            self.hand = 0;
-        }
+    /// Forgets every block. After any write or flush error the device may have
+    /// lost writes it took earlier (one that gathers writes, as `fs`'s does,
+    /// reports a lost run on a later call), so no cached block may stand for
+    /// what the disk holds: the next reads go to the device.
+    fn clear(&mut self) {
+        self.slots.clear();
+        self.index.clear();
+        self.hand = 0;
     }
 }
 
@@ -133,13 +128,17 @@ impl<D: BlockDev> BlockDev for Cached<D> {
                 Ok(())
             }
             Err(e) => {
-                self.forget(addr);
+                self.clear();
                 Err(e)
             }
         }
     }
 
     fn flush(&mut self) -> Result<(), IoError> {
-        self.dev.flush()
+        let flushed = self.dev.flush();
+        if flushed.is_err() {
+            self.clear();
+        }
+        flushed
     }
 }

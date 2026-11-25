@@ -1,6 +1,7 @@
 //! The display modes a base EDID block (VESA E-EDID 1.3/1.4) lists: its detailed
 //! timings, standard timings and the common established timings. Refresh rates
-//! are ignored; a virtual display shows any size it is given.
+//! are ignored; a virtual display shows any size it is given. And the screen's
+//! size in mm ([`size_mm`]), for the desktop's scale.
 
 use alloc::vec::Vec;
 
@@ -13,6 +14,8 @@ const ESTABLISHED: usize = 0x23;
 const STANDARD: usize = 0x26;
 const DESCRIPTORS: usize = 0x36;
 const DESCRIPTOR_LEN: usize = 18;
+/// The base block's screen size in cm, horizontal then vertical.
+const SIZE_CM: usize = 0x15;
 
 /// Established timing bits (bytes 0x23 and 0x24, most significant bit first).
 /// Repeats at other refresh rates are dropped later.
@@ -43,13 +46,9 @@ const ESTABLISHED_MODES: [[Option<Mode>; 8]; 2] = [
 /// mode once. Empty when the base block is missing, has no header or fails its
 /// checksum.
 pub fn modes(edid: &[u8]) -> Vec<Mode> {
-    let Some(block) = edid.get(..BLOCK) else {
+    let Some(block) = base(edid) else {
         return Vec::new();
     };
-    let checksum = block.iter().fold(0u8, |sum, &b| sum.wrapping_add(b));
-    if block[..8] != HEADER || checksum != 0 {
-        return Vec::new();
-    }
     let version = (block[0x12], block[0x13]);
     let mut found = Vec::new();
     let mut add = |mode: Mode| {
@@ -77,6 +76,32 @@ pub fn modes(edid: &[u8]) -> Vec<Mode> {
         }
     }
     found
+}
+
+/// The base block, when it has its header and its checksum holds.
+fn base(edid: &[u8]) -> Option<&[u8]> {
+    let block = edid.get(..BLOCK)?;
+    let checksum = block.iter().fold(0u8, |sum, &b| sum.wrapping_add(b));
+    (block[..8] == HEADER && checksum == 0).then_some(block)
+}
+
+/// The screen's size in mm, width by height: the preferred (first detailed)
+/// timing's image size, else the base block's size in cm. None when the block
+/// is not a good one, or gives no size: a projector's or a TV's 0, or, from EDID
+/// 1.4, an aspect ratio in place of one of the two.
+pub fn size_mm(edid: &[u8]) -> Option<Mode> {
+    let block = base(edid)?;
+    let first = &block[DESCRIPTORS..DESCRIPTORS + DESCRIPTOR_LEN];
+    let detailed = (first[0] != 0 || first[1] != 0).then(|| {
+        let width = u32::from(first[12]) | (u32::from(first[14] & 0xF0) << 4);
+        let height = u32::from(first[13]) | (u32::from(first[14] & 0x0F) << 8);
+        (width, height)
+    });
+    let cm = (u32::from(block[SIZE_CM]), u32::from(block[SIZE_CM + 1]));
+    let known = |(width, height): Mode| width > 0 && height > 0;
+    detailed
+        .filter(|&size| known(size))
+        .or_else(|| known(cm).then_some((cm.0 * 10, cm.1 * 10)))
 }
 
 /// A detailed timing descriptor's active area; None for the other descriptors
@@ -109,7 +134,7 @@ fn standard(first: u8, second: u8, version: (u8, u8)) -> Option<Mode> {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::modes;
+    use super::{modes, size_mm};
     use std::vec::Vec;
 
     /// A base block like QEMU's: preferred 1280x800, standard timings for
@@ -165,6 +190,56 @@ pub(crate) mod tests {
         headless[127] = headless[127].wrapping_sub(1);
         assert!(modes(&headless).is_empty());
         assert!(modes(&sample()[..100]).is_empty());
+    }
+
+    /// `block` with its checksum made good again.
+    fn summed(mut block: Vec<u8>) -> Vec<u8> {
+        let sum = block[..127].iter().fold(0u8, |s, &b| s.wrapping_add(b));
+        block[127] = 0u8.wrapping_sub(sum);
+        block
+    }
+
+    #[test]
+    fn the_size_is_the_preferred_timings_then_the_blocks() {
+        // No size anywhere: unknown.
+        assert_eq!(size_mm(&sample()), None);
+        // The base block's 34 by 21 cm.
+        let mut cm = sample();
+        cm[0x15] = 34;
+        cm[0x16] = 21;
+        assert_eq!(size_mm(&summed(cm.clone())), Some((340, 210)));
+        // The preferred timing's 338 by 211 mm wins, its high bits included:
+        // 0x152 (338) and 0x0D3 (211).
+        let mut mm = cm;
+        mm[0x36 + 12] = 0x52;
+        mm[0x36 + 13] = 0xD3;
+        mm[0x36 + 14] = 0x10;
+        assert_eq!(size_mm(&summed(mm.clone())), Some((338, 211)));
+        // A size past 255 in both, from the nibbles: 0x5A0 by 0x32A mm.
+        let mut big = mm;
+        big[0x36 + 12] = 0xA0;
+        big[0x36 + 13] = 0x2A;
+        big[0x36 + 14] = 0x53;
+        assert_eq!(size_mm(&summed(big)), Some((0x5A0, 0x32A)));
+    }
+
+    #[test]
+    fn an_aspect_ratio_or_a_bad_block_gives_no_size() {
+        // EDID 1.4: only one of the cm bytes set is an aspect ratio.
+        let mut aspect = sample();
+        aspect[0x15] = 79;
+        assert_eq!(size_mm(&summed(aspect)), None);
+        // The detailed size's one half 0 falls back to the block's cm.
+        let mut half = sample();
+        half[0x36 + 12] = 0x52;
+        half[0x15] = 34;
+        half[0x16] = 21;
+        assert_eq!(size_mm(&summed(half)), Some((340, 210)));
+        let mut bad = sample();
+        bad[0x15] = 34;
+        bad[0x16] = 21;
+        assert_eq!(size_mm(&bad), None, "the checksum no longer holds");
+        assert_eq!(size_mm(&sample()[..100]), None);
     }
 
     #[test]

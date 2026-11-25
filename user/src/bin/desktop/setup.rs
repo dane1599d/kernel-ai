@@ -18,6 +18,17 @@ pub(super) fn bar_text(shown: &deskcore::panel::State) -> Option<&str> {
     }
 }
 
+/// The panel's state in a word, as the desktop's log says it.
+pub(super) fn pane_word(shown: &deskcore::panel::State) -> &'static str {
+    match shown {
+        deskcore::panel::State::Idle => "idle",
+        deskcore::panel::State::Thinking { .. } => "thinking",
+        deskcore::panel::State::Acting { .. } => "acting",
+        deskcore::panel::State::Done { .. } => "done",
+        deskcore::panel::State::Refused { .. } => "refused",
+    }
+}
+
 /// Logs the panel's new result line, on a test image's plan (`log_bar=1`)
 /// only, with its newlines as "; ".
 pub(super) fn log_bar(enabled: bool, text: Option<&str>) {
@@ -32,12 +43,18 @@ pub(super) fn logs_first_key() -> bool {
     user::arg(&args, "key_log") == Some("on")
 }
 
+/// Whether the plan line has `wheel_log=on`: the wheel's two lines are logged.
+pub(super) fn logs_wheel() -> bool {
+    let args = user::args();
+    user::arg(&args, "wheel_log") == Some("on")
+}
+
 /// The appearance the plan line's arguments set, one `appearance_set` setting
 /// each; one that is refused is left out, and said.
 pub(super) fn starting_appearance() -> Appearance {
     let args = user::args();
     let mut chosen = Appearance::default();
-    for setting in appearance::SETTINGS {
+    for setting in appearance::FILE_SETTINGS {
         let Some(value) = user::arg(&args, setting) else {
             continue;
         };
@@ -73,8 +90,10 @@ pub(super) fn theme(state: &mut State, screen: &Screen) {
     println!("desktop: painting in the {} theme", theme.name);
     // Every client paints in it too, from its next poll.
     state.theme_name = String::from(theme.name.as_str());
+    state.look_text = state.appearance.encode();
     for client in &mut state.clients {
         client.theme(&state.theme_name);
+        client.look(&state.look_text);
     }
     state.painted_in = state.appearance.clone();
 }

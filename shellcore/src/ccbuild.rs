@@ -24,6 +24,25 @@ pub const DIR: &str = "/home/user/c";
 /// Where Kai's apps' folders are (`app_build`): `<name>/main.c`, kept after the
 /// app is removed, and `<name>.kai`.
 pub const APPS_DIR: &str = "/home/user/apps";
+/// What [`sources_ok`]'s refusal starts with: no repair round mends it.
+pub const NOT_KAIS: &str = "Kai's app folder holds sources Kai did not write";
+
+/// Whether a folder of `dir` with the `.c`/`.h` files `names` may be built:
+/// a Kai app (in [`APPS_DIR`]) only from the one `main.c` Kai wrote, since
+/// its install card pins that file's hash and `show code` shows it alone (a
+/// file left beside it would be compiled in unseen); a person's own
+/// component (in [`DIR`]) from all of them.
+pub fn sources_ok(dir: &str, names: &[&str]) -> Result<(), String> {
+    if dir != APPS_DIR || names == ["main.c"] {
+        return Ok(());
+    }
+    let others: alloc::vec::Vec<&str> = names.iter().copied().filter(|n| *n != "main.c").collect();
+    Err(format!(
+        "{NOT_KAIS} ({}), and only main.c is shown and pinned on the card: give the app another name",
+        others.join(", ")
+    ))
+}
+
 /// How the host's `pkg_local` begins its error when `pkg` gave no answer at
 /// all, so the install may have happened.
 pub const NO_ANSWER: &str = "pkg did not answer";
@@ -285,6 +304,7 @@ impl Shell {
         let id = self.next_id;
         self.next_id += 1;
         self.log.push(Entry {
+            agent: agentid::Name::kai(),
             id,
             t_ns: self.host.now_ns(),
             form: Form::Call,
@@ -298,5 +318,21 @@ impl Shell {
             outcome: String::from(outcome),
             changes: change.into_iter().collect(),
         });
+    }
+}
+
+#[cfg(test)]
+mod sources_tests {
+    use super::*;
+
+    #[test]
+    fn a_kai_app_builds_from_its_main_c_alone() {
+        assert_eq!(sources_ok(APPS_DIR, &["main.c"]), Ok(()));
+        let err = sources_ok(APPS_DIR, &["extra.c", "main.c"]).unwrap_err();
+        assert!(err.contains("(extra.c)"), "{err}");
+        assert!(sources_ok(APPS_DIR, &["main.c", "x.h"]).is_err());
+        assert!(sources_ok(APPS_DIR, &[]).is_err());
+        // A person's own component builds from every file in its folder.
+        assert_eq!(sources_ok(DIR, &["a.c", "b.h", "main.c"]), Ok(()));
     }
 }

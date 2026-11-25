@@ -10,7 +10,7 @@ use kabi::fs::HOME_USER;
 use kabi::handle::Rights;
 use kaifs::MemDisk;
 use kaipkg::bundle;
-use kaipkg::fsvol::{FsVolume, Transport};
+use kaipkg::fsvol::{Bulk, FsVolume, Transport};
 use kaipkg::generation::{Generation, Time};
 use kaipkg::mirror::TufCache;
 use kaipkg::resolve::{Entry, Want};
@@ -34,6 +34,16 @@ struct Served<'d> {
     waits: u32,
     /// After this many waits the other caller's action commits, if it ever does.
     other_commits_after: Option<u32>,
+    /// The bulk `Shm`, as `pkg` reserves one: none unless a test gives it.
+    shm: Option<Vec<u8>>,
+    /// ReadShm and WriteShm round trips.
+    bulk_calls: usize,
+    /// Answers them as an `fs` before them does: BadRequest.
+    old_fs: bool,
+    /// The bulk call that fails after its `Shm` moved (a CALL_H timeout),
+    /// poisoning it.
+    bulk_fails_at: Option<usize>,
+    poisoned: bool,
 }
 
 /// Another caller of `fs`, as the shell is.
@@ -81,6 +91,13 @@ impl Transport for Served<'_> {
 
     fn close(&mut self, _: Badge) {}
 
+    fn bulk(&mut self) -> Option<&mut dyn Bulk<Badge>> {
+        match self.shm {
+            Some(_) => Some(self),
+            None => None,
+        }
+    }
+
     fn wait_ms(&mut self, ms: u64) {
         self.now += ms;
         self.waits += 1;
@@ -90,6 +107,47 @@ impl Transport for Served<'_> {
                 Reply::Committed { .. }
             ));
         }
+    }
+}
+
+impl Bulk<Badge> for Served<'_> {
+    fn bytes(&mut self) -> &mut [u8] {
+        self.shm.as_mut().expect("a bulk Shm")
+    }
+
+    fn call(&mut self, (badge, rights): Badge, request: Request) -> Result<Reply, String> {
+        self.now += 1_000;
+        self.calls += 1;
+        self.bulk_calls += 1;
+        if self.calls >= self.stop_at {
+            return Err("fs stopped".into());
+        }
+        if self.poisoned {
+            panic!("a poisoned Shm was sent");
+        }
+        if self.bulk_fails_at == Some(self.bulk_calls) {
+            self.poisoned = true;
+            return Err("CALL_H: TimedOut".into());
+        }
+        if self.old_fs {
+            return Ok(Reply::Failed(fsproto::Error::BadRequest));
+        }
+        let bytes = fsproto::encode_request(&request);
+        let answer = self.server.call_shm(
+            &Call {
+                caller: 7,
+                badge,
+                rights,
+                request: &bytes,
+                now: self.now,
+            },
+            self.shm.as_deref_mut(),
+        );
+        fsproto::decode_reply(&answer.reply).map_err(|e| format!("{e:?}"))
+    }
+
+    fn usable(&self) -> bool {
+        !self.poisoned
     }
 }
 
@@ -104,6 +162,11 @@ fn volume(disk: &mut MemDisk) -> FsVolume<Served<'_>> {
         stop_at: usize::MAX,
         waits: 0,
         other_commits_after: None,
+        shm: None,
+        bulk_calls: 0,
+        old_fs: false,
+        bulk_fails_at: None,
+        poisoned: false,
     };
     FsVolume::new(served, (HOME_USER, DIR_RIGHTS))
 }
@@ -381,4 +444,143 @@ fn a_tuf_cache_save_stopped_at_any_call_keeps_the_copy_before_it() {
     let mut vol = volume(&mut disk);
     vol.transport.stop_at = vol.transport.calls + 2;
     assert!(TufCache { vol: &mut vol }.load("timestamp").is_err());
+}
+
+/// `pkg`'s bulk `Shm`: 256 KiB, more than one of the store's 192 KiB pieces.
+const SHM: usize = 256 << 10;
+
+/// [`volume`] with a bulk `Shm` of [`SHM`] bytes.
+fn bulk_volume(disk: &mut MemDisk) -> FsVolume<Served<'_>> {
+    let mut vol = volume(disk);
+    vol.transport.shm = Some(vec![0; SHM]);
+    vol
+}
+
+fn bytes(len: usize) -> Vec<u8> {
+    (0..len).map(|i| (i * 7 % 253) as u8).collect()
+}
+
+/// A file over one message goes in `Shm`-sized round trips each way, and a
+/// `pkg` without a bulk `Shm` reads the same bytes back a message at a time.
+#[test]
+fn a_file_over_a_message_goes_in_bulk_and_reads_back_the_same() {
+    let mut disk = MemDisk::new(16 * 1024);
+    let data = bytes(2 * SHM + 12_345);
+    {
+        let mut vol = bulk_volume(&mut disk);
+        vol.write("pkg/big.bin", &data).unwrap();
+        vol.append("pkg/big.bin", &data[..SHM + 1]).unwrap();
+        vol.commit().unwrap();
+        // 3 pieces, then 2 for the append.
+        assert_eq!(vol.transport.bulk_calls, 5);
+        let mut whole = data.clone();
+        whole.extend_from_slice(&data[..SHM + 1]);
+        let calls = vol.transport.bulk_calls;
+        assert!(vol.read("pkg/big.bin").unwrap() == Some(whole.clone()));
+        assert_eq!(vol.transport.bulk_calls - calls, whole.len().div_ceil(SHM));
+        // A message's worth or less still goes as a message.
+        vol.write("pkg/small.bin", &data[..fsproto::MAX_DATA])
+            .unwrap();
+        assert_eq!(
+            vol.read("pkg/small.bin").unwrap().unwrap(),
+            &data[..fsproto::MAX_DATA]
+        );
+        assert_eq!(vol.transport.bulk_calls - calls, whole.len().div_ceil(SHM));
+    }
+    let mut vol = volume(&mut disk);
+    let mut whole = data.clone();
+    whole.extend_from_slice(&data[..SHM + 1]);
+    assert!(vol.read("pkg/big.bin").unwrap() == Some(whole));
+    assert_eq!(vol.transport.bulk_calls, 0);
+}
+
+/// An `fs` from before ReadShm and WriteShm answers them BadRequest: the
+/// first one, which moved nothing, and the file then goes in messages.
+#[test]
+fn an_fs_without_the_bulk_requests_gets_messages() {
+    let mut disk = MemDisk::new(16 * 1024);
+    let data = bytes(SHM + 99);
+    let mut vol = bulk_volume(&mut disk);
+    vol.transport.old_fs = true;
+    vol.write("pkg/big.bin", &data).unwrap();
+    assert!(vol.read("pkg/big.bin").unwrap() == Some(data));
+    assert_eq!(vol.transport.bulk_calls, 2);
+}
+
+/// A bulk write that finds another caller's action holding `fs` waits for it,
+/// as a message does, and its bytes land whole.
+#[test]
+fn a_bulk_write_waits_out_another_callers_action() {
+    let mut disk = MemDisk::new(16 * 1024);
+    let data = bytes(SHM + 1);
+    let mut vol = bulk_volume(&mut disk);
+    vol.write("pkg/big.bin", &data[..10]).unwrap();
+    assert_eq!(
+        vol.transport.other(Request::Begin { action: 9 }),
+        Reply::Done
+    );
+    vol.transport.other_commits_after = Some(2);
+    vol.write("pkg/big.bin", &data).unwrap();
+    assert_eq!(vol.transport.waits, 2);
+    assert!(vol.read("pkg/big.bin").unwrap() == Some(data));
+}
+
+/// An install through the bulk path is the store's as one through messages
+/// is: it survives a restart, and its package reads back whole.
+#[test]
+fn an_install_in_bulk_survives_a_restart() {
+    let big = package("big", 3 * SHM);
+    let mut disk = MemDisk::new(16 * 1024);
+    {
+        let mut vol = bulk_volume(&mut disk);
+        with(&mut vol, 100, |store, cx| {
+            assert_eq!(store.setup(cx, Vec::new()), Ok(true));
+            let mut source = Memory {
+                bytes: &big,
+                pieces: 0,
+                limit: usize::MAX,
+            };
+            let want = [Want {
+                name: "big",
+                range: None,
+            }];
+            assert_eq!(
+                store.install(
+                    cx,
+                    &mut source,
+                    &[entry("big", &big)],
+                    PROVIDED,
+                    &want,
+                    false
+                ),
+                Ok(2)
+            );
+        });
+        assert!(vol.transport.bulk_calls > 0);
+    }
+    let mut vol = volume(&mut disk);
+    assert_eq!(store::current(&mut vol), Ok(2));
+    assert_eq!(names(&mut vol, 2), ["big"]);
+    assert!(store::present(&mut vol, &kaipkg::sha256(&big)).unwrap());
+    store::check(&mut vol, &Store::default(), Time(200)).unwrap();
+}
+
+/// A bulk call that fails after its `Shm` moved poisons it: that write fails,
+/// the `Shm` is never sent again (the transport panics if it is), and the
+/// next writes and reads go in messages and land.
+#[test]
+fn a_poisoned_shm_is_never_sent_again_and_files_go_in_messages() {
+    let mut disk = MemDisk::new(16 * 1024);
+    let data = bytes(3 * SHM + 7);
+    let mut vol = bulk_volume(&mut disk);
+    vol.transport.bulk_fails_at = Some(2);
+    assert!(vol.write("pkg/big.bin", &data).is_err());
+    assert!(vol.transport.poisoned);
+    let sent = vol.transport.bulk_calls;
+    vol.write("pkg/big.bin", &data).unwrap();
+    vol.append("pkg/big.bin", &data[..SHM + 1]).unwrap();
+    let mut whole = data.clone();
+    whole.extend_from_slice(&data[..SHM + 1]);
+    assert!(vol.read("pkg/big.bin").unwrap() == Some(whole));
+    assert_eq!(vol.transport.bulk_calls, sent);
 }

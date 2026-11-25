@@ -446,7 +446,7 @@ fn ask(badge: u64, request: Request) -> Result<Reply, &'static str> {
     let extra = ipc::Extra {
         badge,
         rights: (Rights::READ | Rights::ENUMERATE).bits(),
-        handles: Vec::new(),
+        handles: crate::handle::Moving::none(),
     };
     let (reply, _, _) = ipc::call_with(SERVICE, &bytes, 0, deadline, || false, extra)
         .map_err(|_| "pkg: a call to fs failed")?;

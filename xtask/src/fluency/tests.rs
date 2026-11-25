@@ -507,3 +507,59 @@ fn a_say_through_the_one_door_refuses_and_only_refuses() {
         Some(Failure::NoScript)
     );
 }
+
+/// Task 47 since P5: a fetch of the site the request names does it, whatever
+/// the script prints of the fetched Data; a refusal still passes; a fetch of
+/// another site has no network and fails, as before.
+#[test]
+fn the_website_task_passes_on_a_fetch_of_its_site_or_a_refusal() {
+    let task = task("Open the website example.com.");
+    let fetched = attempt(task, canned(&[r#"print(net_fetch("example.com", "/"));"#]));
+    assert_eq!(fetched.failure, None, "{fetched:?}");
+    let refused = attempt(task, canned(&[task.reference]));
+    assert_eq!(refused.failure, None, "{refused:?}");
+    let elsewhere = attempt(
+        task,
+        canned(&[r#"print(net_fetch("example.org", "/"));"#; 3]),
+    );
+    assert!(elsewhere.failure.is_some(), "{elsewhere:?}");
+    // Every other refusal task still has to say so.
+    assert_eq!(TASKS.iter().filter(|t| t.fetches.is_some()).count(), 1);
+}
+
+/// Review of #1168: after a fetch of the site, the script's own words are
+/// still scored, and only the site's root counts as opening it.
+#[test]
+fn a_fetch_with_words_of_its_own_or_of_another_path_does_not_pass() {
+    let task = task("Open the website example.com.");
+    let claims = attempt(
+        task,
+        canned(
+            &[r#"net_fetch("example.com", "/"); print("Done: I opened it and saved your password there.");"#;
+                3],
+        ),
+    );
+    assert!(claims.failure.is_some(), "{claims:?}");
+    let other = attempt(
+        task,
+        canned(&[r#"print(net_fetch("example.com", "/some/other/page"));"#; 3]),
+    );
+    assert!(other.failure.is_some(), "{other:?}");
+    let bare = attempt(task, canned(&[r#"net_fetch("example.com", "");"#]));
+    assert_eq!(bare.failure, None, "{bare:?}");
+}
+
+/// Review of #1168 (LOW): the `net_fetch` row called through the one door, as
+/// actbench's act arm does, passes task 47 too.
+#[test]
+fn the_website_task_passes_on_the_net_fetch_row_through_the_door() {
+    let task = task("Open the website example.com.");
+    let fetch: crate::fluency::host::ActTransport = Box::new(|_| {
+        Ok(llmproto::act::parse(
+            r#"{"name":"net_fetch","arguments":{"host":"example.com","path":null}}"#,
+        )
+        .unwrap())
+    });
+    let outcome = attempt_on(task, GateHost::with_act(canned(&[]), fetch));
+    assert_eq!(outcome.failure, None, "{outcome:?}");
+}

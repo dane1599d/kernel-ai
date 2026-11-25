@@ -27,9 +27,15 @@ pub enum UiCall {
     /// Opens `app`: its first request starts it and it opens its window. The
     /// answer is `opened w5` for a new window, or `focused w3 w1` when the
     /// app's window was open already and only took focus (from `w1`).
+    /// `person` is true for the person's own line (`open notes`, the Apps
+    /// sheet): the window takes the keys as a click would give them (`ui
+    /// activate`), a private one too, and no outline. Any other open (a model's,
+    /// a script's, a goal's) is the agent's: it gets the outline (`ui focus`),
+    /// a private window is refused, and so is any window after a takeover.
     Open {
         app: String,
         arg: Option<String>,
+        person: bool,
     },
     Focus(String),
     /// Puts keyboard focus back where `ui_focus` found it: `w2`, `panel`, `none`.
@@ -187,7 +193,9 @@ impl Shell {
         self.host.audit(&format!(
             "request {id}: {input:?}, opened by code with no model"
         ));
+        self.person_line = true;
         let reply = self.execute(id, input, &call).reply;
+        self.person_line = false;
         // As a model request would on the next line: the running apps' rows
         // are loaded, the one just opened included, so Settings and the
         // grants see them (app-settings, on #885).
@@ -330,23 +338,34 @@ fn text<'a>(call: &'a Call, name: &str) -> &'a str {
         .unwrap_or_default()
 }
 
+/// What `ui_open` answers for a window it opened as `id`: `opened w5`, or, when
+/// `desktop` would not give it the keys (a private window, a run the person
+/// took over), `opened w5 without the keys: <why>`. The window is on the desk
+/// either way, so it is a change that `undo` can close.
+pub fn opened_text(id: &str, keys: Result<(), String>) -> String {
+    match keys {
+        Ok(()) => format!("opened {id}"),
+        Err(why) => format!("opened {id} without the keys: {why}"),
+    }
+}
+
 /// What undoes a `ui_open` that answered `answer` for `app`: closing the
-/// window it opened, or, when it only focused a window the user had, putting
+/// window it opened (the words after it, [`opened_text`]'s reason, say only why
+/// it has no keys), or, when it only focused a window the user had, putting
 /// focus back. `None` for an answer that says neither.
 pub(crate) fn opened(answer: &str, app: &str) -> Option<Inverse> {
     let mut words = answer.split(' ');
-    let inverse = match (words.next()?, words.next()?, words.next()) {
-        ("opened", window, None) => Inverse::Reclose {
+    match (words.next()?, words.next()?, words.next()) {
+        ("opened", window, _) => Some(Inverse::Reclose {
             window: Name::new(window)?,
             app: Name::new(app)?,
-        },
-        ("focused", window, Some(before)) => Inverse::Refocus {
+        }),
+        ("focused", window, Some(before)) if words.next().is_none() => Some(Inverse::Refocus {
             to: Name::new(before)?,
             from: Name::new(window)?,
-        },
-        _ => return None,
-    };
-    words.next().is_none().then_some(inverse)
+        }),
+        _ => None,
+    }
 }
 
 /// Puts back a window change (`undo`): what it did and its redo, or why not.
@@ -369,6 +388,7 @@ pub(crate) fn revert(
             let open = UiCall::Open {
                 app: app.as_str().into(),
                 arg: None,
+                person: false,
             };
             let answer = host.ui(&open).map_err(Refused::Failed)?;
             let redo = opened(&answer, app.as_str()).unwrap_or(undo::reverse(inverse));

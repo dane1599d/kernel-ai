@@ -43,8 +43,7 @@ impl Clients for Fake {
 fn desktop() -> (Desk, Fake, WindowId, WindowId) {
     let mut desk = Desk::new(1280, 800);
     let size = Size { w: 400, h: 300 };
-    let (notes, _) = desk.open(1, "comphost", "Notes", size, true);
-    desk.set_app_id(notes, "notes");
+    let (notes, _) = desk.open(1, "notes-window", "Notes", size, true);
     let (term, _) = desk.open(2, "term", "kai>", size, true);
     let mut m = Mock::new("Notes");
     m.add(1, Role::TextInput, "Search");
@@ -118,14 +117,15 @@ fn windows_list_front_to_back_and_read_back() {
             ),
             (
                 crate::view::window_id(notes),
-                "notes".into(),
+                "notes-window".into(),
                 "Notes".into(),
                 false
             ),
         ]
     );
     assert_eq!(find_window(&desk, "NOTES"), Some(notes));
-    assert_eq!(find_window(&desk, "kai>"), Some(term), "by title");
+    assert_eq!(find_window(&desk, "term"), Some(term), "by its process");
+    assert_eq!(find_window(&desk, "kai>"), None, "not by its title");
     assert_eq!(find_window(&desk, "w99"), None);
     assert_eq!(parse_windows("w1\tnotes\tNotes\tyes"), None);
 }
@@ -224,7 +224,7 @@ fn check_names_an_unknown_or_guessed_node_and_sends_nothing() {
             "err unknown node; view w1 first",
         ),
         ("ui check notes b9 0", "err unknown node; view w1 first"),
-        ("ui check kai> b2 0", "err unknown node; view w2 first"),
+        ("ui check term b2 0", "err unknown node; view w2 first"),
         ("ui check notes b2 2", "err b2 does not take that action"),
     ] {
         assert_eq!(
@@ -266,7 +266,7 @@ fn close_asks_the_app_as_its_close_control_would() {
     let (mut desk, mut fake, notes, _) = desktop();
     let mut agent = Agent::default();
     let (closed, effects) = agent.answer(&mut desk, &mut fake, "ui close notes");
-    assert_eq!(closed, "ok notes");
+    assert_eq!(closed, "ok notes-window");
     assert_eq!(effects, [Effect::Close { window: notes }]);
     // The app decides: the window is still there until it closes it.
     assert!(desk.window(notes).is_some());
@@ -357,4 +357,106 @@ fn only_the_answers_about_a_private_window_say_so() {
     ] {
         assert!(!says_private(other), "{other:?}");
     }
+}
+
+/// What the person's own launch asks for (`ui activate`, which the shell's
+/// `ui_open` sends): the window takes the keys, with no agent outline and
+/// without "you took over" on the next key, and a window its app keeps from the
+/// agent takes them too; a stopped run does not matter, and a name no window
+/// has is refused in words.
+#[test]
+fn activate_gives_the_person_s_window_the_keys_and_nothing_of_the_agent_s() {
+    let (mut desk, mut fake, notes, term) = desktop();
+    fake.private.push(notes);
+    let mut agent = Agent::default();
+    assert_eq!(desk.focus(), Focus::Window(term));
+    let (answer, effects) = agent.answer(&mut desk, &mut fake, "ui activate notes");
+    // Where the focus was (the terminal), for an undo.
+    assert_eq!(answer, "ok w2");
+    desk.take_damage();
+    assert_eq!(desk.focus(), Focus::Window(notes));
+    assert!(effects.iter().any(|e| matches!(e, Effect::Focus(_))));
+    assert_eq!(
+        desk.agent(),
+        None,
+        "no agent outline on the person's window"
+    );
+    // The person's first key there is theirs: no takeover.
+    let typed = desk.input(Input::Key {
+        usage: 0x04,
+        down: true,
+    });
+    assert!(
+        typed
+            .iter()
+            .any(|e| matches!(e, Effect::Key { window, .. } if *window == notes))
+    );
+    assert!(
+        !typed.iter().any(|e| matches!(e, Effect::TookOver { .. })),
+        "{typed:?}"
+    );
+    // Even after a run was stopped, and by id; the agent's own focus is still refused.
+    agent.took_over();
+    let (again, _) = agent.answer(&mut desk, &mut fake, "ui activate w2");
+    assert_eq!(again, "ok w1");
+    assert_eq!(desk.focus(), Focus::Window(term));
+    let (refused, _) = agent.answer(&mut desk, &mut fake, "ui focus term");
+    assert!(refused.starts_with("err stopped"), "{refused}");
+    let (none, effects) = agent.answer(&mut desk, &mut fake, "ui activate nowhere");
+    assert_eq!(none, "err no window is nowhere");
+    assert!(effects.is_empty());
+    assert_eq!(
+        Request::parse("ui activate w3"),
+        Some(Request::Activate("w3".into()))
+    );
+    assert_eq!(Request::Activate("w3".into()).encode(), "ui activate w3");
+}
+
+/// What an open sends to give its window the keys: `ui activate` for the
+/// person's own, `ui focus` for the agent's, and the two behave as they are
+/// named on a window kept from the agent and after a takeover.
+#[test]
+fn an_open_activates_for_the_person_and_focuses_for_the_agent() {
+    assert_eq!(Request::open("w3", true), Request::Activate("w3".into()));
+    assert_eq!(Request::open("w3", false), Request::Focus("w3".into()));
+    let (mut desk, mut fake, notes, term) = desktop();
+    fake.private.push(notes);
+    let mut agent = Agent::default();
+    // The agent's is refused for a private window, the person's is not.
+    let (refused, _) = agent.answer(&mut desk, &mut fake, &Request::open("w1", false).encode());
+    assert!(refused.starts_with("err w1 is private"), "{refused}");
+    let (given, _) = agent.answer(&mut desk, &mut fake, &Request::open("w1", true).encode());
+    assert!(given.starts_with("ok "), "{given}");
+    assert_eq!((desk.focus(), desk.agent()), (Focus::Window(notes), None));
+    // After a takeover the agent's is refused for any window, the person's not.
+    agent.took_over();
+    let to_term = Request::open("w2", false).encode();
+    let (stopped, _) = agent.answer(&mut desk, &mut fake, &to_term);
+    assert_eq!(stopped, "err stopped: you took over");
+    let (given, _) = agent.answer(&mut desk, &mut fake, &Request::open("w2", true).encode());
+    assert!(given.starts_with("ok "), "{given}");
+    assert_eq!(desk.focus(), Focus::Window(term));
+}
+
+/// A window is named by what the kernel calls its process, never by what the
+/// client says of itself: an `app_id` or a title of another app's name finds
+/// nothing, and the listing shows the process.
+#[test]
+fn a_window_cannot_pose_as_another_app_by_its_app_id_or_its_title() {
+    use crate::view;
+    let mut desk = Desk::new(1280, 800);
+    let size = Size { w: 400, h: 300 };
+    let (real, _) = desk.open(1, "notes-window", "Notes", size, true);
+    let (fake, _) = desk.open(2, "evil", "settings", size, true);
+    desk.set_app_id(fake, "notes");
+    // The app id is not the name; the real Notes is the one `notes` finds.
+    assert_eq!(find_window(&desk, "notes"), Some(real));
+    assert_eq!(find_window(&desk, "evil"), Some(fake));
+    // A title is no name either: the window titled `settings` is not settings.
+    assert_eq!(find_window(&desk, "settings"), None);
+    let apps: Vec<String> = view::listed(&desk).into_iter().map(|l| l.app).collect();
+    assert_eq!(apps, ["evil", "notes-window"]);
+    // And with no real Notes open, `notes` finds nothing, whatever the id says.
+    desk.close(real);
+    assert_eq!(find_window(&desk, "notes"), None);
 }

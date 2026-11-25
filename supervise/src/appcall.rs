@@ -25,9 +25,21 @@ pub const CALLER: &str = "shell";
 /// serves one request at a time, so a slow or hung app holds every other
 /// request, restarts too, no longer than this.
 pub const WAIT_MS: u64 = 5_000;
-/// The answer when the app did not answer in [`WAIT_MS`]; the shell may try
-/// once more.
+/// The answer when the app did not take the call in [`WAIT_MS`]; it never
+/// ran, so the shell may try once more.
 pub const TIMEOUT: &str = "err timeout";
+const _: () = assert!(matches!(
+    TIMEOUT.as_bytes(),
+    [b'e', b'r', b'r', b' ', b't', ..]
+));
+/// The answer when the app took the call and did not answer, or died with
+/// it: the action may have run, so it is never tried again on its own
+/// (audit K #19).
+pub const UNANSWERED: &str = "err unanswered";
+const _: () = assert!(matches!(
+    UNANSWERED.as_bytes(),
+    [b'e', b'r', b'r', b' ', b'u', ..]
+));
 /// Before the app's name, the answer when the kernel refused to start it for
 /// memory (the admission rule, free / 2): no wait, and nothing to retry.
 pub const NO_MEMORY: &str = "err no memory to start ";
@@ -83,6 +95,15 @@ pub fn check(
 mod tests {
     use super::*;
     use crate::parse_plan;
+
+    #[test]
+    fn the_answers_carry_the_words_the_shell_reads() {
+        let after = |answer: &'static str| answer.strip_prefix("err ").unwrap();
+        assert_eq!(after(TIMEOUT), kabi::live::APP_TIMEOUT);
+        assert_eq!(after(UNANSWERED), kabi::live::APP_UNANSWERED);
+        assert!(kabi::live::app_call_may_retry(after(TIMEOUT)));
+        assert!(!kabi::live::app_call_may_retry(after(UNANSWERED)));
+    }
 
     const PLAN: &str = "llm caps=serve\nnotes program=comphost caps=serve+component";
 

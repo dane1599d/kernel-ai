@@ -36,12 +36,70 @@ pub fn check() -> Result<(), &'static str> {
     startup_handles()?;
     ring3()?;
     routes()?;
+    agent_route()?;
     kernel_grants()?;
     ring3_grants()?;
     revoke_mid_call()?;
+    held_move()?;
+    taken_back_at_start()?;
     m1();
     m2();
     log!("handles: tables, startup handles and need() on handles all behaved");
+    Ok(())
+}
+
+/// ADR 0013 section 1: a plan line's `agent=` badge rides on its route to
+/// `llm`, and only there, and that route is pinned: CALL and INSPECT, with no
+/// TRANSFER or DUPLICATE, so no process can pass the badge on. A line with
+/// none has badge 0 and the usual rights on every route.
+fn agent_route() -> Result<(), &'static str> {
+    use kabi::handle::agent;
+    type Route = Option<(u64, Rights)>;
+    let routes = |grants: supervise::Grants| -> Result<(Route, Route), &'static str> {
+        let request = SpawnRequest {
+            name: "hagent",
+            program: "handles",
+            args: b"mode=idle",
+            limits: Limits {
+                caps: cap::CALL,
+                ..LIMITS
+            },
+            spawner: 0,
+            supervisor: false,
+            uses: &[agent::SERVICE, "hsrv"],
+        };
+        let pid = process::spawn_in(&request, Vec::new(), false, &grants)
+            .map_err(|_| "handles: cannot start the agent's process")?;
+        let slot = process::slot_of_pid(pid).ok_or("handles: the agent's process is gone")?;
+        let found = (
+            handle::route_of(slot, agent::SERVICE),
+            handle::route_of(slot, "hsrv"),
+        );
+        process::kill(pid, ExitReason::Killed)
+            .map_err(|_| "handles: cannot end the agent's process")?;
+        wait_exit(pid)?;
+        Ok(found)
+    };
+    let usual = Rights::CALL | Rights::DUPLICATE | Rights::INSPECT | Rights::TRANSFER;
+    let kai = supervise::Grants {
+        agent: Some(agent::KAI),
+        pinned: alloc::vec![agent::SERVICE.into()],
+        ..supervise::Grants::default()
+    };
+    let (llm, other) = routes(kai)?;
+    if llm != Some((agent::KAI, handle::PINNED_RIGHTS)) || other != Some((0, usual)) {
+        return Err("handles: an agent's badge is not on its pinned route to llm alone");
+    }
+    if handle::PINNED_RIGHTS.intersects(Rights::TRANSFER | Rights::DUPLICATE) {
+        return Err("handles: a pinned route could be passed on");
+    }
+    if routes(supervise::Grants::default())? != (Some((0, usual)), Some((0, usual))) {
+        return Err("handles: a line with no agent= has a badge or a pinned route");
+    }
+    log!(
+        "handles: an agent's route to llm carries its badge (kai {}) with CALL only, and no other route does",
+        agent::KAI
+    );
     Ok(())
 }
 
@@ -218,6 +276,14 @@ fn kernel_grants() -> Result<(), &'static str> {
         let badge = grants::mint_once(slot, Kind::Sched, Rights::READ, 0, request, shown)
             .and_then(|h| handle::with(slot, |t| t.table.get(h).map(|e| e.badge).unwrap_or(0)))
             .map_err(|_| "handles: cannot mint a second ONCE handle")?;
+        // ONCE_CHECK spends only a ONCE the caller holds (audit K #6): from
+        // another table it is NotFound and leaves it, then its holder uses it.
+        let elsewhere = (slot + 1) % MAX_PROCESSES;
+        if grants::spend_held_once(elsewhere, badge, &shown) != Err(kabi::Error::NotFound)
+            || grants::check_once(badge, &other) != Verdict::Mismatch
+        {
+            return Err("handles: a ONCE was checked by a process that does not hold it");
+        }
         let _ = grants::revoke(request);
         if grants::check_once(badge, &shown) != Verdict::Revoked {
             return Err("handles: a ONCE digest outlived its request");
@@ -230,7 +296,9 @@ fn kernel_grants() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// `handles mode=grants`, started with SUPERVISE and POLICY.
+/// `handles mode=grants`, started with SUPERVISE and POLICY. It exits owning
+/// a live node, so its exit only completes if `revoke_owned` does not
+/// deadlock (audit K #11).
 fn ring3_grants() -> Result<(), &'static str> {
     let pid = process::spawn(&SpawnRequest {
         name: "hgrant",
@@ -245,7 +313,15 @@ fn ring3_grants() -> Result<(), &'static str> {
         uses: &[],
     })
     .map_err(|_| "handles: cannot start the grants check")?;
-    match wait_exit(pid)? {
+    let ended = wait_exit(pid)?;
+    // PROC_ALIVE's answer for a process that ran and has ended: gone.
+    if process::alive(pid) {
+        return Err("handles: an ended process still answered alive");
+    }
+    match ended {
+        (ExitReason::Exited, 0) if grants::owns_any(pid) => {
+            Err("handles: a node the ended process made is still live")
+        }
         (ExitReason::Exited, 0) => Ok(()),
         _ => Err("handles: the ring-3 grant checks failed"),
     }
@@ -301,7 +377,160 @@ fn revoke_mid_call() -> Result<(), &'static str> {
             return Err("handles: the revoke pair's checks failed");
         }
     }
+    unanswered()?;
+    crate::ipc_queued_tests::check()?;
     log!("handles: revoking a grant ended a call in flight through it");
+    Ok(())
+}
+
+/// Audit K #19: a call its server took and did not answer by the deadline
+/// ends Unanswered, not TimedOut, so APP_CALL can say it may have run and the
+/// shell never sends it again. `hold` takes one call and keeps it 3 s.
+fn unanswered() -> Result<(), &'static str> {
+    const NAME: &str = "hunans";
+    let pid = process::spawn(&SpawnRequest {
+        name: NAME,
+        program: "handles",
+        args: b"mode=hold",
+        limits: Limits {
+            caps: cap::SERVE,
+            ..LIMITS
+        },
+        spawner: 0,
+        supervisor: false,
+        uses: &[],
+    })
+    .map_err(|_| "handles: cannot start the holder")?;
+    // Bound and waiting, so the call is taken at once rather than queued.
+    for _ in 0..1000 {
+        if ipc::server_of(NAME).is_some() {
+            break;
+        }
+        threads::sleep_ms(10);
+    }
+    let result = ipc::call_from(NAME, b"hold", 500);
+    if wait_exit(pid)? != (ExitReason::Exited, 0) {
+        return Err("handles: the holder failed");
+    }
+    match result {
+        Err(ipc::CallError::Unanswered) => Ok(()),
+        _ => Err("handles: a call taken and not answered did not end Unanswered"),
+    }
+}
+
+/// #1162's review: a refused JOB_SPAWN gives the caller its handles back
+/// under the values it holds, with their rights, even when another insert
+/// lands in the table between the take and the give-back; a move that went
+/// through closes them, and so does a refusal that brings nothing back.
+fn held_move() -> Result<(), &'static str> {
+    let slot = MAX_PROCESSES - 3;
+    handle::create(slot, cap::POLICY, 98, &[]).map_err(|_| "handles: no table for the move")?;
+    let result = (|| {
+        let rights = Rights::READ | Rights::TRANSFER;
+        let insert = |rights| {
+            handle::with(slot, |h| {
+                h.table.insert(captable::Entry::new(Kind::Sched, rights, 1))
+            })
+            .ok()
+            .and_then(Result::ok)
+            .ok_or("handles: an insert failed")
+        };
+        let moved = insert(rights)?;
+        let moving = handle::take_held(slot, &[moved], cap::POLICY)
+            .map_err(|_| "handles: a held take was refused")?;
+        // A sibling thread's insert while the spawn is under way.
+        let between = insert(Rights::READ)?;
+        if between.index() == moved.index() {
+            return Err("handles: an insert took a slot held for a move");
+        }
+        handle::give_back(slot, &[moved], moving);
+        let back = handle::with(slot, |h| h.table.get(moved).map(|e| e.rights)).ok();
+        if back != Some(Ok(rights)) {
+            return Err("handles: a refused move's handle did not come back as it was");
+        }
+        let moving = handle::take_held(slot, &[moved], cap::POLICY)
+            .map_err(|_| "handles: a second held take was refused")?;
+        handle::release(slot, &[moved]);
+        drop(moving);
+        // `hold` already emptied the slot, so only its reuse shows the release:
+        // the next insert takes the freed slot under a new value.
+        let reused = insert(Rights::READ)?;
+        if reused.index() != moved.index() || reused == moved {
+            return Err("handles: a move that went through left its slot held");
+        }
+        if handle::with(slot, |h| h.table.get(moved).is_err()).ok() != Some(true) {
+            return Err("handles: a move that went through left its old value open");
+        }
+        // A refused spawn whose child's table went with the entries (#1267's
+        // review): nothing comes back, and the held slot is closed, not leaked.
+        let lost = insert(rights)?;
+        let moving = handle::take_held(slot, &[lost], cap::POLICY)
+            .map_err(|_| "handles: a third held take was refused")?;
+        drop(moving);
+        handle::give_back(slot, &[lost], handle::Moving::none());
+        let reused = insert(Rights::READ)?;
+        if reused.index() != lost.index() || reused == lost {
+            return Err("handles: a refused move with nothing back left its slot held");
+        }
+        Ok(())
+    })();
+    handle::destroy(slot);
+    result?;
+    log!(
+        "handles: a refused move's handle came back under its value with its rights, an insert meanwhile notwithstanding"
+    );
+    Ok(())
+}
+
+/// #1267's review: [`handle::take_at_start`] by itself. Two entries moved in
+/// at a process's start come back out, in order and as they went in, and
+/// leave STARTUP as it was before them; a range STARTUP does not list takes
+/// nothing.
+fn taken_back_at_start() -> Result<(), &'static str> {
+    let slot = MAX_PROCESSES - 3;
+    handle::create(slot, cap::POLICY, 97, &[]).map_err(|_| "handles: no table for take-back")?;
+    let result = (|| {
+        let first = handle::startup_len(slot);
+        let entries = [
+            captable::Entry::new(Kind::Sched, Rights::READ | Rights::TRANSFER, 0xf1),
+            captable::Entry::new(Kind::Sched, Rights::READ, 0xf2),
+        ];
+        if !handle::give_at_start(slot, handle::Moving::from(Vec::from(entries))) {
+            return Err("handles: the moved entries did not fit at start");
+        }
+        if handle::startup_len(slot) != first + 2 {
+            return Err("handles: STARTUP does not list the moved entries");
+        }
+        let past = handle::take_at_start(slot, first + 1, 2);
+        if !past.entries().is_empty() || handle::startup_len(slot) != first + 2 {
+            return Err("handles: a take-back past STARTUP's end took something");
+        }
+        let back = handle::take_at_start(slot, first, 2);
+        let same = back.len() == 2
+            && back.entries().iter().zip(&entries).all(|(got, want)| {
+                got.kind == want.kind && got.rights == want.rights && got.object == want.object
+            });
+        if !same {
+            return Err("handles: the entries taken back are not the ones moved in, in order");
+        }
+        if handle::startup_len(slot) != first {
+            return Err("handles: a take-back left its handles in STARTUP");
+        }
+        let left = handle::with(slot, |h| {
+            h.table
+                .iter()
+                .filter(|(_, e)| e.kind == Kind::Sched && (e.object == 0xf1 || e.object == 0xf2))
+                .count()
+        })
+        .map_err(|_| "handles: the table went")?;
+        if left != 0 {
+            return Err("handles: a take-back left its entries in the table");
+        }
+        Ok(())
+    })();
+    handle::destroy(slot);
+    result?;
+    log!("handles: a spawn refused after the move takes its moved entries back out, in order");
     Ok(())
 }
 

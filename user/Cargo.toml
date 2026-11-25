@@ -15,6 +15,11 @@ test = false
 bench = false
 
 [dependencies]
+# llm's agent jobs and their scheduler (ADR 0013 section 2).
+agentsched = { path = "../agentsched" }
+# The goals agent (ADR 0013 section 5): its loop and its rows.
+goalcore = { path = "../goalcore" }
+agentabi = { path = "../agentabi" }
 appabi = { path = "../appabi" }
 bootslot = { path = "../bootslot" }
 cpufeat = { path = "../cpufeat" }

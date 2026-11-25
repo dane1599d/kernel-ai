@@ -63,6 +63,12 @@ fn changed(settings: &Settings, view: &View, id: NodeId, value: &Value) -> Optio
             }
             (a != settings.appearance).then_some(Intent::Appearance(a))
         }
+        (ZONE, Value::Index(i)) => {
+            let hour = ZONE_HOURS.clone().nth(*i as usize)?;
+            let mut a: Appearance = settings.appearance.clone();
+            a.time_zone_min = hour * 60;
+            (a != settings.appearance).then_some(Intent::Appearance(a))
+        }
         (PROFILES, Value::Index(i)) => {
             let name = view.shown.profiles.get(*i as usize)?;
             let known = settings.profiles.contains(name);

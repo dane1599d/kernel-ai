@@ -1,7 +1,9 @@
 //! The git-pinned model catalog, `xtask/models.json`. Each entry pins a file by
 //! repository commit, size and SHA-256, so a download is kept only if it is byte
 //! for byte the file reviewed here, and lists what a decode step reads, so xtask
-//! knows whether the engine runs it yet.
+//! knows whether the engine runs it yet. Its `embedders` list pins `search`'s
+//! embedding model apart (ADR 0013 section 4): never a chat model, never
+//! recommended, and not in the release's signed `models` role.
 
 use super::decode::Decode;
 use serde_json::{Value, json};
@@ -97,39 +99,13 @@ impl Entry {
 
     /// Every field is safe to put in a URL or a path.
     pub fn check(&self) -> Result<(), String> {
-        let id_ok = !self.id.is_empty()
-            && self
-                .id
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-');
-        if !id_ok {
-            return Err(format!(
-                "catalog id {:?} is not lowercase letters, digits, . and -",
-                self.id
-            ));
-        }
-        let repo_ok = self.repo.split('/').count() == 2 && self.repo.split('/').all(plain_name);
-        if !repo_ok {
-            return Err(format!(
-                "{}: repo {:?} is not owner/name",
-                self.id, self.repo
-            ));
-        }
-        if !is_hex(&self.revision, 40) {
-            return Err(format!("{}: revision is not a 40-hex commit", self.id));
-        }
-        if !plain_name(&self.file) || !self.file.ends_with(".gguf") {
-            return Err(format!(
-                "{}: file {:?} is not a plain .gguf name",
-                self.id, self.file
-            ));
-        }
-        if !is_hex(&self.sha256, 64) {
-            return Err(format!(
-                "{}: sha256 is not 64 lowercase hex digits",
-                self.id
-            ));
-        }
+        check_pin(
+            &self.id,
+            &self.repo,
+            &self.revision,
+            &self.file,
+            &self.sha256,
+        )?;
         if self.size == 0 || self.min_ram_gb == 0 || self.license.is_empty() {
             return Err(format!(
                 "{}: size, min_ram_gb and license must be set",
@@ -138,6 +114,34 @@ impl Entry {
         }
         Ok(())
     }
+}
+
+/// A pin's id, repository, commit, file name and SHA-256 are safe to put in a
+/// URL or a path.
+fn check_pin(id: &str, repo: &str, revision: &str, file: &str, sha256: &str) -> Result<(), String> {
+    let id_ok = !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-');
+    if !id_ok {
+        return Err(format!(
+            "catalog id {id:?} is not lowercase letters, digits, . and -"
+        ));
+    }
+    let repo_ok = repo.split('/').count() == 2 && repo.split('/').all(plain_name);
+    if !repo_ok {
+        return Err(format!("{id}: repo {repo:?} is not owner/name"));
+    }
+    if !is_hex(revision, 40) {
+        return Err(format!("{id}: revision is not a 40-hex commit"));
+    }
+    if !plain_name(file) || !file.ends_with(".gguf") {
+        return Err(format!("{id}: file {file:?} is not a plain .gguf name"));
+    }
+    if !is_hex(sha256, 64) {
+        return Err(format!("{id}: sha256 is not 64 lowercase hex digits"));
+    }
+    Ok(())
 }
 
 pub fn resolve_url(repo: &str, revision: &str, file: &str) -> String {
@@ -158,10 +162,64 @@ pub fn is_hex(text: &str, len: usize) -> bool {
     text.len() == len && text.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'))
 }
 
+/// An embedding model's pin: the file, its licence and the dimensions
+/// `search` keeps of each vector.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EmbedderPin {
+    pub id: String,
+    pub name: String,
+    pub repo: String,
+    pub revision: String,
+    pub file: String,
+    pub size: u64,
+    pub sha256: String,
+    pub license: String,
+    pub dims: u16,
+    pub note: String,
+}
+
+impl EmbedderPin {
+    fn from_json(value: &Value) -> Result<Self, String> {
+        let text = |key: &str| {
+            value[key]
+                .as_str()
+                .map(str::to_string)
+                .ok_or(format!("an embedder entry has no {key}"))
+        };
+        let number = |key: &str| {
+            value[key]
+                .as_u64()
+                .ok_or(format!("an embedder entry has no {key}"))
+        };
+        let dims = number("dims")?;
+        let pin = Self {
+            id: text("id")?,
+            name: text("name")?,
+            repo: text("repo")?,
+            revision: text("revision")?,
+            file: text("file")?,
+            size: number("size")?,
+            sha256: text("sha256")?,
+            license: text("license")?,
+            dims: u16::try_from(dims).map_err(|_| format!("embedder dims {dims} is too many"))?,
+            note: value["note"].as_str().unwrap_or("").to_string(),
+        };
+        check_pin(&pin.id, &pin.repo, &pin.revision, &pin.file, &pin.sha256)?;
+        if pin.size == 0 || pin.dims == 0 || pin.license.is_empty() {
+            return Err(format!("{}: size, dims and license must be set", pin.id));
+        }
+        Ok(pin)
+    }
+}
+
 #[derive(Debug)]
 pub struct Catalog {
     pub default: String,
     pub models: Vec<Entry>,
+    /// Read by `search`'s wiring once it lands; until then the tests hold
+    /// the pin to S13-3's file.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub embedders: Vec<EmbedderPin>,
 }
 
 impl Catalog {
@@ -178,13 +236,30 @@ impl Catalog {
             .iter()
             .map(Entry::from_json)
             .collect::<Result<Vec<_>, _>>()?;
-        for (i, entry) in models.iter().enumerate() {
-            if models[..i].iter().any(|e| e.id == entry.id) {
-                return Err(format!("{CATALOG_PATH} lists {} twice", entry.id));
-            }
+        let embedders = match root.get("embedders") {
+            None => Vec::new(),
+            Some(list) => list
+                .as_array()
+                .ok_or(format!("{CATALOG_PATH}: embedders is not a list"))?
+                .iter()
+                .map(EmbedderPin::from_json)
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        // One id is one file, whichever list names it.
+        let mut ids = models
+            .iter()
+            .map(|e| &e.id)
+            .chain(embedders.iter().map(|e| &e.id));
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(id) = ids.find(|id| !seen.insert(*id)) {
+            return Err(format!("{CATALOG_PATH} lists {id} twice"));
         }
         let default = root["default"].as_str().unwrap_or_default().to_string();
-        let catalog = Self { default, models };
+        let catalog = Self {
+            default,
+            models,
+            embedders,
+        };
         if let Some(why) = catalog.get(&catalog.default)?.not_runnable() {
             return Err(format!("{CATALOG_PATH}: the default model must run: {why}"));
         }
@@ -246,6 +321,37 @@ mod tests {
                 .unwrap_err()
                 .contains("qwen3-0.6b")
         );
+    }
+
+    /// ADR 0013 section 4's model, as S13-3 measured it; never a chat model.
+    #[test]
+    fn the_catalog_pins_searchs_embedder_apart_from_the_chat_models() {
+        let catalog = Catalog::load().unwrap();
+        let [pin] = catalog.embedders.as_slice() else {
+            panic!("one embedder, not {:?}", catalog.embedders);
+        };
+        assert_eq!(pin.id, "qwen3-embedding-0.6b");
+        assert_eq!(pin.license, "Apache-2.0");
+        assert_eq!(pin.dims, 256);
+        assert_eq!(pin.size, 639_150_592);
+        assert_eq!(
+            pin.sha256,
+            "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439"
+        );
+        assert_eq!(
+            resolve_url(&pin.repo, &pin.revision, &pin.file),
+            "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/\
+             370f27d7550e0def9b39c1f16d3fbaa13aa67728/Qwen3-Embedding-0.6B-Q8_0.gguf"
+        );
+        assert!(catalog.get(&pin.id).is_err());
+        assert!(catalog.runnable().all(|e| e.id != pin.id));
+        let mut root: Value = serde_json::from_str(CATALOG).unwrap();
+        root["embedders"][0]["revision"] = json!("main");
+        assert!(Catalog::parse(&root.to_string()).is_err());
+        root["embedders"][0] = root["models"][0].clone();
+        root["embedders"][0]["dims"] = json!(256);
+        let twice = Catalog::parse(&root.to_string()).unwrap_err();
+        assert!(twice.contains("twice"), "{twice}");
     }
 
     #[test]

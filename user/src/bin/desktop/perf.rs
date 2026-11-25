@@ -60,6 +60,26 @@ const WARM_MAX: u64 = 4 * NS_PER_MS;
 const COLD_MAX: u64 = 30 * NS_PER_MS;
 const KEY_P99: u64 = 8 * NS_PER_MS;
 const LOADED_P99: u64 = 16_700_000;
+/// S05-1's allowance for a screen bigger than 1920x1080 (2560x1440): every
+/// figure that grows with the screen within this many tenths of its budget.
+const BIG_SCREEN_TENTHS: u64 = 18;
+
+/// `base`, S05-1's budget at 1920x1080, for this screen: the same budget up
+/// to 1920 wide, 1.8 times it above. The text page (c) does not grow with the
+/// screen and keeps its own.
+fn budget(screen: &Screen, base: u64) -> u64 {
+    match screen.info.width > 1920 {
+        true => base * BIG_SCREEN_TENTHS / 10,
+        false => base,
+    }
+}
+
+/// The screen's size in physical px, as a figure's name says it: at a scale
+/// above 1.0 the desk is composed smaller and resampled, so the size that
+/// counts is the screen's.
+fn size(screen: &Screen) -> String {
+    format!("{}x{}", screen.info.width, screen.info.height)
+}
 
 #[derive(Default)]
 pub struct Perf {
@@ -117,7 +137,7 @@ pub fn request(state: &mut State, screen: &Screen, bytes: &[u8], pid: u64) -> Op
             Vec::from([line(
                 "(e) key to flush",
                 &keys.unwrap_or_default(),
-                KEY_P99,
+                budget(screen, KEY_P99),
                 Pick::P99,
             )])
         }
@@ -146,11 +166,10 @@ pub fn request(state: &mut State, screen: &Screen, bytes: &[u8], pid: u64) -> Op
 fn scenes(state: &mut State, screen: &Screen, frames: usize) -> Vec<String> {
     let mut lines = Vec::new();
     let full = full_frames(state, screen, frames);
-    let size = format!("{}x{}", state.width, state.height);
     lines.push(line(
-        &format!("(a) full composite at {size}"),
+        &format!("(a) full composite at {}", size(screen)),
         &full,
-        FULL_P99,
+        budget(screen, FULL_P99),
         Pick::P99,
     ));
     lines.extend(drag(state, screen, "(b) drag", false));
@@ -178,11 +197,13 @@ fn open(state: &mut State, screen: &Screen, frames: usize) -> String {
         return format!("(g): Start open {start}, the pane open {pane}: not both");
     }
     let full = full_frames(state, screen, frames);
-    let size = format!("{}x{}", state.width, state.height);
     line(
-        &format!("(g) full composite with Start and the pane open at {size}"),
+        &format!(
+            "(g) full composite with Start and the pane open at {}",
+            size(screen)
+        ),
         &full,
-        FULL_P99,
+        budget(screen, FULL_P99),
         Pick::P99,
     )
 }
@@ -234,16 +255,21 @@ fn drag(state: &mut State, screen: &Screen, name: &str, total: bool) -> Vec<Stri
     pointer(state, screen, Kind::Button, 1, 0);
     let _ = frame(state, screen);
     if total {
-        return Vec::from([line(name, &both, LOADED_P99, Pick::P99)]);
+        return Vec::from([line(name, &both, budget(screen, LOADED_P99), Pick::P99)]);
     }
     Vec::from([
         line(
             &format!("{name} render"),
             &render,
-            DRAG_RENDER_P99,
+            budget(screen, DRAG_RENDER_P99),
             Pick::P99,
         ),
-        line(&format!("{name} flush"), &flush, DRAG_FLUSH_P99, Pick::P99),
+        line(
+            &format!("{name} flush"),
+            &flush,
+            budget(screen, DRAG_FLUSH_P99),
+            Pick::P99,
+        ),
     ])
 }
 

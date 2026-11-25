@@ -15,10 +15,10 @@
 //! the IPC lock, and only then call `wake`. When a server dies, calls it had taken
 //! fail at once and queued ones wait for the next instance.
 
+use crate::handle::Moving;
 use crate::process::{self, MAX_PROCESSES, Name, uaccess};
 use crate::{hpet, log, threads};
 use alloc::vec::Vec;
-use captable::Entry;
 use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 use kabi::{Error, MAX_MESSAGE};
 use sched::Tid;
@@ -46,7 +46,12 @@ pub enum CallError {
     Unavailable,
     /// Too many calls in flight.
     Busy,
+    /// No server took it before its deadline: it never ran, so it may be
+    /// tried again.
     TimedOut,
+    /// Its server took it and gave no reply by the deadline: it may have run,
+    /// or still run (audit K #19).
+    Unanswered,
     /// The service died while handling the call.
     ServiceDied,
     /// The caller gave up (killed, or Ctrl-C).
@@ -62,7 +67,7 @@ pub struct Extra {
     pub badge: u64,
     pub rights: u32,
     /// Handles moved with the request, already out of the caller's table.
-    pub handles: Vec<Entry>,
+    pub handles: Moving,
 }
 
 struct Endpoint {
@@ -85,7 +90,7 @@ struct Call {
     taker: u64,
     extra: Extra,
     /// Handles moved with the reply, already out of the server's table.
-    reply_handles: Vec<Entry>,
+    reply_handles: Moving,
 }
 
 struct Ipc {
@@ -108,6 +113,46 @@ static REPLIES_TO_PROCESSES: [AtomicU64; MAX_ENDPOINTS] =
     [const { AtomicU64::new(0) }; MAX_ENDPOINTS];
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+/// The last call's legs, for `test=ipc-rtt`'s breakdown: when it was queued,
+/// taken by its server and answered (HPET ns), and the CPU each happened on.
+/// Recorded only while that case has them [`on`], so no other boot pays an
+/// HPET read on its calls; read only there, where nothing else calls.
+pub mod legs {
+    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    static ON: AtomicBool = AtomicBool::new(false);
+
+    /// Starts or stops recording.
+    pub fn on(record: bool) {
+        ON.store(record, Ordering::Relaxed);
+    }
+
+    static AT: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+    static CPU: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+
+    /// A call's three moments, in order.
+    #[derive(Clone, Copy)]
+    pub enum Leg {
+        Queued = 0,
+        Taken = 1,
+        Replied = 2,
+    }
+
+    pub(super) fn mark(leg: Leg) {
+        if !ON.load(Ordering::Relaxed) {
+            return;
+        }
+        AT[leg as usize].store(crate::hpet::nanos(), Ordering::Relaxed);
+        CPU[leg as usize].store(crate::percpu::index() as u64, Ordering::Relaxed);
+    }
+
+    /// The last call's three times and CPUs.
+    pub fn last() -> ([u64; 3], [u64; 3]) {
+        let read = |a: &[AtomicU64; 3]| core::array::from_fn(|i| a[i].load(Ordering::Relaxed));
+        (read(&AT), read(&CPU))
+    }
+}
+
 fn with_ipc<R>(f: impl FnOnce(&mut Ipc) -> R) -> R {
     threads::preempt_disable();
     let result = f(&mut IPC.lock());
@@ -118,6 +163,14 @@ fn with_ipc<R>(f: impl FnOnce(&mut Ipc) -> R) -> R {
 fn wake(tid: Option<Tid>) {
     if let Some(tid) = tid {
         interrupts::without_interrupts(|| threads::wake(tid));
+    }
+}
+
+/// Wakes a waiting server for a caller that waits for its reply next: pulled
+/// onto the caller's CPU when it can be (`threads::wake_here`).
+fn wake_here(tid: Option<Tid>) {
+    if let Some(tid) = tid {
+        interrupts::without_interrupts(|| threads::wake_here(tid));
     }
 }
 
@@ -301,13 +354,28 @@ pub fn submit(
     submit_with(name, request, caller_pid, deadline_ns, Extra::default())
 }
 
-/// [`submit`], with what a handle call carries.
+/// [`submit`], with what a handle call carries: for a caller that goes on
+/// running (CALL_SUBMIT), so the server is woken where it is.
 pub(crate) fn submit_with(
     name: &str,
     request: &[u8],
     caller_pid: u64,
     deadline_ns: u64,
     extra: Extra,
+) -> Result<Pending, CallError> {
+    queue(name, request, caller_pid, deadline_ns, extra, false)
+}
+
+/// Queues the call and wakes its server if it waits: onto this CPU when
+/// `waits`, the caller waiting for the reply next, so the two pass the CPU
+/// between them with no reschedule interrupt.
+fn queue(
+    name: &str,
+    request: &[u8],
+    caller_pid: u64,
+    deadline_ns: u64,
+    extra: Extra,
+    waits: bool,
 ) -> Result<Pending, CallError> {
     if request.len() > MAX_MESSAGE {
         return Err(CallError::TooBig);
@@ -338,8 +406,9 @@ pub(crate) fn submit_with(
             deadline_ns,
             taker: 0,
             extra,
-            reply_handles: Vec::new(),
+            reply_handles: Moving::none(),
         });
+        legs::mark(legs::Leg::Queued);
         CALL_STATE[slot].store(QUEUED, Ordering::SeqCst);
         PENDING[endpoint].fetch_add(1, Ordering::SeqCst);
         let server = ipc.endpoints[endpoint]
@@ -347,7 +416,10 @@ pub(crate) fn submit_with(
             .and_then(|e| e.waiting.take());
         Ok((slot, server))
     })?;
-    wake(server);
+    match waits {
+        true => wake_here(server),
+        false => wake(server),
+    }
     Ok(Pending { slot })
 }
 
@@ -359,7 +431,7 @@ pub fn finish(pending: Pending) -> Result<(Vec<u8>, u64), CallError> {
 }
 
 /// [`finish`], with the handles the reply moved.
-pub(crate) fn finish_with(pending: Pending) -> Result<(Vec<u8>, u64, Vec<Entry>), CallError> {
+pub(crate) fn finish_with(pending: Pending) -> Result<(Vec<u8>, u64, Moving), CallError> {
     let slot = pending.slot;
     let (call, state) = with_ipc(|ipc| {
         let call = ipc.calls[slot].take();
@@ -389,6 +461,7 @@ pub(crate) fn finish_with(pending: Pending) -> Result<(Vec<u8>, u64, Vec<Entry>)
         // Failed before any server took it: its deadline passed in the queue.
         (Some(call), FAILED) if call.taker == 0 => Err(CallError::TimedOut),
         (_, FAILED) => Err(CallError::ServiceDied),
+        (Some(_), TAKEN) => Err(CallError::Unanswered),
         _ => Err(CallError::TimedOut),
     }
 }
@@ -433,7 +506,7 @@ pub fn call_with(
     deadline_ns: u64,
     cancel: impl Fn() -> bool,
     extra: Extra,
-) -> Result<(Vec<u8>, u64, Vec<Entry>), CallError> {
+) -> Result<(Vec<u8>, u64, Moving), CallError> {
     call_with_stop(
         name,
         request,
@@ -458,13 +531,14 @@ pub fn call_with_stop(
     cancel: impl Fn() -> bool,
     stop: impl Fn() -> bool,
     extra: Extra,
-) -> Result<(Vec<u8>, u64, Vec<Entry>), CallError> {
+) -> Result<(Vec<u8>, u64, Moving), CallError> {
     // Already stopped: nothing is sent, since a server on another CPU could take
     // it before the first check below (#887's second review).
     if stop() {
         return Err(CallError::Cancelled);
     }
-    let mut pending = submit_with(name, request, caller_pid, deadline_ns, extra)?;
+    // The caller waits for the reply from here: its server comes to this CPU.
+    let mut pending = queue(name, request, caller_pid, deadline_ns, extra, true)?;
     // Set once a Stop found the call taken: from then on only its reply, its
     // deadline or `cancel()` ends the wait.
     let mut taken_at_stop = false;
@@ -484,7 +558,7 @@ pub fn call_with_stop(
     }
     let cancelled = !pending.done() && cancel();
     match finish_with(pending) {
-        Err(CallError::TimedOut) if cancelled => Err(CallError::Cancelled),
+        Err(CallError::TimedOut | CallError::Unanswered) if cancelled => Err(CallError::Cancelled),
         other => other,
     }
 }
@@ -655,6 +729,7 @@ pub fn recv_with(
                         call.taker = me.pid;
                         extra = core::mem::take(&mut call.extra);
                     }
+                    legs::mark(legs::Leg::Taken);
                     CALL_STATE[c].store(TAKEN, Ordering::SeqCst);
                     PENDING[endpoint].fetch_sub(1, Ordering::SeqCst);
                     if let Some(entry) = ipc.endpoints[endpoint].as_mut() {
@@ -721,7 +796,7 @@ pub fn recv_with(
 
 /// The `svc_reply` system call: answers the call taken by the last `svc_recv`.
 pub fn reply(slot: usize, ptr: u64, len: u64) -> Result<u64, Error> {
-    reply_with(slot, ptr, len, Vec::new())
+    reply_with(slot, ptr, len, Moving::none())
 }
 
 /// The caller of the call this process took and has not answered: its pid (0 for
@@ -741,7 +816,7 @@ pub fn current_caller(slot: usize) -> Result<u64, Error> {
 }
 
 /// [`reply`], moving `handles` (already out of the server's table) to the caller.
-pub fn reply_with(slot: usize, ptr: u64, len: u64, handles: Vec<Entry>) -> Result<u64, Error> {
+pub fn reply_with(slot: usize, ptr: u64, len: u64, handles: Moving) -> Result<u64, Error> {
     let len = usize::try_from(len).map_err(|_| Error::TooBig)?;
     if len > MAX_MESSAGE {
         return Err(Error::TooBig);
@@ -764,6 +839,7 @@ pub fn reply_with(slot: usize, ptr: u64, len: u64, handles: Vec<Entry>) -> Resul
         }
         call.reply = reply;
         call.reply_handles = handles;
+        legs::mark(legs::Leg::Replied);
         CALL_STATE[c].store(REPLIED, Ordering::SeqCst);
         Ok(call.caller)
     })?;
@@ -795,11 +871,13 @@ pub fn call_open(c: usize, id: u64) -> bool {
 /// A process died: unbind its endpoints and fail the calls it had taken.
 pub fn on_process_exit(pid: u64) {
     let mut callers = [None; MAX_CALLS];
+    let mut unbound = [false; MAX_ENDPOINTS];
     with_ipc(|ipc| {
         for (index, slot) in ipc.endpoints.iter_mut().enumerate() {
             let Some(endpoint) = slot.as_mut().filter(|e| e.server_pid == pid) else {
                 continue;
             };
+            unbound[index] = true;
             endpoint.server_pid = 0;
             endpoint.waiting = None;
             BOUND[index].store(0, Ordering::SeqCst);
@@ -810,6 +888,15 @@ pub fn on_process_exit(pid: u64) {
                 && CALL_STATE[c]
                     .compare_exchange(TAKEN, FAILED, Ordering::SeqCst, Ordering::SeqCst)
                     .is_ok()
+            {
+                callers[c] = Some(call.caller);
+            }
+            // A call still queued for it stays queued for its next instance,
+            // but its caller wakes to ask its own `cancel` again: APP_CTL's
+            // ends once the app is gone, not at its deadline (#1164's review).
+            if let Some(call) = call.as_ref()
+                && CALL_STATE[c].load(Ordering::SeqCst) == QUEUED
+                && unbound[call.endpoint]
             {
                 callers[c] = Some(call.caller);
             }
