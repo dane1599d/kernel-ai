@@ -100,7 +100,18 @@ fn plain(path: &str) -> bool {
             .all(|part| !part.is_empty() && part != "." && part != "..")
 }
 
+/// As the shell's ceiling reads it: empty and `.` parts dropped (H2-8), never a
+/// leading `/`.
 fn path_in(folders: &[String], path: &str) -> bool {
+    if path.starts_with('/') {
+        return false;
+    }
+    let path = path
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect::<Vec<_>>()
+        .join("/");
+    let path = path.as_str();
     plain(path)
         && folders
             .iter()

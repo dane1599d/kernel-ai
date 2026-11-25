@@ -435,3 +435,67 @@ fn goal_ids_are_never_used_twice_after_a_restart() {
     let set = shell.eval(&format!("answer {id} allow once={once}"));
     assert!(set.text.starts_with("Goal 2 set"), "{set:?}");
 }
+
+/// H2-7: the shell stamps a goal in the boot's ms, and the goals agent runs it
+/// in the same ms (`goalcore::now_ms`). Run against wall-clock ms instead, as
+/// the agent did, the goal was over its wall budget at its first turn and no
+/// step ever ran.
+#[test]
+fn a_goal_the_shell_sets_runs_its_first_step_on_the_agents_clock() {
+    use goalcore::runner::{Event, Outcome, Parts, Plan, Planner, Runner, Steps};
+    use goalcore::{Door, Goal, Presence, Step, StepDone, Tier};
+    struct OneStep;
+    impl Planner<()> for OneStep {
+        fn next(&mut self, _goal: &Goal, _now: u64) -> (Plan<()>, u64) {
+            let step = Step {
+                row: String::from("fs_list"),
+                targets: alloc::vec![String::from("notes/q3")],
+                tokens_est: 0,
+                call: (),
+            };
+            (Plan::Step(step), 0)
+        }
+    }
+    struct InCeiling;
+    impl Door<()> for InCeiling {
+        fn tier(&self, _step: &Step<()>) -> Tier {
+            Tier::Run
+        }
+    }
+    struct Ran;
+    impl Steps<()> for Ran {
+        fn run(&mut self, _goal: u64, _step: &Step<()>) -> Outcome {
+            Outcome::Done(StepDone {
+                entry: Some(9),
+                tokens: 0,
+                failed: None,
+            })
+        }
+    }
+    let turn = |file: &str, now: u64| {
+        let mut goals = goalcore::Goals::parse(file).unwrap();
+        let mut parts = Parts {
+            planner: &mut OneStep,
+            door: &InCeiling,
+            steps: &mut Ran,
+        };
+        Runner::new().turn(&mut goals, now, Presence::Here, &mut parts)
+    };
+    let (host, mut shell) = with_goal();
+    // Ten minutes after boot, on a machine whose firmware gave the date.
+    host.clock.set(600_000_000_000);
+    host.wall_clock.set(Some(1_790_000_000));
+    let next = goals_step(&mut shell, "next");
+    let file = next.split_once('\n').unwrap().1;
+    let events = turn(file, goalcore::now_ms(host.clock.get()));
+    assert!(
+        matches!(events.as_slice(), [Event::Ran { goal: 1, .. }]),
+        "{events:?}"
+    );
+    // The agent's old clock, wall-clock ms: paused before any step.
+    let events = turn(file, 1_790_000_000 * 1000);
+    assert!(
+        events.iter().any(|e| matches!(e, Event::Paused { .. })),
+        "{events:?}"
+    );
+}

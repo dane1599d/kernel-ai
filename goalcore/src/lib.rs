@@ -97,6 +97,17 @@ pub const MAX_STEPS: u32 = 64;
 pub const MAX_TOKENS: u64 = 10_000_000;
 /// Longest a goal may take: 30 days.
 pub const MAX_WALL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
+/// The time every goal time is counted in, in ms, from the boot clock's `ns`
+/// (`sys::time_ns`, the shell's `now_ns`): the shell stamps a goal's made,
+/// started and deadline times with it, and the goals agent runs the goal
+/// against it. Goals live in RAM only, so the boot's time is enough, and one
+/// base for both sides is what keeps a goal's wall budget and deadline in step
+/// (H2-7: the agent counted in wall-clock ms, so every goal set by the shell
+/// was over its budget at its first turn).
+pub fn now_ms(boot_ns: u64) -> u64 {
+    boot_ns / 1_000_000
+}
+
 /// Most steps one goal's log holds; a goal that reaches it takes no more.
 pub const MAX_LOG: usize = 128;
 /// Goals kept, finished ones included: forget one to make room.

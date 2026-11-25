@@ -192,7 +192,7 @@ impl Shell {
     ) -> Result<goalcore::Spec, String> {
         let text = value(values, "text").unwrap_or_default().trim().to_string();
         let number = |arg: &str| value(values, arg).and_then(|v| v.parse::<u64>().ok());
-        let now = self.host.now_ns() / 1_000_000;
+        let now = goalcore::now_ms(self.host.now_ns());
         let by_ms = match value(values, "by") {
             Some(by) => Some(now + crate::goalscope::duration_ms(by)?),
             None => None,
@@ -348,7 +348,7 @@ asked first: a goal row always asks",
         }
         // The folders the card counted, with the ceiling: one value.
         self.roster.keep_goal_folders(goal, &spec.scope.folders);
-        let now = self.host.now_ns() / 1_000_000;
+        let now = goalcore::now_ms(self.host.now_ns());
         let file = match goal_file(goal, spec.clone(), now) {
             Ok(file) => file,
             Err(why) => {

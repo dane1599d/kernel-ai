@@ -410,6 +410,34 @@ impl Goal {
         Ok(Verdict::Run)
     }
 
+    /// An ask the agent has no way to put to the person: a step outside the
+    /// scope, or one that waits for the person to be here, when the agent's
+    /// only answer path is the shell's card (H2-8). The step is held, never run;
+    /// the goal pauses as the person's own pause, with why as what comes next,
+    /// so their resume plans it again and the goal holds no active place
+    /// meanwhile. A planner's question is kept as the question. The line to
+    /// tell the person, or `None` if the goal waits on nothing.
+    pub fn park_ask(&mut self) -> Option<String> {
+        if self.state != State::Waiting {
+            return None;
+        }
+        let ask = self.waiting.take()?;
+        let next = match ask.proposal {
+            Some(_) => {
+                if let Some(step) = self.last_step() {
+                    step.status = StepStatus::Held;
+                    step.note = valid::clean(&ask.why);
+                }
+                format!("not run, so it paused: {}", ask.why)
+            }
+            None => format!("waits for your answer: {}", ask.why),
+        };
+        let planned = self.planned;
+        self.plan(planned, &next);
+        self.state = State::Paused(Pause::User);
+        Some(self.next.clone())
+    }
+
     /// The person said no to the step that waits: it is dropped, and the goal is
     /// free to propose another. Only the trusted path's answer may call it, as
     /// for [`Goal::approve`].
