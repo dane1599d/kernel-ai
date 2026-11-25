@@ -133,9 +133,14 @@ pub fn installed() -> (PolicySpec, Vec<u64>) {
 }
 
 /// Whether `pid` may be labelled background: a live process that is not a
-/// protected service.
+/// protected service, and that the profile floors let run background (never
+/// `desktop`, never a holder of a system capability), as PROC_CLASS_SET checks.
 pub fn labelable(pid: u64) -> bool {
-    process::name_of(pid).is_some_and(|(name, supervisor)| !supervisor && !protected(&name))
+    let (Some((name, supervisor)), Some(caps)) = (process::name_of(pid), process::caps_of(pid))
+    else {
+        return false;
+    };
+    !supervisor && !protected(&name) && process::profile::may_be_background(name.as_str(), caps)
 }
 
 fn protected(name: &Name) -> bool {

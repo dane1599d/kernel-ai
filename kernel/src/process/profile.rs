@@ -41,6 +41,14 @@ fn floored(name: &str) -> bool {
     FLOORED.contains(&name)
 }
 
+/// Whether the floors let process `name`, holding `caps`, run `background`:
+/// never a floored service, never a system service. Both doors to the labels
+/// ask: PROC_CLASS_SET here, and a trial's labels (SCHED_TRIAL) through
+/// `sched_control::labelable`.
+pub fn may_be_background(name: &str, caps: u64) -> bool {
+    !floored(name) && caps & SYSTEM_CAPS == 0
+}
+
 /// PROC_QUOTA_SET: process `pid`'s page quota becomes `pages`; the old one.
 /// Pages it holds past a lower quota stay: its next allocation fails instead.
 pub fn quota_set(pid: u64, pages: u64) -> Result<u64, Error> {
@@ -105,7 +113,7 @@ pub fn class_set(pid: u64, class: u64) -> Result<u64, Error> {
             .map(|p| (p.name, p.limits.caps))
     })
     .ok_or(Error::NotFound)?;
-    if background && (floored(name.as_str()) || caps & SYSTEM_CAPS != 0) {
+    if background && !may_be_background(name.as_str(), caps) {
         return Err(Error::Permission);
     }
     sched_control::label(pid, background)?;

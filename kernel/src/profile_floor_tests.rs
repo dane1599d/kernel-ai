@@ -11,6 +11,8 @@
 //!   exactly is taken;
 //! - system services' CPU share: a service holding TERM made background, where
 //!   an app holding none is.
+//! - the same floors for a trial's labels (SCHED_TRIAL): neither `desktop` nor
+//!   the TERM holder may be labelled, where the app may.
 
 use crate::desk_tests::{desktop_shows, wait};
 use crate::process::{self, SpawnRequest};
@@ -18,6 +20,7 @@ use crate::{hpet, ipc, log, memory, sched_control};
 use alloc::format;
 use alloc::string::String;
 use kabi::{ExitReason, Limits, cap};
+use sched::spec::{PolicyKind, PolicySpec, Preset};
 
 /// The plan line this case adds: `desktop`, a floored service.
 pub const PLAN: &str = crate::desk_tests::BOOT_PLAN;
@@ -179,6 +182,23 @@ fn floors(app: u64, service: u64) -> Result<(), &'static str> {
     }
     log!(
         "desk-profile-floor: system services' CPU share: a service holding TERM was not made background, and an app was"
+    );
+    // A trial's labels (SCHED_TRIAL) meet the same floors.
+    let desktop = pid_of("desktop")?;
+    let classes = PolicySpec::new(PolicyKind::Classes, Preset::Gentle);
+    let trial_refuses = |pid: u64| {
+        !sched_control::labelable(pid) && sched_control::calls::check(classes, app, &[pid]).is_err()
+    };
+    if !trial_refuses(desktop) || !trial_refuses(service) {
+        return Err("desk-profile-floor: a trial could label a floored or system service");
+    }
+    if !sched_control::labelable(app)
+        || sched_control::calls::check(classes, desktop, &[app]).is_err()
+    {
+        return Err("desk-profile-floor: a trial could not label an app");
+    }
+    log!(
+        "desk-profile-floor: a trial's labels meet the same floors: desktop and a service holding TERM were refused, and an app was not"
     );
     Ok(())
 }
