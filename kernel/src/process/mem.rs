@@ -100,13 +100,22 @@ pub fn release(slot: usize, addr: u64) -> Result<u64, Error> {
     frames
         .try_reserve_exact(crate::memory::user::release_frames(pages) as usize)
         .map_err(|_| Error::NoMemory)?;
-    let (cr3, tables) = {
+    // Preemption stays off from the unmap through the shootdown: moved to
+    // another CPU between the local flush and the choice of whom to send it
+    // to, this thread would skip a CPU still holding the range (audit K #27).
+    crate::threads::preempt_disable();
+    let taken = {
         let mut guard = lock_space(slot);
-        let space = guard.as_mut().ok_or(Error::Dead)?;
-        let tables = memory::with(|m| m.take_owned_range(space, addr, pages, &mut frames));
-        (space.cr3(), tables)
+        guard.as_mut().map(|space| {
+            let tables = memory::with(|m| m.take_owned_range(space, addr, pages, &mut frames));
+            (space.cr3(), tables)
+        })
     };
-    smp::tlb_shootdown_range(&[cr3], addr, pages);
+    if let Some((cr3, _)) = taken {
+        smp::tlb_shootdown_range(&[cr3], addr, pages);
+    }
+    crate::threads::preempt_enable();
+    let (_, tables) = taken.ok_or(Error::Dead)?;
     memory::with(|m| m.free_user_frames(&frames));
     if let Some(space) = lock_space(slot).as_mut() {
         space.reservations.end_release(addr);

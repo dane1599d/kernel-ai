@@ -48,6 +48,7 @@ fn paint_in(
         chat: &crate::chat::Chat::default(),
         start: None,
         ask: None,
+        preview: None,
         now_ms: 4_200,
     };
     painter.paint(
@@ -114,6 +115,7 @@ fn the_boot_desk_matches_desk_boot_s_golden() {
         chat: &crate::chat::Chat::default(),
         start: None,
         ask: None,
+        preview: None,
         now_ms: 0,
     };
     painter.paint(&mut canvas, all, &scene, &mut |_, _, _| false);
@@ -161,6 +163,7 @@ fn an_ask_card_paints_above_a_window() {
         chat: &crate::chat::Chat::default(),
         start: None,
         ask: Some(&card),
+        preview: None,
         now_ms: 3_000,
     };
     painter.paint(

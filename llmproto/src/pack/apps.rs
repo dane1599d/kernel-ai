@@ -39,15 +39,31 @@ pub fn line(group: &AppGroup) -> String {
     line
 }
 
+/// `text`'s tokens with no tokenizer at hand: the pack's bytes estimate, or
+/// one that counts every digit and short word as Qwen3's pre-tokenizer splits
+/// them (`crate::tune::estimate_tokens`), whichever is more. An app's row names
+/// are its own choice: `ab_1c2d3e4f` is a token a character, three times the
+/// bytes estimate. Only the real tokenizer bounds every name ([`turn_counted`]).
+pub fn estimate(text: &str) -> usize {
+    estimate_tokens(text).max(crate::tune::estimate_tokens(text))
+}
+
 /// The apps turn for `groups`, and the apps left out of it: those whose line
-/// would take it past [`APPS_BUDGET`], and those with no rows. "" for none.
+/// would take it past [`APPS_BUDGET`] by [`estimate`], and those with no rows.
+/// "" for none.
 pub fn turn(groups: &[AppGroup]) -> (String, Vec<String>) {
+    turn_counted(groups, estimate)
+}
+
+/// [`turn`], with `count` giving each text's tokens: llm counts with the
+/// model's own tokenizer, so no row name passes the budget however it splits.
+pub fn turn_counted(groups: &[AppGroup], count: impl Fn(&str) -> usize) -> (String, Vec<String>) {
     let mut text = String::from(APPS_HEADING);
     let mut shown = 0;
     let mut left_out = Vec::new();
     for group in groups {
         let line = line(group);
-        if group.rows.is_empty() || estimate_tokens(&text) + estimate_tokens(&line) > APPS_BUDGET {
+        if group.rows.is_empty() || count(&text) + count(&line) > APPS_BUDGET {
             left_out.push(group.app.clone());
             continue;
         }

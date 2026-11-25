@@ -5,11 +5,30 @@
 # always green. $T/kill-on-ready and $T/kill-on-merged kill the batch-ff.sh in
 # $T/ffpid once, at `gh pr ready` (before the fast-forward) or at the first
 # MERGED answer (after it), as a PC stop would; $T/list-fails fails the
-# open-PR listing.
+# open-PR listing. While the batch branch holds every head on a line of
+# $T/fail-with, CI fails and its log is $T/compile.log (a batch that does not
+# compile; two heads on a line are two PRs that clash only together). At the
+# Nth wait for a batch's CI, $T/on-ci-wait-N runs once (a lane acting while CI
+# runs).
 T=${STUB_T:?}
 echo "gh $*" >> "$T/gh.log"
 a="$*"
 pr() { cat "$T/prs/$1/$2" 2>/dev/null; }
+compile_fails() {
+  local b line s all
+  [ -f "$T/fail-with" ] || return 1
+  for b in $(git -C "$T/origin.git" for-each-ref --format='%(refname)' refs/heads/batch/); do
+    while read -r line; do
+      all=1
+      for s in $line; do
+        git -C "$T/origin.git" merge-base --is-ancestor "$s" "$b" 2>/dev/null || all=""
+      done
+      [ -n "$all" ] && return 0
+    done < "$T/fail-with"
+  done
+  return 1
+}
+[ "$1 $2" = "run view" ] && compile_fails && CI_RESULT=failure
 st() {
   local s
   s=$(pr $1 state)
@@ -38,7 +57,8 @@ case "$1 $2" in
         for d in "$T"/prs/*; do n=$(basename "$d"); [ "$(st $n)" = OPEN ] || continue
           h=$(git -C "$T/origin.git" rev-parse --verify -q "refs/heads/$(pr $n branch)" || pr $n sha)
           r=false; grep -qx batch-ready "$d/labels" && r=true
-          echo "$n $(pr $n branch) $h $r false"; done;;
+          f=false; grep -qx batch-first "$d/labels" && f=true
+          echo "$n $(pr $n branch) $h $r $f"; done;;
       *"number,headRefOid"*)
         for d in "$T"/prs/*; do n=$(basename "$d"); [ "$(st $n)" = OPEN ] || continue
           echo "$n $(git -C "$T/origin.git" rev-parse --verify -q "refs/heads/$(pr $n branch)" || pr $n sha)"; done;;
@@ -50,17 +70,24 @@ case "$1 $2" in
   "pr ready"|"pr close"|"pr comment"|"run cancel"|"run rerun") :;;
   "run list")
     case "$a" in
-      *ci.yml*) echo "123 completed";;
+      *ci.yml*)
+        n=$(( $(cat "$T/ci-waits" 2>/dev/null || echo 0) + 1 )); echo $n > "$T/ci-waits"
+        [ -f "$T/on-ci-wait-$n" ] && bash "$T/on-ci-wait-$n"
+        echo "123 completed";;
       *fluency-model*) echo "456 completed";;
+      # cleanup's listing of the batch branch's unfinished runs.
+      *"--limit 10"*) echo 789;;
       *"--limit 30"*)
         [ -f "$T/others-fail" ] && exit 1
         if [ -f "$T/others" ]; then cat "$T/others"; else echo "DCO=success"; fi;;
     esac;;
   "run view")
     case "$a" in
-      *--log-failed*) cat "$T/failed.log" 2>/dev/null;;
+      *--log-failed*) if compile_fails; then cat "$T/compile.log"; else cat "$T/failed.log" 2>/dev/null; fi;;
       *--log*) cat "$T/fluency.log";;
-      *) for j in "Format, lint" "Boot test (kvm, shard 1)" "Boot test (kvm, shard 2)" "Boot test (kvm, shard 3)" "Boot test (tcg, shard 1)" "Boot test (tcg, shard 2)" "Boot test (tcg, shard 3)" "Observe determinism 1" "Observe determinism 2" "Observe determinism 3"; do echo "$j=${CI_RESULT:-success}"; done;;
+      # CI_SKIP_BOOT: the boot jobs skipped, as CI skips them for a no-boot batch.
+      *) for j in "Format, lint" "Boot test (kvm, shard 1)" "Boot test (kvm, shard 2)" "Boot test (kvm, shard 3)" "Boot test (tcg, shard 1)" "Boot test (tcg, shard 2)" "Boot test (tcg, shard 3)" "Boot test (tcg, shard 4)" "Observe determinism 1" "Observe determinism 2" "Observe determinism 3"; do
+           r=${CI_RESULT:-success}; [ -n "${CI_SKIP_BOOT:-}" ] && [ "$j" != "Format, lint" ] && r=skipped; echo "$j=$r"; done;;
     esac;;
   "workflow run") echo dispatched >> "$T/fluency-dispatches";;
   *) echo "stub gh: unhandled $a" >&2; exit 1;;

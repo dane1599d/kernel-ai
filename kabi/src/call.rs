@@ -18,15 +18,15 @@
 //! | 100-109 | P, packages (P2) | BOOT_READ, COMP_ADD, PKG_FETCH, PKG_TIME |
 //! | 110-119 | A-core | CLOCK_NOW |
 //! | 120-129 | model lane | |
-//! | 130-139 | D, drivers (ADR 0007) | RING_ATTACH, RING_NOTIFY, NOTIFY_WAIT, INPUT_PUSH |
+//! | 130-139 | D, drivers (ADR 0007) | RING_ATTACH, RING_NOTIFY, NOTIFY_WAIT, INPUT_PUSH; POWER_OFF 134 (K, ADR 0007 §8) |
 //! | 140-149 | C, components | EDIT_CALL (lane E), CARD_READY |
 //! | 150-159 | V, virtual machines (P6) | |
-//! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE, PROC_QUOTA_SET, PROC_CLASS_SET |
+//! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE, PROC_QUOTA_SET, PROC_CLASS_SET, PROC_ALIVE 166 |
 //! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET, TRUST_ROOT, TRUST_TIME |
 //! | 180-189 | G-core (P3), second block | ASK_READ, ASK_ANSWER, EVENT_POST, EVENT_READ, APP_CTL, APP_CALL |
 //! | 190-191 | S-io (P2), second block | PART_PEER_ALIVE, PART_PEER_NAME |
 //! | 192-199 | N, network (P5) | NET_CONNECT, NET_SEND, NET_RECV, NET_POLL, NET_CLOSE (task 2) |
-//! | 200-209 | K, second block | SHM_INFO |
+//! | 200-209 | K, second block | SHM_INFO; ENDPOINT_BADGE 201, PART_PEER_CAPS 202 (S-io) |
 
 /// `exit(code: i32) -> !`
 pub const EXIT: u64 = 0;
@@ -390,7 +390,10 @@ pub const ENTROPY_MAX: usize = 256;
 /// name under one of the record's host suffixes is looked up (Permission
 /// otherwise, and for a dotted address, which needs no lookup), so a name the
 /// app was not given never leaves in a query. The record keeps the addresses
-/// for its connects until their TTL runs out. Numbered at merge, K's block.
+/// for its connects until their TTL runs out. Addresses a
+/// name may not lead to (this machine, the link, a private network) are left
+/// out of the answer; Private when nothing else is left (Network stays a
+/// lookup that failed). Numbered at merge, K's block.
 pub const RESOLVE_ON: u64 = 84;
 /// `netdest_narrow(dest, spec_ptr, spec_len, rights) -> handle`: a new
 /// `NetDest` handle, with `rights` (each held by `dest`), to a new record that
@@ -407,6 +410,15 @@ pub const NETDEST_NARROW: u64 = 85;
 /// committed (`fs` makes each change durable before it answers). Numbered at
 /// merge, K's block (backlog item 13).
 pub const POWER_REBOOT: u64 = 86;
+/// `power_off() -> !`: turns the machine off through the firmware's
+/// ResetSystem (a shutdown), on the same rules as [`POWER_REBOOT`]: needs
+/// [`super::cap::POWER`] (Permission without it), Busy until this boot's
+/// lever has written its boot record and while `fs` holds a call. Where the
+/// firmware cannot turn it off (no runtime services, or ResetSystem returns),
+/// the console shows that it is safe to switch off and the machine halts. It
+/// does not return. ACPI's \_S5 (uACPI, S07-3) comes later, ahead of this
+/// fallback. Numbered at merge, D's block (ADR 0007 §8).
+pub const POWER_OFF: u64 = 134;
 /// `shell_interrupt() -> pid`: the person's Stop or Esc for the line the shell
 /// runs. The kernel marks the process named `shell` interrupted and wakes it. For
 /// the rest of the line, a call it makes ends Interrupted while no server has
@@ -572,6 +584,15 @@ pub const QUOTA_LOWER_ONLY: u64 = 1 << 0;
 /// shows it. Permission to make the shell, the supervisor, the model service or
 /// `desktop` background; Busy while a tuning trial runs. Needs SUPERVISE.
 pub const PROC_CLASS_SET: u64 = 164;
+/// `proc_alive(pid) -> 0|1`: whether a live process has `pid` (1) or none
+/// does any more (0); pid 0, the kernel, always runs, as for
+/// [`PART_PEER_ALIVE`]. For a holder of many clients' pids (`desktop`'s
+/// windows) to learn which have ended without a table of every process:
+/// needs [`super::cap::DISPLAY`] or [`super::cap::SUPERVISE`] (which LIST
+/// already needs), Permission otherwise, so no app watches when the person's
+/// processes start and end (ADR 0001). Numbered at merge, M's block; 165 is
+/// SHM_SIZE's (#1141).
+pub const PROC_ALIVE: u64 = 166;
 
 // ---- U, 170-179 ----
 
@@ -652,7 +673,9 @@ pub const EVENT_READ: u64 = 183;
 /// `app_suspend` and `app_resume` for a standing instruction after RULE_CHECK
 /// (P3 task 11), and the shell's keep-running switch (P3 task 12b): needs
 /// [`super::cap::SUPERVISE`]. Invalid for another verb; NotFound with no such
-/// service; TimedOut when it does not answer.
+/// service; TimedOut when the app did not take it within 5 s, and at once
+/// when the app's process ends with it still queued; Dead when it took it
+/// and did not answer, or died with it (it may have taken effect).
 pub const APP_CTL: u64 = 184;
 /// `app_call(name_ptr, name_len, req_ptr, req_len, buf, cap | wait_ms << 32) -> len`: the
 /// kernel sends `req`, a `kai-call 1`, a `kai-undo 1` or `kai-actions 1`, of at most
@@ -661,8 +684,10 @@ pub const APP_CTL: u64 = 184;
 /// the supervisor, which forwards the agent core's calls to apps' actions (P4,
 /// a v0.1 bridge until per-app routes): needs [`super::cap::SUPERVISE`].
 /// NotFound at once when no such app serves, so the supervisor can start it;
-/// Invalid for any other request; TimedOut when it does not answer within
-/// `wait_ms` (0, or more than 5,000, is 5,000).
+/// Invalid for any other request; TimedOut when no app took the call within
+/// `wait_ms` (0, or more than 5,000, is 5,000): it never ran, and may be sent
+/// again. Dead when the app took it and did not answer in that time, or died
+/// with it: it may have run, so it is not sent again.
 pub const APP_CALL: u64 = 185;
 
 // ---- S-io, second block, 190-191 ----
@@ -726,9 +751,27 @@ pub const CLOCK_NOW: u64 = 110;
 
 /// `shm_info(handle) -> pages`: how many pages the `Shm` the handle names
 /// holds, so a holder can check its size before it trusts a mapping (cc's
-/// request `Shm`, which a short one would fault it in). Needs INSPECT on the
-/// handle, which SHM_CREATE's handle carries.
+/// request `Shm`, which a short one would fault it in; audit G #7's
+/// receivers). Any handle to it will do, whatever its rights: the size of an
+/// object a holder can already name tells it nothing more. BadHandle for a
+/// handle that is not an open `Shm`.
 pub const SHM_INFO: u64 = 200;
+/// `endpoint_badge(handle, out) -> 0`: the badge and rights of a `Dir` or
+/// `File` handle on the caller's own endpoint, as [`ENDPOINT_MINT`] made it,
+/// written to `out` as two u64, the badge and then the rights: how `fs` reads
+/// the destination `Dir` a client moved to it with a Rename. Permission for a
+/// handle on another process's endpoint, or of another kind, so no one else
+/// learns a badge (ADR 0001); BadHandle for a handle that is not there, or a
+/// raw value past u32; Revoked for one whose grant was revoked.
+pub const ENDPOINT_BADGE: u64 = 201;
+/// `part_peer_caps(partition, pid) -> caps`: live process `pid`'s capability
+/// bits ([`super::cap`]), as its plan line gave them, read from the process
+/// table, for `fs`, which gives the person's own requests (the shell's, with
+/// [`super::cap::POLICY`]) their share of the space reserve by them, never by
+/// a name. Needs a `Partition` handle (any rights), so only `fs` can ask, as
+/// [`PART_PEER_NAME`]. NotFound when `pid` is not running; pid 0, the kernel,
+/// has none.
+pub const PART_PEER_CAPS: u64 = 202;
 
 /// The end of the reserved blocks (see the table above): the highest number a
 /// call may have. A call that is not there yet answers NotFound.

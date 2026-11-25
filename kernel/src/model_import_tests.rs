@@ -11,7 +11,6 @@
 
 use crate::{ipc, threads};
 use alloc::format;
-use alloc::vec::Vec;
 use fsproto::{How, Reply, Request};
 use kabi::handle::Rights;
 
@@ -55,7 +54,7 @@ fn opened(name: &str) -> bool {
     let extra = ipc::Extra {
         badge: kabi::fs::SYSTEM_UPDATES,
         rights: (Rights::READ | Rights::ENUMERATE).bits(),
-        handles: Vec::new(),
+        handles: crate::handle::Moving::none(),
     };
     let Ok((reply, _, _)) = ipc::call_with(SERVICE, &bytes, 0, deadline, || false, extra) else {
         return false;

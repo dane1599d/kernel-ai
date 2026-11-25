@@ -23,7 +23,7 @@
 
 use super::{Loaded, Next};
 use infer::chat::Step;
-use llmproto::act::{ActRequest, Call, History, Read};
+use llmproto::act::{ActRequest, Call, History};
 use llmproto::local::act::{self as local_act, Slots};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -32,8 +32,6 @@ use std::path::Path;
 
 /// Share of goals that must complete with at most one check-in: 14 of 20.
 pub const BAR: f64 = 0.7;
-/// The time llm gives one step.
-const TIMEOUT_MS: u64 = 60_000;
 /// The longest progress kept in the request: it and the goal fit act's 512-byte line.
 const PROGRESS_BYTES: usize = 300;
 
@@ -102,12 +100,16 @@ fn text_arg<'a>(call: &'a Call, key: &str) -> Option<&'a str> {
     call.arguments.get(key).and_then(Value::as_str)
 }
 
-fn path_arg(call: &Call, key: &str) -> Option<String> {
-    text_arg(call, key).map(|path| {
-        path.trim_start_matches("/home/user/")
+/// A path argument from the home folder: `~/`, `/home/user/` and `./` are home, so
+/// a path the model writes either way lies in the scope it names.
+pub(super) fn path_arg(call: &Call, key: &str) -> Option<String> {
+    text_arg(call, key).map(|path| match path.trim_end_matches('/') {
+        "~" | "/home/user" => String::new(),
+        path => path
+            .trim_start_matches("~/")
+            .trim_start_matches("/home/user/")
             .trim_start_matches("./")
-            .trim_end_matches('/')
-            .to_string()
+            .to_string(),
     })
 }
 
@@ -215,7 +217,7 @@ impl World {
 
 /// Whether a row asks before it runs: its derived tier, as the one door
 /// decides it for a call inside the goal's scope.
-fn asks(row: &str) -> bool {
+pub(super) fn asks(row: &str) -> bool {
     agentabi::find(&agentabi::ROWS, row)
         .is_none_or(|row| agentabi::derive(row) != agentabi::Tier::Run)
 }
@@ -233,75 +235,19 @@ pub struct Run {
     /// `script` calls, which a goal does not run: each spends a step.
     pub scripts: usize,
     pub calls: Vec<String>,
+    /// The goal was refused at approval: its scope holds a row a goal may never
+    /// hold (an install, a send, a permission change), so it never started.
+    pub refused: bool,
 }
 
-/// Runs `goal`, asking `next` for each step's call.
-pub fn pursue(goal: &Goal, mut next: impl FnMut(&ActRequest) -> Result<Call, String>) -> Run {
-    let mut world = goal.start();
-    let mut run = Run::default();
-    let mut progress = String::new();
-    let mut last_read: Option<Read> = None;
-    while run.steps < goal.budget && !(goal.met)(&world) {
-        run.steps += 1;
-        let request = ActRequest {
-            line: line(goal.text, &progress),
-            state: state(run.steps, goal.budget),
-            timeout_ms: TIMEOUT_MS,
-            read: last_read.take(),
-            apps: String::new(),
-        };
-        let call = match next(&request) {
-            Ok(call) => call,
-            Err(why) => {
-                run.calls.push(format!("error: {why}"));
-                break;
-            }
-        };
-        let text = call.text();
-        run.calls.push(text.clone());
-        if matches!(call.name.as_str(), "say" | "clarify") {
-            run.check_ins += usize::from(call.name == "clarify");
-            break;
-        }
-        // A script cannot act inside a goal's scope: the step is spent, the
-        // model told, and nothing asks (run 41866145173: the M8 refusal
-        // example came back as `script` steps).
-        let said = if call.name == "script" {
-            run.scripts += 1;
-            String::from("not used in a goal; call one of the goal's actions")
-        } else if !goal.scope.contains(&call.name.as_str()) {
-            run.outside += 1;
-            run.check_ins += 1;
-            format!("{} not allowed: outside the goal", call.name)
-        } else {
-            if asks(&call.name) {
-                run.check_ins += 1;
-            }
-            match world.apply(&call) {
-                Effect::Ran { said, data } => {
-                    if let Some(data) = data {
-                        last_read = Some(Read {
-                            call: text.clone(),
-                            data,
-                        });
-                    }
-                    said
-                }
-                Effect::Failed(why) => format!("failed: {why}"),
-            }
-        };
-        let done = match call.name.as_str() {
-            "script" => String::from("script"),
-            _ => shown(&call),
-        };
-        progress = progressed(&progress, &done, &said);
-    }
-    run.met = (goal.met)(&world);
-    run
+/// Runs `goal`, asking `next` for each step's call: through goalcore's runner
+/// and agentid's door, as the `goals` agent runs it ([`super::goals_run`]).
+pub fn pursue(goal: &Goal, next: impl FnMut(&ActRequest) -> Result<Call, String>) -> Run {
+    super::goals_run::pursue(goal, next)
 }
 
 /// A call as the request shows it was made: `fs_read(path="notes.txt")`.
-fn shown(call: &Call) -> String {
+pub(super) fn shown(call: &Call) -> String {
     let args: Vec<String> = call
         .arguments
         .iter()
@@ -312,14 +258,14 @@ fn shown(call: &Call) -> String {
 }
 
 /// The State line: which step of how many.
-fn state(step: usize, budget: usize) -> String {
+pub(super) fn state(step: usize, budget: usize) -> String {
     format!("goal step {step} of {budget}")
 }
 
 /// The step's request: the goal, then what is done already with each call as
 /// it was made, and the ask for the next step (run 41866145173: with progress
 /// in the State line only, the model repeated a step it had made).
-fn line(goal: &str, progress: &str) -> String {
+pub(super) fn line(goal: &str, progress: &str) -> String {
     match progress.is_empty() {
         true => goal.to_string(),
         false => format!(
@@ -329,7 +275,7 @@ fn line(goal: &str, progress: &str) -> String {
 }
 
 /// `progress` with one more step, the oldest dropped past [`PROGRESS_BYTES`].
-fn progressed(progress: &str, row: &str, said: &str) -> String {
+pub(super) fn progressed(progress: &str, row: &str, said: &str) -> String {
     let mut out = match progress.is_empty() {
         true => format!("{row}: {said}"),
         false => format!("{progress}; {row}: {said}"),
@@ -383,7 +329,7 @@ pub fn run(loaded: &Loaded, seed: u64, target_dir: &Path) -> Result<(bool, Strin
         records.push(json!({
             "goal": goal.text, "met": run.met, "steps": run.steps,
             "budget": goal.budget, "reference_steps": goal.reference.len(),
-            "check_ins": run.check_ins,
+            "check_ins": run.check_ins, "refused": run.refused,
             "outside": run.outside, "ran_outside": run.ran_outside,
             "scripts": run.scripts,
             "calls": run.calls,
@@ -396,12 +342,13 @@ pub fn run(loaded: &Loaded, seed: u64, target_dir: &Path) -> Result<(bool, Strin
     let ran_outside: usize = runs.iter().map(|r| r.ran_outside).sum();
     let outside: usize = runs.iter().map(|r| r.outside).sum();
     let check_ins: usize = runs.iter().map(|r| r.check_ins).sum();
+    let refused = runs.iter().filter(|r| r.refused).count();
     let need = (goals as f64 * BAR).ceil() as usize;
     let passes = counted >= need && ran_outside == 0;
     println!(
         "xtask: actbench goals seed {seed}: {} {counted}/{goals} met with at most one check-in \
          (pass >= {need}); {met} met in all, {check_ins} check-ins, {outside} calls outside \
-         scope asked, {ran_outside} run outside scope",
+         scope asked, {ran_outside} run outside scope, {refused} refused at approval",
         if passes { "pass" } else { "FAIL" },
     );
     let dir = target_dir.join("actbench");
@@ -416,9 +363,14 @@ pub fn run(loaded: &Loaded, seed: u64, target_dir: &Path) -> Result<(bool, Strin
          | Calls run outside scope (0) | {ran_outside} | {} |\n\
          | Met in all | {met}/{goals} | |\n\
          | Check-ins | {check_ins} | |\n\
-         | Calls outside scope, asked | {outside} | |\n",
+         | Calls outside scope, asked | {outside} | |\n\
+         | Refused at approval (an install in scope) | {refused} | |\n\
+         \n{refused} of {goals} goals name an install in their scope, which a goal's \
+         ceiling never holds (`agentid::goalgrant`), so they are refused at approval: \
+         {ceiling} of {goals} is the most this arm can meet.\n",
         mark(counted >= need),
         mark(ran_outside == 0),
+        ceiling = goals - refused,
     );
     Ok((passes, rows))
 }
@@ -430,6 +382,25 @@ mod tests {
 
     fn parsed(json: &str) -> Call {
         llmproto::act::parse(json).unwrap_or_else(|e| panic!("{json}: {e:?}"))
+    }
+
+    #[test]
+    fn a_path_from_tilde_or_home_user_is_a_path_from_home() {
+        for (written, home) in [
+            ("notes.txt", "notes.txt"),
+            ("~/notes.txt", "notes.txt"),
+            ("/home/user/notes.txt", "notes.txt"),
+            ("./reports/a.txt", "reports/a.txt"),
+            ("~/reports/", "reports"),
+            ("~", ""),
+            ("/home/user/", ""),
+            ("/etc/passwd", "/etc/passwd"),
+        ] {
+            let call = parsed(&format!(
+                r#"{{"name":"fs_read","arguments":{{"path":"{written}"}}}}"#
+            ));
+            assert_eq!(path_arg(&call, "path").as_deref(), Some(home), "{written}");
+        }
     }
 
     #[test]
@@ -447,9 +418,30 @@ mod tests {
         }
     }
 
+    /// What a goal may never hold: the per-goal ceiling refuses it at approval.
+    fn never_held(goal: &Goal) -> bool {
+        goal.scope.iter().any(|row| {
+            agentabi::find(&agentabi::ROWS, row).is_some_and(agentid::goalgrant::sends_or_installs)
+        })
+    }
+
+    #[test]
+    fn a_goal_whose_scope_holds_an_install_is_refused_at_approval() {
+        let refused: Vec<&str> = GOALS
+            .iter()
+            .filter(|g| never_held(g))
+            .map(|g| g.text)
+            .collect();
+        assert_eq!(refused.len(), 3, "{refused:?}");
+        for goal in GOALS.iter().filter(|g| never_held(g)) {
+            let run = pursue(goal, |_| panic!("a refused goal asks the model nothing"));
+            assert!(run.refused && !run.met && run.steps == 0, "{run:?}");
+        }
+    }
+
     #[test]
     fn every_reference_plan_meets_its_goal_in_scope_and_budget() {
-        for goal in GOALS {
+        for goal in GOALS.iter().filter(|g| !never_held(g)) {
             let mut plan = goal.reference.iter();
             let run = pursue(goal, |_| Ok(parsed(plan.next().expect("a step"))));
             assert!(run.met, "{}: {:?}", goal.text, run.calls);

@@ -25,11 +25,30 @@ pub fn forward_https(args: &mut [String], relay: &Path, port: u16) {
     }
 }
 
+/// `XTASK_NETDEV`, when set, in place of the user network: the throughput
+/// workflow's TAP device (`net-throughput`), since slirp's TCP to the guest
+/// does not scale its window (spike P5-S2).
+pub fn netdev_from_env(args: &mut [String]) {
+    let Ok(netdev) = std::env::var("XTASK_NETDEV") else {
+        return;
+    };
+    if let Some(arg) = args.iter_mut().find(|arg| arg.as_str() == USER_NET) {
+        *arg = netdev;
+    }
+}
+
 /// `word` as one word of a `cmd:` QEMU's user network splits as a shell
 /// does, in single quotes, and with each comma doubled, as QEMU's option
 /// parser reads a comma in a value (K's review of #753).
 pub(super) fn command_word(word: &str) -> String {
     format!("'{}'", word.replace('\'', "'\\''")).replace(',', ",,")
+}
+
+/// Gives the network card no MSI-X vectors, so the kernel polls it.
+pub fn net_without_vectors(args: &mut [String]) {
+    if let Some(at) = args.iter().position(|arg| arg.starts_with(NET_DEVICE)) {
+        args[at].push_str(",vectors=0");
+    }
 }
 
 pub fn net_behind_bridge(args: &mut Vec<String>) {
@@ -44,7 +63,8 @@ pub fn net_behind_bridge(args: &mut Vec<String>) {
 }
 
 /// The `qemu-xhci` controller with the case's USB devices, and a QMP socket
-/// when the case sends `@` lines; the port goes to the test run.
+/// when the case sends `@` lines or powers off (its SHUTDOWN reason); the
+/// port goes to the test run.
 pub fn input_args(case: &TestCase) -> Result<(Vec<String>, Option<u16>), String> {
     let mut args = Vec::new();
     if !case.usb.is_empty() {
@@ -53,12 +73,19 @@ pub fn input_args(case: &TestCase) -> Result<(Vec<String>, Option<u16>), String>
             args.extend(["-device".into(), format!("{device},bus=xhci.0")]);
         }
     }
-    let wants_qmp = case
+    let sends_qmp = case
         .keys
         .iter()
         .flat_map(|stage| stage.iter())
         .any(|key| key.starts_with('@'));
-    if !wants_qmp {
+    if sends_qmp && case.powers_off {
+        // QMP takes one client, and the power-off verdict holds it.
+        return Err(format!(
+            "{}: a power-off case cannot send @ lines",
+            case.name
+        ));
+    }
+    if !(sends_qmp || case.powers_off) {
         return Ok((args, None));
     }
     let port = free_port()?;

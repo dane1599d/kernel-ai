@@ -16,6 +16,7 @@
 pub mod pane;
 pub mod points;
 mod rect;
+pub mod scale;
 pub mod start;
 pub mod taskbar;
 

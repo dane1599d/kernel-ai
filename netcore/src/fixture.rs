@@ -18,6 +18,12 @@ pub const ALIAS: &str = "alias.kai.test";
 pub const ALIAS_TTL: u32 = 60;
 /// NXDOMAIN, as is every name not listed here.
 pub const MISSING: &str = "missing.kai.test";
+/// A name whose whole answer is a private address (audit K #17).
+pub const LAN: &str = "lan.kai.test";
+pub const LAN_ADDRESS: [u8; 4] = [192, 168, 1, 1];
+/// A name answering a private address and one on QEMU's test subnet.
+pub const MIXED: &str = "mixed.kai.test";
+pub const MIXED_ADDRESS: [u8; 4] = [10, 0, 2, 97];
 /// Never answered, so the resolver times out.
 pub const SILENT: &str = "silent.kai.test";
 
@@ -77,6 +83,14 @@ pub fn answer(query: &[u8]) -> Option<Vec<u8>> {
         SILENT => return None,
         KAI => (0, &[(KAI, KAI_TTL, Data::A(KAI_ADDRESS))]),
         SHORT => (0, &[(SHORT, SHORT_TTL, Data::A(SHORT_ADDRESS))]),
+        LAN => (0, &[(LAN, KAI_TTL, Data::A(LAN_ADDRESS))]),
+        MIXED => (
+            0,
+            &[
+                (MIXED, KAI_TTL, Data::A(LAN_ADDRESS)),
+                (MIXED, KAI_TTL, Data::A(MIXED_ADDRESS)),
+            ],
+        ),
         ALIAS => (
             0,
             &[

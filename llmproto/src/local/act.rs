@@ -182,22 +182,36 @@ pub fn grammar() -> Result<Grammar, infer::Error> {
 /// (`pack::apps::turn`); an app left out of the turn cannot be named either.
 /// Each build leaks its actions, so llm builds one only when its apps change.
 pub fn grammar_with(groups: &[AppGroup]) -> Result<Grammar, infer::Error> {
-    build(groups, true)
+    grammar_counted(groups, apps::estimate)
+}
+
+/// [`grammar_with`], with the apps turn's tokens given by `count`
+/// (`pack::apps::turn_counted`): llm passes the engine's tokenizer.
+pub fn grammar_counted(
+    groups: &[AppGroup],
+    count: impl Fn(&str) -> usize,
+) -> Result<Grammar, infer::Error> {
+    build(groups, Some(&count))
 }
 
 /// Spike S10-2's flat arm: [`grammar_with`] with every app's full lines in
 /// the apps turn (`pack::apps::flat_turn`), so an app row is written in one
 /// round. The pack's own index groups stay as they ship.
 pub fn grammar_flat(groups: &[AppGroup]) -> Result<Grammar, infer::Error> {
-    build(groups, false)
+    build(groups, None)
 }
 
 /// The grammars over the pack's rows and `groups`' rows, those on the index
-/// level when `apps_indexed`.
-fn build(groups: &[AppGroup], apps_indexed: bool) -> Result<Grammar, infer::Error> {
-    let (apps_turn, left_out) = match apps_indexed {
-        true => apps::turn(groups),
-        false => apps::flat_turn(groups),
+/// level when `count` is given (the apps turn counted with it), all in the
+/// flat apps turn (no budget, no count) when it is `None`.
+fn build(
+    groups: &[AppGroup],
+    count: Option<&dyn Fn(&str) -> usize>,
+) -> Result<Grammar, infer::Error> {
+    let apps_indexed = count.is_some();
+    let (apps_turn, left_out) = match count {
+        Some(count) => apps::turn_counted(groups, count),
+        None => apps::flat_turn(groups),
     };
     let shown: Vec<AppGroup> = groups
         .iter()

@@ -31,6 +31,11 @@ use alloc::string::String;
 
 /// Proposals waiting for the card, every desktop line together.
 pub(crate) const MAX_WAITING: usize = 4;
+/// The places among [`MAX_WAITING`] agents' questions may take, so the
+/// person's panel and Terminal lines keep room on the card.
+pub(crate) const AGENTS_WAITING: usize = 2;
+/// What an agent's question is told when agents' places are full.
+const AGENTS_FULL: &str = "agents' questions fill their places on the card";
 /// What the line is told when its proposal waits for the card.
 pub(crate) const ON_CARD: &str = "it asks first: answer Run or Don't on the card";
 /// What it is told when it is a script, which only the console shows.
@@ -38,6 +43,11 @@ pub(crate) const SCRIPT: &str =
     "it asks first, and its script shows only in the console: ask there";
 /// What it is told when it is a send, whose text only the console shows.
 pub(crate) const SEND: &str = "a send shows its text only in the console: ask there";
+/// What it is told when a send's card and the Kai pane do not fit side by
+/// side here, or an agent asks for it: the console asks (ADR 0005 §7,
+/// "Amended 2026-11-19").
+pub(crate) const SEND_HERE: &str =
+    "it is a send, and its text cannot show beside its card here: ask in the console";
 /// What it is told when too many already wait.
 const FULL: &str = "it asks first, and other questions wait: answer those first";
 /// What it is told when its one call is too long, or not plain ASCII, for
@@ -45,7 +55,7 @@ const FULL: &str = "it asks first, and other questions wait: answer those first"
 pub(crate) const TOO_LONG: &str =
     "it asks first, and its call is too long or not plain text for the card: ask in the console";
 /// The line for a card answered Don't, or declined in its window.
-const DECLINED: &str = "Not run: you said Don't.";
+pub(crate) const DECLINED: &str = "Not run: you said Don't.";
 /// The line for a question that lapsed before the card answered it.
 const LAPSED: &str = "Not run: it waited more than two minutes for the card.";
 /// The line for a card's question answered after its two minutes: the
@@ -73,6 +83,9 @@ pub(crate) struct Waiting {
     pub pending: Pending,
     /// The menu, its origin `added`: the card's text.
     pub menu: String,
+    /// A send's text, which the Kai pane shows beside its card
+    /// (`Host::desk_preview`): given to `desktop` as the card goes up.
+    pub send: Option<String>,
     pub asker: Asker,
 }
 
@@ -123,14 +136,52 @@ impl Shell {
             return Err(SCRIPT);
         };
         self.lapse_desk_asks();
-        let menu = match (reply.confirm, &pending.menu) {
-            (Some(id), Some(_)) if id == pending.id => as_added(id, &reply.text),
+        // A send's card (ADR 0005 §7, "Amended 2026-11-19"): its menu goes
+        // to the card plain, and its text to the Kai pane, where the card and
+        // the open pane fit side by side; never an agent's.
+        let shown = termcore::menu::split_shown(&reply.text).and_then(Result::ok);
+        let send = match (&shown, &pending.send, &asker) {
+            (Some(_), Some(send), Asker::Panel | Asker::App(_)) => Some(send.body.clone()),
             _ => None,
         };
+        let fits = send.is_some() && self.host.desk_send_fits();
+        let menu_text = match (&shown, fits) {
+            (Some(shown), true) => shown.menu,
+            _ => reply.text.as_str(),
+        };
+        let menu = match (reply.confirm, &pending.menu) {
+            (Some(id), Some(_)) if id == pending.id => as_added(id, menu_text),
+            _ => None,
+        };
+        // An agent's card says who asks and offers no Always.
+        let was_menu = menu.is_some();
+        let menu = match &asker {
+            Asker::Agent(agent) => menu.and_then(|m| crate::agentconsent::agent_menu(agent, &m)),
+            _ => menu,
+        };
         let (why, outcome) = match menu {
+            None if shown.is_some() && send.is_some() => (
+                SEND_HERE,
+                "discarded: its text cannot show beside its card here",
+            ),
+            // A menu the agent's name made too long for the card.
+            None if was_menu => (
+                TOO_LONG,
+                "discarded: the agent's question is too long for the card",
+            ),
             None => not_on_card(&reply.text),
             Some(_) if self.desk_asks.len() >= MAX_WAITING => {
                 (FULL, "discarded: other questions wait")
+            }
+            // Agents take at most AGENTS_WAITING places: the person's own
+            // lines can always reach the card.
+            Some(_)
+                if matches!(asker, Asker::Agent(_)) && self.agents_waiting() >= AGENTS_WAITING =>
+            {
+                (
+                    AGENTS_FULL,
+                    "discarded: agents' questions fill their places",
+                )
             }
             Some(menu) => {
                 let id = pending.id;
@@ -141,6 +192,7 @@ impl Shell {
                     pending,
                     menu,
                     asker,
+                    send: send.filter(|_| fits),
                 });
                 return Ok(shown);
             }
@@ -153,6 +205,14 @@ impl Shell {
         );
         self.save_log();
         Err(why)
+    }
+
+    /// How many agents' questions wait for the card.
+    fn agents_waiting(&self) -> usize {
+        self.desk_asks
+            .iter()
+            .filter(|w| matches!(w.asker, Asker::Agent(_)))
+            .count()
     }
 
     /// Whether a desktop line's proposal waits for the card.
@@ -185,13 +245,31 @@ impl Shell {
         if self.desk_asks.is_empty() {
             return None;
         }
+        // The person's own lines go to the card before agents' questions.
+        let first = self
+            .desk_asks
+            .iter()
+            .position(|w| !matches!(w.asker, Asker::Agent(_)))
+            .unwrap_or(0);
         let Waiting {
             mut pending,
             menu,
             asker,
-        } = self.desk_asks.remove(0);
+            send,
+        } = self.desk_asks.remove(first);
         pending.created_ns = self.host.now_ns();
         let id = pending.id;
+        // A send's text goes to the Kai pane first: `desktop` shows it only
+        // if its hash is the card's, and the card takes no Allow until it has
+        // been read through. One that does not get there leaves the card to
+        // Don't or its lapse.
+        if let Some(text) = send
+            && let Err(why) = self.host.desk_preview(id, &text)
+        {
+            self.host.audit(&format!(
+                "request {id}: its text did not reach the pane: {why}"
+            ));
+        }
         self.host.audit(&format!("request {id}: on the card"));
         self.card_for_desk = Some((id, asker));
         self.pending = Some(pending);
@@ -201,7 +279,7 @@ impl Shell {
     /// Lets go of waiting questions older than a question's two minutes, as
     /// the console's lapse: what they would do may no longer be meant. A
     /// window's line is told.
-    fn lapse_desk_asks(&mut self) {
+    pub(crate) fn lapse_desk_asks(&mut self) {
         let now = self.host.now_ns();
         while self
             .desk_asks
@@ -215,8 +293,12 @@ impl Shell {
                 &pending.checked.script,
                 "expired",
             );
-            if let Asker::App(app) = asker {
-                self.card_came_to(&app, pending.id, &Reply::ok(LAPSED));
+            match asker {
+                Asker::App(app) => self.card_came_to(&app, pending.id, &Reply::ok(LAPSED)),
+                Asker::Agent(agent) => {
+                    self.agent_told(agent, pending.id, false, String::from(LAPSED));
+                }
+                Asker::Panel => {}
             }
         }
     }
@@ -250,13 +332,24 @@ impl Shell {
             (false, false, true) => (true, ""),
             (false, false, false) => (false, crate::panel::FAILED),
         };
-        let line = match ran {
+        // A send the card allowed is held, not done: its line says so, with
+        // its undo, as the console's does (#1142's review), made from the
+        // outbox's entry, never the reply's text.
+        let held = match ran {
             true => self
+                .outbox
+                .get(id)
+                .map(|pending| crate::outbox::held_line(&pending.send.host, agentabi::HOLD_MS, id)),
+            false => None,
+        };
+        let line = match (ran, held) {
+            (true, Some(held)) => held,
+            (true, None) => self
                 .done_line
                 .take()
                 .map(|line| crate::panel::without_undo(&line))
                 .unwrap_or_else(|| String::from("Done.")),
-            false => String::from(line),
+            (false, _) => String::from(line),
         };
         // Don't and a lapse are no failure: only a run that failed is an
         // error row.
