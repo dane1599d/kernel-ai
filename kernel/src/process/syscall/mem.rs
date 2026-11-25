@@ -2,7 +2,7 @@
 //! need no capability (each works only in the caller's own address space, and a
 //! commit counts against its own page quota); and resource profiles'
 //! PROC_QUOTA_SET and PROC_CLASS_SET (P3 task 12), which need SUPERVISE; and
-//! PROC_ALIVE, which needs DISPLAY or SUPERVISE.
+//! PROC_ALIVE and PROC_NAME, which need DISPLAY or SUPERVISE.
 
 use super::need;
 use crate::process::{mem, profile};
@@ -16,6 +16,7 @@ const CALLS: &[u64] = &[
     call::PROC_QUOTA_SET,
     call::PROC_CLASS_SET,
     call::PROC_ALIVE,
+    call::PROC_NAME,
 ];
 
 /// One of [`CALLS`], or `None` for a number this area does not have.
@@ -30,6 +31,22 @@ pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u6
         call::PROC_ALIVE => need(slot, cap::DISPLAY)
             .or_else(|_| need(slot, cap::SUPERVISE))
             .map(|()| u64::from(crate::process::alive(a[0]))),
+        call::PROC_NAME => need(slot, cap::DISPLAY)
+            .or_else(|_| need(slot, cap::SUPERVISE))
+            .and_then(|()| proc_name(slot, a[0], a[1], a[2])),
         _ => need(slot, cap::SUPERVISE).and_then(|()| profile::class_set(a[0], a[1])),
     })
+}
+
+/// PROC_NAME: live process `pid`'s name from the table, under its lock, so
+/// `desktop` knows who calls it however many processes run. NotFound for a
+/// pid not running, and for the kernel's, 0, which has no name.
+fn proc_name(slot: usize, pid: u64, ptr: u64, room: u64) -> Result<u64, Error> {
+    let (name, _) = crate::process::name_of(pid).ok_or(Error::NotFound)?;
+    let (bytes, len) = name.bytes();
+    if room < len as u64 {
+        return Err(Error::TooBig);
+    }
+    crate::process::uaccess::copy_to_user(slot, ptr, &bytes[..len])?;
+    Ok(len as u64)
 }

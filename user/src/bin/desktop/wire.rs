@@ -3,19 +3,25 @@
 
 use super::*;
 
+/// The answer to a request whose caller has no name: it ended before it was
+/// served, or it is the kernel.
+const NO_NAME: &str = "err the caller is not running";
+
 pub(super) fn effects_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     let text = core::str::from_utf8(bytes).ok()?;
     if !text.starts_with("effects ") {
         return None;
     }
-    let caller = name_of(pid);
+    let Some(caller) = name_of(pid) else {
+        return Some(String::from(NO_NAME));
+    };
     let shell = caller == "shell";
     let put = text
         .strip_prefix(effects::PUT_USER)
         .map(|lines| (lines, true))
         .or_else(|| text.strip_prefix(effects::PUT).map(|lines| (lines, false)));
     if let Some((lines, user)) = put {
-        if shell || caller.starts_with("pid ") {
+        if shell {
             return Some(String::from("err only an app queues effects"));
         }
         // The Terminal's Stop, on a person's key or click: the shell's line
@@ -126,7 +132,9 @@ pub(super) fn wire_request(
         return None;
     }
     let what = words.word.trim_end();
-    let caller = name_of(pid);
+    let Some(caller) = name_of(pid) else {
+        return Some(String::from(NO_NAME));
+    };
     if let Some(lines) = text.strip_prefix(words.put) {
         return Some(match queue.put_as(words, &caller, lines) {
             Ok(()) => {
@@ -187,7 +195,9 @@ pub(super) fn net_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<S
     if !text.starts_with("net ") {
         return None;
     }
-    let caller = name_of(pid);
+    let Some(caller) = name_of(pid) else {
+        return Some(String::from(NO_NAME));
+    };
     if let Some(ask) = text.strip_prefix(wire::ASK) {
         let reply = state.net.ask(&caller, ask, now_ms());
         if reply == wire::WAIT {
@@ -304,16 +314,16 @@ pub(super) fn apply_need(
     }
 }
 
-/// The name a process runs under, which labels its windows and names its app
-/// in standing instructions' events. From the metrics' process list: LIST is
-/// the supervisor's alone.
-pub(super) fn name_of(pid: u64) -> alloc::string::String {
-    let named = sys::metrics().ok().and_then(|m| {
-        let listed = &m.processes[..(m.process_count as usize).min(m.processes.len())];
-        listed
-            .iter()
-            .find(|p| p.pid == pid)
-            .map(|p| alloc::string::String::from(p.name()))
-    });
-    named.unwrap_or_else(|| alloc::format!("pid {pid}"))
+/// The name a process runs under, which labels its windows, names its app
+/// in standing instructions' events, and is all any request is checked by:
+/// the kernel's table's (PROC_NAME, which DISPLAY allows), however many
+/// processes run. METRICS lists only the first 16, and a caller past them
+/// was `pid N`: refused as an app, and split in two on the network wire
+/// (H3-8). None for a pid that is not running, or the kernel's.
+pub(super) fn name_of(pid: u64) -> Option<alloc::string::String> {
+    let mut name = [0u8; kabi::MAX_NAME];
+    let len = sys::proc_name(pid, &mut name).ok()?;
+    core::str::from_utf8(name.get(..len)?)
+        .ok()
+        .map(alloc::string::String::from)
 }
