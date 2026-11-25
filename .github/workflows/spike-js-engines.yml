@@ -78,10 +78,13 @@ jobs:
         with:
           name: build-${{ matrix.engine }}
           path: out
-      - name: Wasmtime, PyYAML and test262
+      - name: Wasmtime, this machine's cwasm, PyYAML and test262
         run: |
           curl -sSfL "https://github.com/bytecodealliance/wasmtime/releases/download/$WASMTIME/wasmtime-$WASMTIME-x86_64-linux.tar.xz" | tar -xJ
           echo "$PWD/wasmtime-$WASMTIME-x86_64-linux" >> "$GITHUB_PATH"
+          # A cwasm is for the CPU it was compiled on: compile it here.
+          grep -m1 'model name' /proc/cpuinfo
+          "wasmtime-$WASMTIME-x86_64-linux/wasmtime" compile -o out/${{ matrix.engine }}-run.cwasm out/${{ matrix.engine }}-run.wasm
           python3 -c 'import yaml' || pip install pyyaml
           git init -q test262 && cd test262
           git remote add origin https://github.com/tc39/test262
@@ -98,8 +101,10 @@ jobs:
               wasmtime run --allow-precompiled $RUN_FLAGS --dir test262::/t262 --dir res::/res \
               out/${{ matrix.engine }}-run.cwasm t262 /t262 "/res/m$k.tsv" > "res/log$k.txt" 2>&1 &
           done
-          wait
+          ok=0
+          for pid in $(jobs -p); do wait "$pid" || ok=1; done
           cat res/log*.txt
+          exit "$ok"
       - uses: actions/upload-artifact@v4
         with:
           name: t262-${{ matrix.engine }}-${{ matrix.shard }}
@@ -123,6 +128,8 @@ jobs:
         run: |
           curl -sSfL "https://github.com/bytecodealliance/wasmtime/releases/download/$WASMTIME/wasmtime-$WASMTIME-x86_64-linux.tar.xz" | tar -xJ
           echo "$PWD/wasmtime-$WASMTIME-x86_64-linux" >> "$GITHUB_PATH"
+          grep -m1 'model name' /proc/cpuinfo
+          "wasmtime-$WASMTIME-x86_64-linux/wasmtime" compile -o out/${{ matrix.engine }}-run.cwasm out/${{ matrix.engine }}-run.wasm
           git init -q octane && cd octane
           git remote add origin https://github.com/chromium/octane
           git fetch -q --depth 1 origin "$OCTANE" && git checkout -q FETCH_HEAD

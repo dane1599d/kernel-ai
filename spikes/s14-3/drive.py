@@ -16,6 +16,7 @@ import re
 import statistics
 import subprocess
 import sys
+import tempfile
 import threading
 import queue
 import time
@@ -80,13 +81,15 @@ def run(out, manifest_path, cmd):
     restarts = 0
     began = time.time()
     while start < len(lines):
+        err = tempfile.TemporaryFile(mode="w+")
         proc = subprocess.Popen(
             cmd + [str(start)],
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=err,
             text=True,
             errors="replace",
         )
+        said = False
         q = queue.Queue()
 
         def pump():
@@ -107,10 +110,14 @@ def run(out, manifest_path, cmd):
                 break
             if line is None:
                 proc.wait()
+                if not said:
+                    err.seek(0)
+                    sys.exit(f"the runner printed nothing (exit {proc.returncode}): {err.read()[-2000:]}")
                 if current is not None and current not in verdict:
                     verdict[current] = f"fail\ttrapped (exit {proc.returncode})"
                 ended = current is None or current >= len(lines) - 1
                 break
+            said = True
             if line.startswith("S "):
                 current = int(line[2:])
             elif line.startswith("R "):
@@ -178,6 +185,8 @@ def timed(cmd):
     p = subprocess.run(["/usr/bin/time", "-f", "RSS %M"] + cmd, capture_output=True, text=True)
     wall = time.time() - began
     rss = re.search(r"RSS (\d+)", p.stderr)
+    if not p.stdout.strip():
+        sys.exit(f"{cmd[0]} printed nothing (exit {p.returncode}): {p.stderr[-2000:]}")
     return p.stdout, wall, int(rss.group(1)) if rss else 0
 
 
