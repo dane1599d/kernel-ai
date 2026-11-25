@@ -682,6 +682,15 @@ fn rule() -> Result<(), &'static str> {
             return Err("act-rule: a line got the wrong answer");
         }
     }
+    // The removed rule's handle went with its node (bug hunt 3, H3-30).
+    let shell = ipc::server_of("shell")
+        .and_then(crate::process::slot_of_pid)
+        .ok_or("act-rule: the shell has no slot")?;
+    let rule = allowed.granted.rule.ok_or("act-rule: no rule handle")?;
+    let open = crate::handle::with(shell, |t| t.table.get(kabi::handle::Handle(rule)).is_ok());
+    if open.unwrap_or(false) {
+        return Err("act-rule: rules_remove left the rule's handle open");
+    }
     if !reply_to("stop spin-c")?.starts_with("menu ") {
         return Err("act-rule: a stop asked nothing after its rule was removed");
     }
