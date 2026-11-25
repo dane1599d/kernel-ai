@@ -658,6 +658,8 @@ fn any_host_pinned() -> Result<(), &'static str> {
 /// - Revoking the grant a `NetDest` was given under stops its streams, its
 ///   narrowing and itself ([`revoke_check`]).
 /// - A refused HANDLE_REPLACE on a stream closes the stream ([`replace_check`]).
+/// - An agent's `NetDest` past its day's bytes is refused a receive, and the
+///   echo it would have read is not counted ([`budget_check`]).
 pub fn stream_check(cmdline: &str) -> Result<(), &'static str> {
     let (server, port) = cmdline
         .split_whitespace()
@@ -703,7 +705,8 @@ pub fn stream_check(cmdline: &str) -> Result<(), &'static str> {
     }
     log!("net-stream: a process killed with 3 streams open left none");
     revoke_check(&spec, port)?;
-    replace_check(&spec, port)
+    replace_check(&spec, port)?;
+    budget_check(&spec, port)
 }
 
 /// Whether the process `pid` comes to hold `n` open streams within
@@ -788,6 +791,39 @@ fn replace_check(spec: &str, port: u16) -> Result<(), &'static str> {
     )?;
     log!(
         "net-stream: a refused HANDLE_REPLACE closed the stream with its handle: 17 in a row never met the limit of 16"
+    );
+    Ok(())
+}
+
+/// Bug hunt 5's H5-18: `netcheck` (`stream=budget`) holds an agent's
+/// `NetDest` with 8 KiB of its day left. Its 8 KiB send spends the day, and
+/// the echo then stays unread: NET_RECV is refused, as a send and a connect
+/// are, and the meter counts nothing past the budget.
+fn budget_check(spec: &str, port: u16) -> Result<(), &'static str> {
+    let left = net::stream::MAX_CALL as u64;
+    let meter = net::dest::meter(1);
+    let today = net::dest::today();
+    net::dest::with_meter(&meter, |m| m.try_send(netdest::meter::MIB - left, today))
+        .map_err(|_| "net-stream: cannot spend the test meter's day")?;
+    let dest = netdest::Dest::parse(spec).map_err(|_| "net-stream: a bad test destination")?;
+    let live = |object| crate::handle::names(kabi::handle::Kind::NetDest, object);
+    let object = net::dest::create_metered(dest, live, Some(meter.clone()))
+        .ok_or("net-stream: no room for a NetDest record")?;
+    let entry = captable::Entry::new(
+        kabi::handle::Kind::NetDest,
+        crate::handle::NETDEST_RIGHTS,
+        object,
+    );
+    netcheck(
+        "netstream-e",
+        &alloc::format!("stream=budget port={port}"),
+        Some(entry),
+    )?;
+    if net::dest::with_meter(&meter, |m| m.used()) != netdest::meter::MIB {
+        return Err("net-stream: a refused receive was counted against the day");
+    }
+    log!(
+        "net-stream: an agent's NetDest past its day's bytes was refused a receive, a send and a connect, and counted nothing past its budget"
     );
     Ok(())
 }
