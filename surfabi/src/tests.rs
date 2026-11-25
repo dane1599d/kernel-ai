@@ -751,3 +751,30 @@ fn a_wheel_event_round_trips_through_the_ring() {
     assert!(!header::post(&mut page, &sent[0]));
     assert_eq!(header::dropped(&page), 1);
 }
+
+/// H3-27: each of a window's objects can end, so the table holds only what
+/// is open now.
+#[test]
+fn a_windows_objects_all_end_and_the_table_is_the_registry_again() {
+    let mut objects = Objects::new();
+    let mut send = |object, request: Request| {
+        let bytes = request.encode(object).unwrap();
+        let (h, args, _) = wire::split(&bytes).unwrap();
+        let (_, got) = objects.receive(h.object, h.opcode, args).unwrap();
+        assert_eq!(got, request);
+    };
+    for (object, request) in first_window() {
+        send(object, request);
+    }
+    for (object, request) in [
+        (5, Request::ToplevelDestroy),
+        (4, Request::BufferDestroy),
+        (6, Request::A11yDestroy),
+        (3, Request::SurfaceDestroy),
+        (2, Request::PoolDestroy),
+    ] {
+        send(object, request);
+    }
+    assert_eq!(objects.len(), 1);
+    assert_eq!(objects.interface(REGISTRY), Some(Interface::Registry));
+}

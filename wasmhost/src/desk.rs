@@ -341,6 +341,12 @@ impl Desk {
         for buffer in win.buffers {
             encode(&mut out, buffer, Request::BufferDestroy);
         }
+        // Its a11y, its surface (its role gone first) and its pool too, so a
+        // window opened and closed for ever never fills the connection's
+        // table at `desktop` (H3-27).
+        encode(&mut out, win.a11y, Request::A11yDestroy);
+        encode(&mut out, win.surface, Request::SurfaceDestroy);
+        encode(&mut out, win.pool, Request::PoolDestroy);
         out
     }
 

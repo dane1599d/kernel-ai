@@ -518,6 +518,23 @@ impl Client {
                         self.share(&effects);
                     }
                 }
+                // H3-27: a window's other objects end with it, so a window
+                // opened and closed for ever fills neither the connection's
+                // table nor the heap with the trees of windows gone. A surface
+                // still a toplevel's is refused: its role goes first, as in
+                // Wayland.
+                Request::SurfaceDestroy => {
+                    if self.surface(header.object)?.toplevel.is_some() {
+                        return Err(Error::BadArg);
+                    }
+                    self.surfaces.retain(|s| s.id != header.object);
+                }
+                Request::A11yDestroy => {
+                    if let Ok(surface) = self.surface_of_a11y(header.object) {
+                        surface.a11y = None;
+                        surface.pending.clear();
+                    }
+                }
                 // The rest asks nothing of the desk yet (popups and the panel).
                 _ => {}
             }
