@@ -54,10 +54,12 @@ pub struct FsCache {
 /// The largest of [`FS_CACHES_MIB`] whose quota still leaves [`MIN_ROOM_MIB`]
 /// of `budget` and the plan's largest `start=demand` service (one app, cc or
 /// fetch opened at a time) beside the other boot services; the smallest if
-/// none does. None with no `fs` line, or one that names its cache itself.
+/// none does. None with no `fs` line, or one that names a cache its own
+/// `pages=` holds. A named cache that does not fit its quota (fs would grow
+/// past it and be killed) is sized as if it named none.
 pub fn fs_cache(plan: &Plan, supervisor_pages: u64, budget: u64) -> Option<FsCache> {
     let fs = plan.services.iter().find(|s| s.program == "fs")?;
-    if fs.args.split(' ').any(|word| word.starts_with(CACHE_WORD)) {
+    if named_cache_fits(&fs.args, fs.limits.max_pages) {
         return None;
     }
     let others = boot_pages(plan, supervisor_pages).saturating_sub(match fs.start {
@@ -71,22 +73,52 @@ pub fn fs_cache(plan: &Plan, supervisor_pages: u64, budget: u64) -> Option<FsCac
         .map(|s| s.limits.max_pages)
         .max()
         .unwrap_or(0);
-    let quota = |cache_mib: u64| (FS_WORK_MIB + cache_mib) * PAGES_PER_MIB;
     let smallest = FS_CACHES_MIB[FS_CACHES_MIB.len() - 1];
+    // Saturating, as `boot_pages` is: a line's `pages=` may be near u64::MAX.
     let cache_mib = FS_CACHES_MIB
         .into_iter()
-        .find(|&cache| others + quota(cache) + MIN_ROOM_MIB * PAGES_PER_MIB + margin <= budget)
+        .find(|&cache| {
+            others
+                .saturating_add(fs_quota(cache))
+                .saturating_add(MIN_ROOM_MIB * PAGES_PER_MIB)
+                .saturating_add(margin)
+                <= budget
+        })
         .unwrap_or(smallest);
-    let pages = quota(cache_mib);
+    let pages = fs_quota(cache_mib);
     Some(FsCache {
         cache_mib,
         pages,
-        room_mib: budget.saturating_sub(others + pages) / PAGES_PER_MIB,
+        room_mib: budget.saturating_sub(others.saturating_add(pages)) / PAGES_PER_MIB,
     })
 }
 
+/// fs's quota with a cache of `cache_mib`: [`FS_WORK_MIB`] and the cache.
+pub fn fs_quota(cache_mib: u64) -> u64 {
+    FS_WORK_MIB.saturating_add(cache_mib) * PAGES_PER_MIB
+}
+
+/// Whether fs's `args` name a cache ([`CACHE_WORD`]) its `max_pages` holds,
+/// as fs reads the word: a number clamped to 16..=64, and 16 for one that is
+/// not a number.
+fn named_cache_fits(args: &str, max_pages: u64) -> bool {
+    let smallest = FS_CACHES_MIB[FS_CACHES_MIB.len() - 1];
+    let Some(word) = args
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix(CACHE_WORD))
+    else {
+        return false;
+    };
+    let cache = word
+        .parse::<u64>()
+        .unwrap_or(smallest)
+        .clamp(smallest, FS_CACHES_MIB[0]);
+    fs_quota(cache) <= max_pages
+}
+
 /// `plan` with fs's line given its [`fs_cache`]: `pages=` its quota, and
-/// [`CACHE_WORD`] its cache. Every other line is as it was.
+/// [`CACHE_WORD`] its cache, in place of any it named. Every other line is as
+/// it was.
 pub fn size_fs(plan: &str, supervisor_pages: u64, budget: u64) -> (String, Option<FsCache>) {
     let parsed = crate::parse_plan(plan);
     let Some(chosen) = fs_cache(&parsed, supervisor_pages, budget) else {
@@ -109,7 +141,7 @@ pub fn size_fs(plan: &str, supervisor_pages: u64, budget: u64) -> (String, Optio
         }
         let mut words: alloc::vec::Vec<String> = line
             .split_whitespace()
-            .filter(|w| !w.starts_with("pages="))
+            .filter(|w| !w.starts_with("pages=") && !w.starts_with(CACHE_WORD))
             .map(String::from)
             .collect();
         words.push(format!("pages={}", chosen.pages));
@@ -213,6 +245,63 @@ mod tests {
         assert_eq!(
             size_fs("shell", 2048, 1 << 20),
             (String::from("shell"), None)
+        );
+    }
+
+    #[test]
+    fn a_named_cache_its_quota_cannot_hold_is_sized_again() {
+        // 64 MiB of cache in a 32 MiB quota: fs would outgrow it and be killed.
+        let over = "fs pages=8192 cache_mib=64\nshell pages=4096";
+        let (sized, fs) = size_fs(over, 2048, 1 << 20);
+        assert_eq!(fs.unwrap().cache_mib, 64);
+        assert_eq!(sized, "fs pages=20480 cache_mib=64\nshell pages=4096");
+        // On a budget with no room for more, the smallest, in its own quota.
+        let (sized, fs) = size_fs(over, 2048, 16 * PAGES_PER_MIB);
+        assert_eq!(fs.unwrap().cache_mib, 16);
+        assert_eq!(sized, "fs pages=8192 cache_mib=16\nshell pages=4096");
+        // A word fs reads as 16 fits a 32 MiB quota, and is left alone.
+        let odd = "fs pages=8192 cache_mib=lots";
+        assert_eq!(size_fs(odd, 2048, 1 << 20), (String::from(odd), None));
+        // One that fits is left alone, as before.
+        let fits = "fs pages=20480 cache_mib=64";
+        assert_eq!(size_fs(fits, 2048, 1 << 20), (String::from(fits), None));
+    }
+
+    #[test]
+    fn a_huge_pages_line_saturates_and_never_overflows() {
+        let plan = format!("fs pages=8192\nshell pages={}", u64::MAX);
+        let (_, fs) = size_fs(&plan, 2048, 1 << 20);
+        let fs = fs.unwrap();
+        assert_eq!((fs.cache_mib, fs.room_mib), (16, 0), "{fs:?}");
+    }
+
+    /// The margin is one demand service, as #1036 proposed. On a 1 GiB machine
+    /// with no model and the full system plan, the boot services still admit
+    /// with MIN_ROOM and the largest demand service beside them. Every demand
+    /// service open at once (296 MiB) fits neither here nor on main (its 16 MiB
+    /// cache leaves 249 MiB), so a margin of all of them would allow no cache
+    /// above 16 MiB on 1 GiB. The 64 MiB cache costs 48 MiB of that room.
+    #[test]
+    fn a_1_gib_machine_with_no_model_still_admits_the_full_plan() {
+        let (plan, budget) = system(1024, 8);
+        let (sized, fs) = size_fs(&plan, 2048, budget);
+        let fs = fs.unwrap();
+        assert_eq!((fs.cache_mib, fs.room_mib), (64, 201), "{fs:?}");
+        let parsed = crate::parse_plan(&sized);
+        let committed = boot_pages(&parsed, 2048);
+        assert!(committed <= budget);
+        let demand = parsed
+            .services
+            .iter()
+            .filter(|s| s.start == Start::Demand)
+            .map(|s| s.limits.max_pages);
+        let (largest, all) = (demand.clone().max().unwrap(), demand.sum::<u64>());
+        assert!(!tight(committed + largest, budget));
+        assert_eq!(all / PAGES_PER_MIB, 296);
+        let main_room = fs.room_mib + (fs.cache_mib - 16);
+        assert!(
+            all / PAGES_PER_MIB > main_room,
+            "not even main fit them all"
         );
     }
 
