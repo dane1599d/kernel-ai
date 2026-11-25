@@ -566,8 +566,8 @@ impl Host for System {
         self.files.change(change)
     }
 
-    fn fs_undo(&self, txn: u64, anyway: bool) -> Result<u64, shellcore::FsRefused> {
-        self.files.undo(txn, anyway)
+    fn fs_undo(&self, txn: u64) -> Result<shellcore::FsUndone, shellcore::FsRefused> {
+        self.files.undo(txn)
     }
 
     fn run_apart(&self, request: &str) -> Option<Result<String, String>> {

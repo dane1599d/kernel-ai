@@ -1,6 +1,7 @@
 //! The test host's side of [`Host`]: what each call does on [`FakeHost`].
 
 use super::*;
+use alloc::collections::BTreeSet;
 
 impl Host for FakeHost {
     fn now_ns(&self) -> u64 {
@@ -420,7 +421,12 @@ impl Host for FakeHost {
         Ok(txns.len() as u64)
     }
 
-    fn fs_undo(&self, txn: u64, anyway: bool) -> Result<u64, FsRefused> {
+    /// Restores transaction `txn` as kaifs does, file by file: a file that a
+    /// later change touched is never restored over. One that existed before
+    /// keeps its old text beside it as `name (restored)`; one the transaction
+    /// made, or one a later change removed, is left. A restore that put any
+    /// file back is a transaction of its own; one that put none back is refused.
+    fn fs_undo(&self, txn: u64) -> Result<FsUndone, FsRefused> {
         let (before, after) = self
             .txns
             .borrow()
@@ -432,17 +438,46 @@ impl Host for FakeHost {
         if self.open_txn.get() == Some(txn as usize - 1) {
             self.open_txn.set(None);
             *self.files.borrow_mut() = before;
-            return Ok(txn);
+            return Ok(FsUndone {
+                generation: txn,
+                left: 0,
+            });
         }
-        if now != after && !anyway {
-            return Err(FsRefused::Later(String::from(
-                "a later change touched them",
+        let touched: BTreeSet<&String> = before
+            .keys()
+            .chain(after.keys())
+            .filter(|path| before.get(*path) != after.get(*path))
+            .collect();
+        let mut files = now.clone();
+        let (mut left, mut restored) = (0, false);
+        for path in touched {
+            match (before.get(path), now.get(path)) {
+                (was, is) if is == after.get(path) => {
+                    match was {
+                        Some(text) => files.insert(path.clone(), text.clone()),
+                        None => files.remove(path),
+                    };
+                    restored = true;
+                }
+                (Some(was), Some(_)) => {
+                    files.insert(format!("{path} (restored)"), was.clone());
+                    restored = true;
+                }
+                _ => left += 1,
+            }
+        }
+        if !restored && left > 0 {
+            return Err(FsRefused::Failed(format!(
+                "{left} file(s) changed since, and fs never restores over a later change"
             )));
         }
-        *self.files.borrow_mut() = before.clone();
+        *self.files.borrow_mut() = files.clone();
         let mut txns = self.txns.borrow_mut();
-        txns.push((now, before));
-        Ok(txns.len() as u64)
+        txns.push((now, files));
+        Ok(FsUndone {
+            generation: txns.len() as u64,
+            left,
+        })
     }
 
     fn restart_service(&self, name: &str, proof: Proof) -> Result<(), String> {
