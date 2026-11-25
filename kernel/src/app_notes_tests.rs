@@ -1,7 +1,7 @@
 //! `test=app-notes` (P4's close, the agent-driven Notes case): Kai makes notes
 //! in Notes' window, the window shows them, they are on disk, and `undo` takes
 //! one back. Lines go to the shell as typed lines, and the mock model answers
-//! each by its line (`xtask/src/mock_llm.rs`):
+//! each by its line (`xtask/src/mock_llm/`):
 //!
 //! 1. "add a note saying buy milk" runs Notes' `notes_add` over the app route.
 //!    The text is in the person's own words, so the call runs without asking
