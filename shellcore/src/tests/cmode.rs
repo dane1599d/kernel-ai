@@ -289,6 +289,21 @@ fn an_entry_stops_after_its_call_limit_and_at_ctrl_c() {
     assert_eq!(shell.eval("2 + 2").text, "= 4");
 }
 
+/// bug-hunt-3 H3-23: an entry stopped at its call limit puts its first
+/// change back, though its calls outnumber the records the log keeps.
+#[test]
+fn an_entry_stopped_at_its_call_limit_puts_its_first_change_back() {
+    let host = FakeHost::new();
+    let mut shell = c_shell(&host);
+    assert!(shell.eval("I64 n;").ok);
+    let many = shell.eval("set_policy(\"round-robin\"); for (I64 i = 0; i < 300; i++) cpus(&n);");
+    assert_eq!(
+        many.text, "stopped: more than 256 kai calls in one entry",
+        "{many:?}"
+    );
+    assert_eq!(host.policy.get(), Some(policy::INTERACTIVE));
+}
+
 #[test]
 fn colon_c_inside_an_open_rhai_entry_stays_rhai() {
     let host = FakeHost::new();
