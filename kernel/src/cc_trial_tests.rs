@@ -29,12 +29,9 @@ const CC: &str = "cc";
 /// The `Shm`'s pages, as `ccserve::build::shm` sizes it: the artifact's length
 /// as a u64, then the artifact.
 const PAGES: u64 = (MAX_ARTIFACT as u64 + 8).div_ceil(PAGE_SIZE);
-/// What the shell's trial moves to cc (`shell/build.rs`): no WRITE, and INSPECT
-/// for cc's size check (SHM_INFO).
-const TRIAL_RIGHTS: Rights = Rights::MAP
-    .union(Rights::READ)
-    .union(Rights::INSPECT)
-    .union(Rights::TRANSFER);
+/// What the shell's trial moves to cc (`shell/build.rs`): no WRITE. cc's size
+/// check (SHM_INFO) needs no right of its own.
+const TRIAL_RIGHTS: Rights = Rights::MAP.union(Rights::READ).union(Rights::TRANSFER);
 /// The shell's wait for a trial (`shellcore::appbuild::CC_TRIAL_WAIT_MS`).
 const CALL_MS: u64 = 90_000;
 
@@ -140,7 +137,7 @@ fn ask_cc(request: &str, object: u64) -> Result<Vec<u8>, &'static str> {
     let extra = ipc::Extra {
         badge: 0,
         rights: 0,
-        handles: vec![Entry::new(Kind::Shm, TRIAL_RIGHTS, object)],
+        handles: vec![Entry::new(Kind::Shm, TRIAL_RIGHTS, object)].into(),
     };
     let deadline = hpet::nanos() + CALL_MS * 1_000_000;
     match ipc::call_with(CC, request.as_bytes(), 0, deadline, || false, extra) {

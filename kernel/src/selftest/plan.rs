@@ -57,6 +57,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskCardWake
             | SelfTest::DeskCatalog
             | SelfTest::UiWindow
+            | SelfTest::DeskWheelApp
             | SelfTest::UiWindowShow
             | SelfTest::AppEditor
             | SelfTest::AppEditorFiles
@@ -72,6 +73,8 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskCard
             | SelfTest::DeskStanding
             | SelfTest::DeskStandingRefused
+            | SelfTest::DeskStandingUndo
+            | SelfTest::DeskSends
             | SelfTest::DeskPerf
             | SelfTest::DeskProfile
             | SelfTest::DeskProfileFloor
@@ -263,7 +266,8 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskReopen
             | SelfTest::DeskStart
             | SelfTest::DeskStartEsc
-            | SelfTest::DeskStandingRefused => {
+            | SelfTest::DeskStandingRefused
+            | SelfTest::DeskSends => {
                 plan.push('\n');
                 plan.push_str(crate::agent_desk_tests::DESK);
                 kabi::plan::SHELL_DESK
@@ -377,6 +381,10 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(crate::ui_tests::PLAN);
     }
+    if test == SelfTest::DeskWheelApp {
+        plan.push('\n');
+        plan.push_str(crate::desk_wheel_app_tests::PLAN);
+    }
     if test == SelfTest::UiWindowShow {
         plan.push('\n');
         plan.push_str(crate::show_tests::PLAN);
@@ -410,7 +418,7 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
         plan.push('\n');
         plan.push_str(crate::nap_tests::PLAN);
     }
-    if test == SelfTest::DeskStanding {
+    if matches!(test, SelfTest::DeskStanding | SelfTest::DeskStandingUndo) {
         plan.push('\n');
         plan.push_str(crate::standing_tests::PLAN);
     }
@@ -456,6 +464,11 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
     if test == SelfTest::AppSettings {
         plan.push('\n');
         plan.push_str(crate::app_settings_tests::APPS);
+    }
+    // Notes, for the saved text size to reach an app's window.
+    if test == SelfTest::DeskAppearance {
+        plan.push('\n');
+        plan.push_str(crate::appearance_tests::NOTES);
     }
     // The app whose routes are `desktop` and `fetch`: `with_updated` planned
     // `fetch` before the shell already.

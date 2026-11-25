@@ -129,7 +129,8 @@ pub fn actions(rows: &[&'static agentabi::Action]) -> Vec<Action<'static>> {
 /// arguments: the pack shows only its name, so the call stops after it. A
 /// row of those that takes arguments has a second grammar of its own, used
 /// once more with its group's full lines after the request. Installed apps'
-/// rows are all index-only (`pack::apps`).
+/// rows are all index-only (`pack::apps`), except in [`grammar_flat`]'s,
+/// spike S10-2's flat arm, where every app's lines are shown in full.
 pub struct Grammar {
     first: Tagged<'static>,
     second: Vec<(&'static str, Tagged<'static>)>,
@@ -182,7 +183,37 @@ pub fn grammar() -> Result<Grammar, infer::Error> {
 /// (`pack::apps::turn`); an app left out of the turn cannot be named either.
 /// Each build leaks its actions, so llm builds one only when its apps change.
 pub fn grammar_with(groups: &[AppGroup]) -> Result<Grammar, infer::Error> {
-    let (apps_turn, left_out) = apps::turn(groups);
+    grammar_counted(groups, apps::estimate)
+}
+
+/// [`grammar_with`], with the apps turn's tokens given by `count`
+/// (`pack::apps::turn_counted`): llm passes the engine's tokenizer.
+pub fn grammar_counted(
+    groups: &[AppGroup],
+    count: impl Fn(&str) -> usize,
+) -> Result<Grammar, infer::Error> {
+    build(groups, Some(&count))
+}
+
+/// Spike S10-2's flat arm: [`grammar_with`] with every app's full lines in
+/// the apps turn (`pack::apps::flat_turn`), so an app row is written in one
+/// round. The pack's own index groups stay as they ship.
+pub fn grammar_flat(groups: &[AppGroup]) -> Result<Grammar, infer::Error> {
+    build(groups, None)
+}
+
+/// The grammars over the pack's rows and `groups`' rows, those on the index
+/// level when `count` is given (the apps turn counted with it), all in the
+/// flat apps turn (no budget, no count) when it is `None`.
+fn build(
+    groups: &[AppGroup],
+    count: Option<&dyn Fn(&str) -> usize>,
+) -> Result<Grammar, infer::Error> {
+    let apps_indexed = count.is_some();
+    let (apps_turn, left_out) = match count {
+        Some(count) => apps::turn_counted(groups, count),
+        None => apps::flat_turn(groups),
+    };
     let shown: Vec<AppGroup> = groups
         .iter()
         .filter(|group| !left_out.contains(&group.app))
@@ -190,8 +221,10 @@ pub fn grammar_with(groups: &[AppGroup]) -> Result<Grammar, infer::Error> {
         .collect();
     let mut rows = crate::pack::rows();
     rows.extend(shown.iter().flat_map(|group| group.rows.iter().copied()));
-    let index_only =
-        |name: &str| crate::pack::indexed(name).is_some() || apps::group_of(&shown, name).is_some();
+    let index_only = |name: &str| {
+        crate::pack::indexed(name).is_some()
+            || (apps_indexed && apps::group_of(&shown, name).is_some())
+    };
     let full = actions(&rows);
     let mut second = Vec::new();
     for action in full.iter().filter(|a| !a.args.is_empty()) {

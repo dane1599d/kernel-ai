@@ -2,7 +2,9 @@
 //! halves, as the VirtIO 1.2 spec requires of a driver (4.1.3.1). virtio-drivers
 //! 0.13 writes each with one 64-bit store, which QEMU accepts and VirtualBox's
 //! virtio-net never completes: the vCPU retries the store forever. Everything but
-//! `queue_set` goes to the wrapped transport unchanged.
+//! `queue_set` goes to the wrapped transport unchanged. It also gives one
+//! queue an MSI-X entry ([`SplitTransport::route_queue`]): the network card's
+//! receive queue, so frames raise an interrupt (P5 plan 3.2).
 
 use super::pci::EcamAccess;
 use virtio_drivers::transport::pci::PciTransport;
@@ -16,19 +18,27 @@ const CAP_VENDOR: u8 = 0x09;
 /// The common configuration structure's `cfg_type`.
 const COMMON_CFG: u8 = 1;
 /// Offsets in the common configuration structure.
+const MSIX_CONFIG: u64 = 16;
 const QUEUE_SELECT: u64 = 22;
 const QUEUE_SIZE: u64 = 24;
+const QUEUE_MSIX_VECTOR: u64 = 26;
 const QUEUE_ENABLE: u64 = 28;
 const QUEUE_DESC: u64 = 32;
 const QUEUE_DRIVER: u64 = 40;
 const QUEUE_DEVICE: u64 = 48;
 /// Bytes of it the driver writes.
 pub const COMMON_CFG_BYTES: u64 = 56;
+/// No MSI-X entry: the event is not signalled (VirtIO 1.2, 4.1.4.3).
+const NO_VECTOR: u16 = 0xFFFF;
 
 pub struct SplitTransport {
     inner: PciTransport,
     /// The common configuration structure, mapped uncached.
     common: u64,
+    /// The queue given an MSI-X entry, and the entry.
+    routed: Option<(u16, u16)>,
+    /// Whether the device took that entry when the queue was set up.
+    routed_taken: bool,
 }
 
 /// The physical address of `function`'s common configuration structure, from its
@@ -65,13 +75,35 @@ pub fn common_cfg(ecam: &EcamAccess, function: DeviceFunction) -> Option<u64> {
 impl SplitTransport {
     /// Wraps `inner`, whose common configuration is mapped at `common`.
     pub fn new(inner: PciTransport, common: u64) -> Self {
-        Self { inner, common }
+        Self {
+            inner,
+            common,
+            routed: None,
+            routed_taken: false,
+        }
+    }
+
+    /// Gives `queue` MSI-X table entry `entry` when it is set up; every other
+    /// queue and the configuration change get none. MSI-X must be on.
+    pub fn route_queue(&mut self, queue: u16, entry: u16) {
+        self.routed = Some((queue, entry));
+    }
+
+    /// Whether the routed queue was set up with its entry: the device reads
+    /// back NO_VECTOR when it could not take it.
+    pub fn routed(&self) -> bool {
+        self.routed_taken
     }
 
     fn write16(&mut self, offset: u64, value: u16) {
         // SAFETY: `common` maps the device's common configuration structure for at
         // least COMMON_CFG_BYTES, uncached, and every offset used is inside it.
         unsafe { ((self.common + offset) as *mut u16).write_volatile(value) }
+    }
+
+    fn read16(&self, offset: u64) -> u16 {
+        // SAFETY: as in write16.
+        unsafe { ((self.common + offset) as *const u16).read_volatile() }
     }
 
     fn write64(&mut self, offset: u64, value: u64) {
@@ -130,6 +162,14 @@ impl Transport for SplitTransport {
     ) {
         self.write16(QUEUE_SELECT, queue);
         self.write16(QUEUE_SIZE, size as u16);
+        if let Some((routed, entry)) = self.routed {
+            self.write16(MSIX_CONFIG, NO_VECTOR);
+            let vector = if routed == queue { entry } else { NO_VECTOR };
+            self.write16(QUEUE_MSIX_VECTOR, vector);
+            if routed == queue {
+                self.routed_taken = self.read16(QUEUE_MSIX_VECTOR) == entry;
+            }
+        }
         self.write64(QUEUE_DESC, descriptors);
         self.write64(QUEUE_DRIVER, driver_area);
         self.write64(QUEUE_DEVICE, device_area);

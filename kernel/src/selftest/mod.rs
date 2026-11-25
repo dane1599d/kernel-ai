@@ -205,6 +205,9 @@ pub enum SelfTest {
     DeskCatalog,
     /// An app's kai:ui window on the desktop, closed from its control (P3 task 9).
     UiWindow,
+    /// The wheel over an app's list scrolls it: Notes seeded past its list's
+    /// height, the wheel turned over it, and `desktop` sees it draw again.
+    DeskWheelApp,
     /// A closed app's window stays closed until asked, then comes back
     /// (backlog item 2).
     UiWindowShow,
@@ -248,6 +251,11 @@ pub enum SelfTest {
     /// No standing instruction from text the AI read, and no firing outside
     /// the rule allowed (P3's exit case).
     DeskStandingRefused,
+    /// An allowed standing instruction taken back by `undo`, then by
+    /// `rules_remove`: its grant gone, and its event fires nothing.
+    DeskStandingUndo,
+    /// A send's desk card, its text read through in the Kai pane, its hold and undo.
+    DeskSends,
     /// S05-1's budgets timed on the real `desktop` (P3's exit case).
     DeskPerf,
     /// A profile applied exactly, switched by a focus change, undone (P3's exit case).
@@ -337,6 +345,9 @@ pub enum SelfTest {
     EfiReset,
     /// POWER_REBOOT from ring 3, refused without `cap::POWER` (backlog item 13).
     PowerReboot,
+    /// POWER_OFF from ring 3, refused without `cap::POWER`; with it the machine
+    /// turns off through ResetSystem (ADR 0007 section 8).
+    PowerOff,
     /// The boot lever on a slot image, driven by `slot-do=` (ADR 0008, lane U).
     Slot,
     /// Probation's commit on a slot image (ADR 0008 §5).
@@ -365,6 +376,8 @@ pub enum SelfTest {
     NetDest,
     /// P5 task 2: TCP streams on a `NetDest`.
     NetStream,
+    /// P5-S2's bar on main's driver: one bulk download from the host.
+    NetThroughput,
     /// P5 task 12's harness: xtask's HTTPS mock reached from ring 3.
     HttpsMock,
     /// P5 task 6, the roadmap's P5 exit: a download cut and resumed, across a

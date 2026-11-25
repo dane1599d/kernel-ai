@@ -2,7 +2,7 @@
 //! 10,000 generated calls give the same results on wasmi through `appabi` as on
 //! Wasmtime 50's component runtime. Pass: 0 differences.
 
-use appabi_spike::{Ty, Val};
+use appabi::{Ty, Val};
 use s03_1_oracle::{WasmiGuest, WasmtimeGuest, build_guest, probe_funcs, wrap};
 use wasmtime::component::{ResourceAny, Val as WVal};
 
@@ -260,6 +260,16 @@ fn from_wasmtime(v: &WVal, ty: &Ty, new: &mut Vec<ResourceAny>) -> Val {
     }
 }
 
+/// The two engines' results agree as WAVE text, the form ADR 0003 §2 compares
+/// them in. A handle has no text form, so a result that holds one is compared by
+/// structure, and what the new handle holds is checked through the pool later.
+fn agree(a: &Val, b: &Val, ty: &Ty) -> bool {
+    match (appabi::wave::print(a, ty), appabi::wave::print(b, ty)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => same(a, b),
+    }
+}
+
 /// Values compared the way WAVE text would print them: every NaN is one NaN.
 fn same(a: &Val, b: &Val) -> bool {
     match (a, b) {
@@ -355,7 +365,7 @@ fn ten_thousand_calls_give_the_same_results_on_both_engines() {
                 .map(|(v, t)| from_wasmtime(&v, t, &mut new))
         });
         match (&left, &right) {
-            (Ok(Some(l)), Ok(Some(r))) if same(l, r) => {
+            (Ok(Some(l)), Ok(Some(r))) if func.result.as_ref().is_some_and(|t| agree(l, r, t)) => {
                 if let (Val::Own(h), Some(res)) = (l, new.pop()) {
                     pool.push((*h, res));
                 }

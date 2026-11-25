@@ -9,6 +9,7 @@ use alloc::vec;
 
 mod budget;
 mod denied;
+mod later;
 
 const T0: u64 = 1_000_000;
 const HOUR: u64 = 3_600_000;
@@ -269,6 +270,22 @@ fn a_check_in_is_posted_when_it_is_due_and_a_turn_runs_one_step_in_all() {
         })
         .collect();
     assert_eq!(checked, [a, b]);
+}
+
+#[test]
+fn a_goal_the_shell_made_is_adopted_under_its_own_id_once() {
+    let mut theirs = Goals::new();
+    let id = approved(&mut theirs);
+    let goal = theirs.get(id).unwrap().clone();
+    let mut ours = Goals::new();
+    let mut moved = goal.clone();
+    moved.id = 42;
+    ours.adopt(moved.clone()).unwrap();
+    assert_eq!(ours.get(42).map(|g| g.state), Some(State::Active));
+    assert!(ours.adopt(moved).is_err(), "kept already");
+    // A goal set later gets an id above every one adopted.
+    let next = ours.set(spec(), T0).unwrap();
+    assert!(next > 42);
 }
 
 /// A planner that never proposes and charges each time.

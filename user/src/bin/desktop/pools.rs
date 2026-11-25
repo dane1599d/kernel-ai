@@ -25,6 +25,9 @@ fn release_all(state: &mut State, pid: u64) {
 pub(super) fn drop_client(state: &mut State, at: usize) {
     let mut client = state.clients.remove(at);
     let pid = client.pid;
+    // A window that never draws again is not waiting on the wheel.
+    let gone: Vec<_> = client.windows().collect();
+    state.wheeled.retain(|(w, ..)| !gone.contains(w));
     let effects = client.close_all(&mut state.desk);
     deliver(state, &effects);
     state.shown.retain(|(_, owner, ..)| *owner != pid);
@@ -53,12 +56,11 @@ pub(super) fn after_closed(state: &mut State, at: usize, pid: u64, pool: Option<
 }
 
 /// Drops the clients whose process is gone, as a crashed or stopped `comphost`
-/// leaves its windows and pools behind: `alive` is the kernel's list of
-/// processes and `whole` whether it is certainly the whole list
-/// (`deskcore::reap`); a client that lets its events pile up goes too.
-pub(super) fn reap(state: &mut State, alive: &[u64], whole: bool) {
+/// leaves its windows and pools behind: the kernel says so (`PROC_ALIVE`, see
+/// `deskcore::reap`); a client that lets its events pile up goes too.
+pub(super) fn reap(state: &mut State) {
     let pids: Vec<u64> = state.clients.iter().map(|c| c.pid).collect();
-    for pid in state.reaper.gone(&pids, alive, whole) {
+    for pid in deskcore::reap::gone(&pids, |pid| sys::proc_alive(pid).ok()) {
         println!("desktop: pid {pid} is gone; its windows close");
         if let Some(at) = state.clients.iter().position(|c| c.pid == pid) {
             drop_client(state, at);

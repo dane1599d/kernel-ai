@@ -636,3 +636,71 @@ call Ann
     call(&mut h, |h| h.code_size(w, CODE, 12, 60)).unwrap();
     assert!(h.take_files().is_empty());
 }
+
+/// The limits the Editor runs under in the OS: the host's defaults with the
+/// settings words of its plan line (`kabi::plan::EDITOR`, from `version=` on).
+fn plan_limits() -> Limits {
+    let words: Vec<&str> = kabi::plan::EDITOR
+        .split_whitespace()
+        .skip_while(|w| !w.starts_with("version="))
+        .collect();
+    let s = livecore::settings::Settings::parse(&words.join(" ")).unwrap();
+    Limits {
+        fuel_call: s.fuel_call,
+        fuel_life: s.fuel_life,
+        memory_bytes: s.memory_kib as usize * 1024,
+    }
+}
+
+/// A file near the editor's 60 KiB limit opens in one call under the Editor's
+/// own settings (its plan line asks for 20 million fuel; the default 5 million
+/// is not enough for 58,900 bytes), and the window then draws it.
+#[test]
+fn a_file_near_the_limit_opens_in_one_call_under_the_editors_own_settings() {
+    const PATH: &str = "/home/user/big.txt";
+    let Some(wasm) = wasm() else { return };
+    let limits = plan_limits();
+    assert!(
+        limits.fuel_call > LIMITS.fuel_call,
+        "the plan line asks for more"
+    );
+    let disk: String = (0..1900)
+        .map(|i| format!("line {i:04} {}\n", "-".repeat(20)))
+        .collect();
+    assert!(disk.len() > 58_000 && disk.len() < editcore::MAX_BUNDLE);
+    let mut g = start_with(&wasm, limits);
+    let w = open_the_file(&mut g, PATH, &disk);
+    call(&mut g, |g| g.code_size(w, CODE, 10, 60)).unwrap();
+    let (_, f) = frame(&mut g);
+    let text = text_of(&f);
+    assert!(text.contains("line 0000"), "{text}");
+}
+
+/// A file near the editor's 60 KiB limit opens in a call of 9,000,000 fuel,
+/// where it took 14.5 million before `Session::changed` was kept per text
+/// (each answer read the whole file in a byte loop, several times a frame).
+/// The default is 5,000,000; what is left (about 7.5 million at 58,900 bytes)
+/// is the window itself, 3.5 million at any size, and the parse of the bytes,
+/// so the Editor's plan line asks for more (`fuel_call`) until the parse is
+/// lazier. This pins the gain.
+#[test]
+fn a_file_near_the_limit_opens_in_nine_million_fuel() {
+    const PATH: &str = "/home/user/big.txt";
+    let Some(wasm) = wasm() else { return };
+    let disk: String = (0..1900)
+        .map(|i| format!("line {i:04} {}\n", "-".repeat(20)))
+        .collect();
+    assert!(disk.len() > 58_000 && disk.len() < editcore::MAX_BUNDLE);
+    let limits = Limits {
+        fuel_call: 9_000_000,
+        fuel_life: 20_000_000_000,
+        memory_bytes: 16 * 1024 * 1024,
+    };
+    let mut g = start_with(&wasm, limits);
+    let w = open_the_file(&mut g, PATH, &disk);
+    // The window then draws it, in a call of its own.
+    call(&mut g, |g| g.code_size(w, CODE, 10, 60)).unwrap();
+    let (_, f) = frame(&mut g);
+    let text = text_of(&f);
+    assert!(text.contains("line 0000"), "{text}");
+}

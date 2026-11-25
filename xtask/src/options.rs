@@ -72,6 +72,12 @@ pub struct Options {
     pub fresh_data: bool,
     /// `run --cache-mib N`: the size of a fresh data disk's `kai-cache`.
     pub cache_mib: u64,
+    /// `build --out DIR`: also write what a test run boots into DIR, with a
+    /// manifest of hashes (`prebuilt.rs`), for other runners to boot.
+    pub out: Option<PathBuf>,
+    /// `test --prebuilt DIR --prebuilt-sha SHA`: boot DIR's artifacts when its
+    /// manifest hashes to SHA and matches this run; build as usual otherwise.
+    pub prebuilt: Option<(PathBuf, String)>,
 }
 
 impl Options {
@@ -141,7 +147,10 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         data_disk: None,
         fresh_data: false,
         cache_mib: crate::blklog::CACHE_MIB,
+        out: None,
+        prebuilt: None,
     };
+    let mut prebuilt_sha = None;
     let mut rest = args[1..].iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
@@ -257,6 +266,18 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                 let text = rest.next().ok_or("--shard expects K/N, such as 1/3")?;
                 options.shard = Some(parse_shard(text)?);
             }
+            "--out" if task == Task::Build => {
+                let dir = rest.next().ok_or("--out expects a directory")?;
+                options.out = Some(PathBuf::from(dir));
+            }
+            "--prebuilt" if task == Task::Test => {
+                let dir = rest.next().ok_or("--prebuilt expects a directory")?;
+                options.prebuilt = Some((PathBuf::from(dir), String::new()));
+            }
+            "--prebuilt-sha" if task == Task::Test => {
+                let sha = rest.next().filter(|s| is_sha256(s));
+                prebuilt_sha = Some(sha.ok_or("--prebuilt-sha expects 64 hex digits")?.clone());
+            }
             "--model" => {
                 let model = rest.next().ok_or("--model expects a model name")?;
                 if model.is_empty() || model.chars().any(char::is_whitespace) {
@@ -266,6 +287,11 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
             }
             other => return Err(format!("unknown option {other}")),
         }
+    }
+    match (&mut options.prebuilt, prebuilt_sha) {
+        (Some((_, sha)), Some(given)) => *sha = given,
+        (None, None) => {}
+        _ => return Err("--prebuilt and --prebuilt-sha go together".into()),
     }
     if options.local.is_some() && options.model_disk.is_some() {
         return Err("--local and --model-disk both name the model disk; give one".into());
@@ -282,6 +308,11 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         return Err("icount boots with no network card, so --llm and --model are refused".into());
     }
     Ok(options)
+}
+
+/// A SHA-256 in lowercase hex, as `sha256_hex` writes it.
+fn is_sha256(text: &str) -> bool {
+    text.len() == 64 && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// `K/N` with 1 <= K <= N.
@@ -397,6 +428,20 @@ mod tests {
             assert_eq!(hits, 1);
             assert!(in_shard(None, index));
         }
+    }
+
+    #[test]
+    fn build_writes_out_and_test_boots_prebuilt_with_its_sha() {
+        let build = parse_args(&args(&["build", "--spikes", "--out", "o"])).unwrap();
+        assert_eq!(build.out, Some(PathBuf::from("o")));
+        let sha = "ab".repeat(32);
+        let test = parse_args(&args(&["test", "--prebuilt", "o", "--prebuilt-sha", &sha])).unwrap();
+        assert_eq!(test.prebuilt, Some((PathBuf::from("o"), sha.clone())));
+        assert!(parse_args(&args(&["test", "--prebuilt", "o"])).is_err());
+        assert!(parse_args(&args(&["test", "--prebuilt-sha", &sha])).is_err());
+        assert!(parse_args(&args(&["test", "--prebuilt", "o", "--prebuilt-sha", "ab"])).is_err());
+        assert!(parse_args(&args(&["test", "--out", "o"])).is_err());
+        assert!(parse_args(&args(&["build", "--prebuilt", "o"])).is_err());
     }
 
     #[test]

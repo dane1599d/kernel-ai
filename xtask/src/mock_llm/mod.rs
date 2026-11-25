@@ -8,6 +8,7 @@ mod act;
 mod acts;
 mod app;
 mod query;
+mod sends;
 #[cfg(test)]
 mod tests;
 mod tune;

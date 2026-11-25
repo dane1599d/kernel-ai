@@ -87,12 +87,40 @@ pub fn power_check() -> Result<(), &'static str> {
     restart()
 }
 
+/// `test=power-off` (ADR 0007 section 8): POWER_OFF from ring 3, refused
+/// without `cap::POWER`; with it (`hpoweroff`, started by the kernel) the
+/// machine turns off through ResetSystem, so QEMU ends by a guest shutdown.
+pub fn power_off_check() -> Result<(), &'static str> {
+    let refused = start_power("hnopoweroff", 0, b"mode=poweroff")?;
+    if crate::fpu_tests::wait_exit(refused)? != (kabi::ExitReason::Exited, 0) {
+        return Err("power: POWER_OFF without POWER was not refused");
+    }
+    log!("power: POWER_OFF without the power capability was refused");
+    if crate::efi::power_off_fallback() {
+        // What `desktop` does when it takes the screen (this boot runs none).
+        crate::console::suspend();
+    }
+    let held = start_power("hpoweroff", kabi::cap::POWER, b"mode=poweroff")?;
+    let got = crate::fpu_tests::wait_exit(held)?;
+    log!(
+        "power: hpoweroff ended {} ({}) instead of turning off",
+        got.0.name(),
+        got.1
+    );
+    Err("power: POWER_OFF with POWER did not turn the machine off")
+}
+
 /// Starts `handles mode=reboot` as `name` with `caps`.
 fn start_reboot(name: &'static str, caps: u64) -> Result<u64, &'static str> {
+    start_power(name, caps, b"mode=reboot")
+}
+
+/// Starts `handles` with `args` as `name` with `caps`.
+fn start_power(name: &'static str, caps: u64, args: &'static [u8]) -> Result<u64, &'static str> {
     crate::process::spawn(&crate::process::SpawnRequest {
         name,
         program: "handles",
-        args: b"mode=reboot",
+        args,
         limits: kabi::Limits {
             max_pages: 256,
             max_burst_ms: 10_000,

@@ -486,3 +486,62 @@ fn an_odd_name_in_a_grant_change_changes_and_logs_nothing() {
         Some("kai-withheld 1\nfiles fs_list\n")
     );
 }
+
+#[test]
+fn an_unanswered_keep_running_switch_counts_as_made_on_both_sides() {
+    // The app took the switch and did not answer: the supervisor keeps its
+    // record as asked, so the list does too, and the later "off" is sent.
+    let host = host();
+    let mut shell = shell(&host);
+    *host.keep_refusal.borrow_mut() = Some(String::from(
+        "unanswered notes took the keep-running on and did not answer; it may have taken effect",
+    ));
+    let on = shell.settings(SETTINGS_APP, "keep-running on notes", true);
+    assert!(
+        on.as_deref().is_ok_and(
+            |t| t.starts_with("notes keep-running on;") && t.contains("may have taken effect")
+        ),
+        "{on:?}"
+    );
+    assert_eq!(
+        host.keep_file.borrow().as_deref(),
+        Some("kai-keep 1\nnotes\n")
+    );
+    *host.keep_refusal.borrow_mut() = None;
+    assert_eq!(
+        shell.settings(SETTINGS_APP, "keep-running off notes", true),
+        Ok(String::from("notes keep-running off"))
+    );
+    assert_eq!(*host.kept.borrow(), [(String::from("notes"), false)]);
+}
+
+#[test]
+fn a_saved_kept_app_that_takes_the_switch_unanswered_stays_kept() {
+    // At boot, and on a retry: the switch is made on the supervisor's side,
+    // so the shell's list keeps the app and a later "off" is still sent.
+    let unanswered =
+        "unanswered notes took the keep-running on and did not answer; it may have taken effect";
+    let host = host_with_keep("kai-keep 1\nnotes\n");
+    *host.keep_refusal.borrow_mut() = Some(String::from(unanswered));
+    let mut booted = shell(&host);
+    *host.keep_refusal.borrow_mut() = None;
+    assert_eq!(
+        booted.settings(
+            crate::settings::SETTINGS_APP,
+            "keep-running off notes",
+            true
+        ),
+        Ok(String::from("notes keep-running off"))
+    );
+    let retried = host_with_keep("kai-keep 1\nnotes\n");
+    retried.keep_fails.set(1);
+    let mut later = shell(&retried);
+    *retried.keep_refusal.borrow_mut() = Some(String::from(unanswered));
+    retried.clock.set(retried.clock.get() + 1_000_000_000);
+    later.retry_keep();
+    *retried.keep_refusal.borrow_mut() = None;
+    assert_eq!(
+        later.settings(crate::settings::SETTINGS_APP, "keep-running on notes", true),
+        Ok(String::from("notes keep-running is on already"))
+    );
+}

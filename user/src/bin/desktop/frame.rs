@@ -81,11 +81,8 @@ pub(super) fn refresh_bar(state: &mut State) {
         return;
     };
     let listed = &m.processes[..(m.process_count as usize).min(m.processes.len())];
-    // A client whose process is gone leaves its windows and pools: dropped, but
-    // only on a list that is whole (see `deskcore::reap`).
-    let alive: Vec<u64> = listed.iter().map(|p| p.pid).collect();
-    let whole = deskcore::reap::list_is_whole(listed.len(), m.processes.len());
-    pools::reap(state, &alive, whole);
+    // A client whose process is gone leaves its windows and pools: dropped.
+    pools::reap(state);
     let mib = |frames: u64| frames * 4096 / (1024 * 1024);
     let bar = Bar {
         model: listed.iter().any(|p| p.name() == "llm"),
@@ -134,6 +131,7 @@ pub(super) fn draw(state: &mut State, screen: &Screen) {
         chat: &state.chat,
         start: state.start.as_ref(),
         ask: state.card.as_ref(),
+        preview: state.sends.preview(),
         now_ms: now_ms(),
     };
     // A window with no pixels yet shows the theme's window colour.
@@ -205,6 +203,8 @@ pub(super) fn draw(state: &mut State, screen: &Screen) {
     }
     // A card up is on the screen from now: its quiet time can start.
     state.desk.card_drawn(now_ms());
+    // A send's text on the screen now lets its card open.
+    preview::drawn(state, now_ms());
     if !state.drawn {
         state.drawn = true;
         println!("desktop: drew the desk at {}x{}", state.width, state.height);
@@ -241,6 +241,31 @@ fn source<'a>(pools: &'a [Pool], pid: u64, buffer: &Buffer) -> Option<Source<'a>
         alpha: buffer.format == Format::Argb8888,
     })
 }
+
+/// The hashes of the rows of a band of `window`'s picture, at the left of its
+/// content, where an app's list is: `desk-wheel-app` compares them before and
+/// after the wheel (`deskcore::scrolled`). `None` while it has no picture.
+pub(super) fn wheel_rows(state: &State, window: WindowId) -> Option<Vec<u64>> {
+    let (_, pid, buffer, scale) = state.shown.iter().find(|(w, ..)| *w == window)?;
+    let source = source(&state.pools, *pid, buffer)?;
+    // The scale is in 120ths, and the band is in px at 1x.
+    Some(deskcore::scrolled::row_hashes(
+        source.data,
+        source.stride,
+        deskcore::scrolled::buffer_px(BAND_X, *scale),
+        deskcore::scrolled::buffer_px(BAND_WIDTH, *scale),
+    ))
+}
+
+/// The band `wheel_rows` hashes, in logical px from the content's left edge:
+/// inside the left column of Notes' window, which holds the list. It relies on
+/// distinct note titles inside the band: if CI ever logs "did not scroll",
+/// widen the band before touching `scrolled::MIN_ROWS`.
+const BAND_X: usize = 8;
+const BAND_WIDTH: usize = 88;
+
+/// How many pictures of a window after the wheel are compared for a scroll.
+pub(super) const WHEEL_PICTURES: usize = 4;
 
 /// What `draw` fills a window's content with while the client's own pixels
 /// are to go in it: the window colour with the blue bit flipped, which no

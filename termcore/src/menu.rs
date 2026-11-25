@@ -462,6 +462,25 @@ pub fn menu_id(wire: &str) -> Option<u64> {
         .and_then(|id| id.parse().ok())
 }
 
+/// Whether `call` names the send row (`net_send(...)`): a send's menu is
+/// answered only with its text in view, so one that comes without it (a
+/// desk card, whose text is in the Kai pane) is answered on the card or not
+/// at all, never asked bare on the console (ADR 0005 §7, "Amended
+/// 2026-11-19").
+pub fn names_send(call: &str) -> bool {
+    call.strip_prefix("net_send")
+        .is_some_and(|rest| rest.starts_with('('))
+}
+
+/// Whether a menu for `call`, asked with its `shown` text or not, is a
+/// send's that has no text to show beside it: then it is answered on the
+/// desk card (where its text is in the Kai pane) or denied, never asked on
+/// the console, where it would show bare (#1142's review). The kernel's
+/// terminal asks this before it asks a menu on the console.
+pub fn bare_send(shown: bool, call: &str) -> bool {
+    !shown && names_send(call)
+}
+
 /// Where a menu is answered (ADR 0005 §7).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Surface {
@@ -567,6 +586,25 @@ mod tests {
             Menu::decode(&format!("{wire}\nmore")),
             Err(Refused::Malformed)
         );
+    }
+
+    /// A send's menu with its text is the console's; one without it (the
+    /// desk card's) is never asked there; any other menu is as ever.
+    #[test]
+    fn a_sends_menu_without_its_text_is_never_the_consoles() {
+        let send = "net_send(\"a\", \"/b\", \"0123456789abcdef\")";
+        assert!(bare_send(false, send));
+        assert!(!bare_send(true, send));
+        assert!(!bare_send(false, "process_stop(\"x\")"));
+    }
+
+    #[test]
+    fn a_send_is_told_by_its_call() {
+        assert!(names_send("net_send(\"a\", \"/b\", \"0123456789abcdef\")"));
+        assert!(names_send("net_send()"));
+        for call in ["cpus()", "net_sender(\"a\")", "fs_create(\"net_send(\")"] {
+            assert!(!names_send(call), "{call}");
+        }
     }
 
     fn stop(origin: Origin) -> Menu {
