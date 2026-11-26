@@ -224,10 +224,14 @@ pub(super) fn apply_need(
         Need::MapPool { pool, size } => {
             let Some(handle) = handle else { return false };
             // Writable when the client allowed it, for its input ring; read-only
-            // otherwise, as before.
-            let mapped = sys::shm_map(handle, true)
+            // otherwise, as before. Only an `Shm` that holds every page of the
+            // size the client stated: its buffers are read up to that size.
+            let pages = deskcore::server::pool_pages(size);
+            let mapped = sys::shm_map_least(handle, true, pages)
                 .map(|address| (address, true))
-                .or_else(|_| sys::shm_map(handle, false).map(|address| (address, false)));
+                .or_else(|_| {
+                    sys::shm_map_least(handle, false, pages).map(|address| (address, false))
+                });
             match mapped {
                 Ok((address, writable)) => {
                     state.pools.push(Pool {
@@ -241,7 +245,9 @@ pub(super) fn apply_need(
                     state.clients[at].pool_mapped(pool);
                     return true;
                 }
-                Err(error) => println!("desktop: cannot map pid {pid}'s pool: {error:?}"),
+                Err(error) => println!(
+                    "desktop: cannot map pid {pid}'s pool of {size} bytes ({pages} pages): {error:?}"
+                ),
             }
             false
         }
@@ -267,16 +273,24 @@ pub(super) fn apply_need(
                         "desktop: window {} scrolled {rows} rows after the wheel ({explained} rows moved)",
                         window.0
                     ),
-                    None if left > 1 => state.wheeled.push((window, before, left - 1)),
-                    // Said, so a case that fails here can be read. No picture
-                    // shows as 0 rows; a band with no px in it (past the
-                    // picture's width) as every row, all with the one hash.
-                    None => println!(
-                        "desktop: window {} did not scroll after the wheel ({} rows before, {} after)",
-                        window.0,
-                        before.len(),
-                        after.len()
-                    ),
+                    // Each miss is said, so a case that fails here can be read:
+                    // one redraw that did not scroll leaves its line even when
+                    // a later picture does. No picture shows as 0 rows; a band
+                    // with no px in it (past the picture's width) as every
+                    // row, all with the one hash.
+                    None => {
+                        let seen = super::frame::WHEEL_PICTURES - left + 1;
+                        println!(
+                            "desktop: window {} did not scroll after the wheel (picture {seen} of {}; {} rows before, {} after)",
+                            window.0,
+                            super::frame::WHEEL_PICTURES,
+                            before.len(),
+                            after.len()
+                        );
+                        if left > 1 {
+                            state.wheeled.push((window, before, left - 1));
+                        }
+                    }
                 }
             }
             false

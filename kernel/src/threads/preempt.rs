@@ -33,32 +33,30 @@ pub fn wake(tid: Tid) {
 /// server). A wake across CPUs is a reschedule interrupt to a CPU that is often
 /// halted, and under KVM each cost about 110-140 us of a call's round trip
 /// (`test=ipc-rtt`'s legs, #1000); on this CPU the caller's wait switches
-/// straight to it, and its reply wakes the caller here too. The move follows
-/// load balancing's rule: never a pinned thread, nor one whose registers are
-/// not saved yet (`ON_CPU`). Otherwise, and when it already runs here, a plain
+/// straight to it, and its reply wakes the caller here too. Only when this CPU
+/// has nothing else to run (its load is the caller alone): a busy CPU would
+/// make the server wait behind its work. The move follows load balancing's
+/// rule, checked under the owner's lock: never a pinned thread, nor one whose
+/// registers are not saved yet (`ON_CPU`); and it counts no wake on the owner
+/// (`Core::detach_asleep`). Otherwise, and when it already runs here, a plain
 /// [`wake`]. Interrupts must be off.
 pub fn wake_here(tid: Tid) {
     let me = percpu::index();
     let owner = OWNER[tid].load(Ordering::Acquire);
-    if owner == me || PINNED[tid].load(Ordering::Relaxed) {
+    if owner == me || LOAD[me].load(Ordering::Relaxed) > 1 {
         wake(tid);
         return;
     }
     let now = hpet::nanos();
     let moved = CORES[owner].lock().as_mut().and_then(|core| {
-        let asleep = matches!(
-            core.state(tid),
-            sched::State::Blocked | sched::State::Sleeping { .. }
-        );
-        if !asleep || ON_CPU[tid].load(Ordering::Acquire) {
+        if PINNED[tid].load(Ordering::Relaxed) || ON_CPU[tid].load(Ordering::Acquire) {
             return None;
         }
-        core.wake(tid, now);
-        let moved = core.detach_runnable(|other| other != tid);
+        let name = core.detach_asleep(tid)?;
         LOAD[owner].store(core.load(), Ordering::Relaxed);
-        moved
+        Some(name)
     });
-    let Some((tid, name)) = moved else {
+    let Some(name) = moved else {
         wake(tid);
         return;
     };
@@ -168,40 +166,45 @@ pub fn on_tick() {
         .ticks
         .load(Ordering::Relaxed)
         .is_multiple_of(BALANCE_EVERY)
+        && let Some((previous, to)) = balance(me)
     {
-        balance(me);
+        switch(previous, to);
     }
 }
 
 /// Pulls one runnable thread from the busiest CPU if it has at least two more
-/// threads than this one. Locks one core at a time.
-fn balance(me: usize) {
+/// threads than this one, with the wait it spent there and whether it woke
+/// (`Core::detach_waiting`): a woken thread keeps its boost and its
+/// wake-to-run sample. Returns the switch to make now, if this CPU was idle or
+/// the thread woke and wins the CPU as a wake here would. Locks one core at a
+/// time.
+fn balance(me: usize) -> Option<(Tid, Tid)> {
     let mine = LOAD[me].load(Ordering::Relaxed);
     let busiest = (0..smp::online())
         .filter(|&cpu| cpu != me)
-        .max_by_key(|&cpu| LOAD[cpu].load(Ordering::Relaxed));
-    let Some(busiest) = busiest else {
-        return;
-    };
+        .max_by_key(|&cpu| LOAD[cpu].load(Ordering::Relaxed))?;
     if LOAD[busiest].load(Ordering::Relaxed) < mine + 2 {
-        return;
+        return None;
     }
+    let now = hpet::nanos();
     let moved = CORES[busiest].lock().as_mut().and_then(|core| {
-        let moved = core.detach_runnable(|tid| {
-            PINNED[tid].load(Ordering::Relaxed) || ON_CPU[tid].load(Ordering::Acquire)
-        });
+        let moved = core.detach_waiting(
+            |tid| PINNED[tid].load(Ordering::Relaxed) || ON_CPU[tid].load(Ordering::Acquire),
+            now,
+        );
         LOAD[busiest].store(core.load(), Ordering::Relaxed);
         moved
-    });
-    let Some((tid, name)) = moved else {
-        return;
-    };
-    OWNER[tid].store(me, Ordering::Release);
-    if let Some(core) = CORES[me].lock().as_mut() {
-        core.adopt(tid, name, EnqueueReason::Preempted, hpet::nanos());
+    })?;
+    OWNER[moved.tid].store(me, Ordering::Release);
+    let next = CORES[me].lock().as_mut().and_then(|core| {
+        let from = core.current();
+        core.adopt_detached(moved, now);
+        let to = core.preempt_if_pending(now);
         LOAD[me].store(core.load(), Ordering::Relaxed);
-    }
+        to.map(|to| (from, to))
+    });
     MIGRATIONS.fetch_add(1, Ordering::Relaxed);
+    next
 }
 
 static MIGRATIONS: AtomicU64 = AtomicU64::new(0);

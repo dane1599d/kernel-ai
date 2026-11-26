@@ -4,7 +4,7 @@
 //! commit or drop. Outside a call they trap: `init`, `migrate` and the rest of
 //! the lifecycle have no storage or effects.
 
-use crate::instance::HostState;
+use crate::instance::{HostState, bytes_fuel, charge};
 use alloc::string::String;
 use alloc::vec::Vec;
 use livecore::txn::{self, Effect, Storage, Txn};
@@ -113,6 +113,7 @@ pub(crate) fn get(
     };
     let mut area = [0u8; 12];
     if let Some(value) = value {
+        charge(&mut caller, bytes_fuel(value.len()))?;
         let at = if value.is_empty() {
             1
         } else {
@@ -150,6 +151,7 @@ pub(crate) fn put(
     not_in_realloc(&caller)?;
     let key = key(&caller, key_ptr, key_len)?;
     let value = read(&caller, value_ptr, value_len, txn::MAX_VALUE)?;
+    charge(&mut caller, bytes_fuel(key.len() + value.len()))?;
     write(open(&mut caller)?, key, Some(value))
 }
 

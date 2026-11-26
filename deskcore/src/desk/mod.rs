@@ -49,6 +49,10 @@ pub struct Desk {
     pointer: Point,
     /// The window the pointer's content events go to.
     over: Option<WindowId>,
+    /// The window a button was pressed in, and the buttons held (a bit each):
+    /// it has the pointer's motion and every button until the last is up,
+    /// wherever the pointer goes, so it always hears the release.
+    pressed: Option<(WindowId, u8)>,
     /// The title-bar control under the pointer, drawn with its hover fill.
     hovered: Option<(WindowId, Part)>,
     damage: Damage,
@@ -134,6 +138,7 @@ impl Desk {
                 y: height / 2,
             },
             over: None,
+            pressed: None,
             hovered: None,
             damage,
             next: 1,

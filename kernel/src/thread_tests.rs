@@ -416,12 +416,24 @@ static RACE_HELD: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBoo
 static RACE_RELEASED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 static RACE_STOP: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 static RACE_DONE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static RACE_RELEASED_AT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static RACE_AGAIN_AT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 const RACE_WAIT_MS: u64 = 5_000;
+/// How soon an armed reader whose slot was taken must look again: well inside
+/// the 250 ms it would otherwise sleep (`i8042::ARMED_POLL_NS`).
+const RACE_ARMED_MAX_NS: u64 = 125_000_000;
 
 /// The reader's gap: the first time through, tell the test the slot is held and
 /// stay running (yielding, never blocked) until it lets go.
 fn race_gap() {
-    if RACE_PASSES.fetch_add(1, Ordering::SeqCst) == 0 {
+    // The time of the second pass goes in before the count says it began: the
+    // test reads it once it sees two passes, and only this reader changes the
+    // count, so the load is the pass the add will be.
+    if RACE_PASSES.load(Ordering::SeqCst) == 1 {
+        RACE_AGAIN_AT.store(hpet::nanos(), Ordering::SeqCst);
+    }
+    let pass = RACE_PASSES.fetch_add(1, Ordering::SeqCst);
+    if pass == 0 {
         RACE_HELD.store(true, Ordering::SeqCst);
         while !RACE_RELEASED.load(Ordering::SeqCst) {
             threads::yield_now();
@@ -429,13 +441,15 @@ fn race_gap() {
     }
 }
 
-/// `plain` reads with `wait`, otherwise with `wait_unless`.
-fn race_reader(plain: usize) {
-    if plain != 0 {
+/// `mode` 1 reads with `wait`; 0 with `wait_unless` not armed (it blocks); 2
+/// with `wait_unless` armed (it sleeps up to a poll, `sleep_until_unless`).
+fn race_reader(mode: usize) {
+    if mode == 1 {
         let _ = crate::i8042::wait_with(race_gap);
     } else {
         let stop = || RACE_STOP.load(Ordering::SeqCst);
-        let _ = crate::i8042::wait_unless_with(&|| false, &stop, race_gap);
+        let armed = move || mode == 2;
+        let _ = crate::i8042::wait_unless_with(&armed, &stop, race_gap);
     }
     RACE_DONE.store(true, Ordering::SeqCst);
 }
@@ -453,13 +467,13 @@ fn race_wait(what: &'static str, done: impl Fn() -> bool) -> Result<(), &'static
 
 fn console_reader_race() -> Result<(), &'static str> {
     use core::sync::atomic::Ordering::SeqCst;
-    for plain in [0, 1] {
+    for mode in [0, 1, 2] {
         RACE_PASSES.store(0, SeqCst);
         RACE_HELD.store(false, SeqCst);
         RACE_RELEASED.store(false, SeqCst);
         RACE_STOP.store(false, SeqCst);
         RACE_DONE.store(false, SeqCst);
-        threads::spawn("key-reader", race_reader, plain)
+        threads::spawn("key-reader", race_reader, mode)
             .map_err(|_| "console-race: cannot start the reader")?;
         race_wait(
             "console-race: the reader never stored itself in the slot",
@@ -468,14 +482,28 @@ fn console_reader_race() -> Result<(), &'static str> {
         // The waker: takes the slot, and the reader, still running, is not
         // woken. The ring stays empty, as when `desktop` takes the byte.
         crate::i8042::wake_reader();
+        RACE_RELEASED_AT.store(hpet::nanos(), SeqCst);
         RACE_RELEASED.store(true, SeqCst);
         race_wait(
             "console-race: a reader whose wake came before it blocked did not look again",
             || RACE_PASSES.load(SeqCst) >= 2,
         )?;
+        // An armed reader sleeps in `sleep_until_unless`, whose ready check
+        // sees the taken slot under the core lock: it looks again at once, not
+        // after the poll. Without the check it would sleep out `ARMED_POLL_NS`.
+        if mode == 2
+            && RACE_AGAIN_AT
+                .load(SeqCst)
+                .saturating_sub(RACE_RELEASED_AT.load(SeqCst))
+                > RACE_ARMED_MAX_NS
+        {
+            RACE_STOP.store(true, SeqCst);
+            crate::i8042::wake_reader();
+            return Err("console-race: an armed reader whose slot was taken slept on");
+        }
         // Let it go: it holds the slot again, so a waker finds it.
-        match plain {
-            0 => {
+        match mode {
+            0 | 2 => {
                 RACE_STOP.store(true, SeqCst);
                 crate::i8042::wake_reader();
             }
@@ -496,6 +524,7 @@ fn console_reader_race() -> Result<(), &'static str> {
     log!(
         "console-race: a key reader whose wake came before it blocked looked again, in wait and in wait_unless"
     );
+    log!("console-race: an armed reader whose slot was taken did not sleep out its poll");
     Ok(())
 }
 

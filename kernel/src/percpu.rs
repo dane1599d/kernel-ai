@@ -5,6 +5,8 @@
 //! entry from ring 3 swaps it back with `swapgs` before any of this is used (see
 //! `entry.rs`).
 
+#[cfg(debug_assertions)]
+use core::sync::atomic::AtomicU8;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use x86_64::VirtAddr;
 use x86_64::registers::model_specific::GsBase;
@@ -38,6 +40,14 @@ pub struct PerCpu {
     pub cr4: AtomicU64,
     pub efer: AtomicU64,
     pub xcr0: AtomicU64,
+    /// Nonzero while this CPU runs a `ready()`, interrupts off; debug builds
+    /// only (`threads::ready`).
+    #[cfg(debug_assertions)]
+    pub in_ready: AtomicU8,
+    /// Locks this CPU's `ready()`s took that are held elsewhere with interrupts
+    /// on; debug builds only (`threads::ready`).
+    #[cfg(debug_assertions)]
+    pub ready_locks: AtomicU32,
 }
 
 // xtask's hang dump (xtask/src/hang.rs) reads these two at the GS base.
@@ -64,6 +74,10 @@ impl PerCpu {
             cr4: AtomicU64::new(0),
             efer: AtomicU64::new(0),
             xcr0: AtomicU64::new(0),
+            #[cfg(debug_assertions)]
+            in_ready: AtomicU8::new(0),
+            #[cfg(debug_assertions)]
+            ready_locks: AtomicU32::new(0),
         }
     }
 }
@@ -133,6 +147,29 @@ pub fn current() -> usize {
         );
     }
     tid
+}
+
+/// Whether the CPU the caller runs on is running a `ready()`, read with one
+/// GS-relative instruction, as [`current`]. `in_ready` is only set with
+/// interrupts off, so when this is true the caller is that `ready()` and stays
+/// on this CPU. False before the boot CPU's `init`.
+#[cfg(debug_assertions)]
+pub fn in_ready() -> bool {
+    if !READY.load(Ordering::Acquire) {
+        return false;
+    }
+    let state: u32;
+    // SAFETY: GS points at this CPU's PerCpu; the field is a byte-sized atomic,
+    // so the load is a single atomic read.
+    unsafe {
+        core::arch::asm!(
+            "movzx {state:e}, byte ptr gs:[{offset}]",
+            state = out(reg) state,
+            offset = const core::mem::offset_of!(PerCpu, in_ready),
+            options(nostack, preserves_flags, readonly)
+        );
+    }
+    state != 0
 }
 
 /// Adds `delta` to this CPU's preempt count with one GS-relative instruction.

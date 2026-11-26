@@ -11,6 +11,30 @@ use alloc::vec::Vec;
 
 /// The most header lines a response may have.
 pub const MAX_HEADERS: usize = 64;
+/// The most header lines a response to [`super::Fetch::exchange`] may have:
+/// every one is kept, so a page's many `Set-Cookie` lines must fit.
+pub const MAX_KEPT_HEADERS: usize = 128;
+
+/// A response's content coding (RFC 9110 §8.4): only what
+/// [`super::Fetch::exchange`] asks for and decodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Coding {
+    Identity,
+    Gzip,
+    Brotli,
+}
+
+/// A response head read whole for [`super::Fetch::exchange`]: what the client
+/// acts on, every header line as it came, and the body's coding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Full {
+    pub head: Head,
+    /// Every header line, in order: its name as sent, and its value's bytes
+    /// with the spaces around them trimmed. A value need not be UTF-8 (RFC
+    /// 9110 §5.5 allows obs-text), but those this client reads must be.
+    pub headers: Vec<(String, Vec<u8>)>,
+    pub coding: Coding,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
@@ -172,7 +196,44 @@ pub fn status_line(bytes: &[u8]) -> Option<Head> {
 /// if it has not all come yet.
 pub fn parse(bytes: &[u8], method: Method) -> Result<Option<(Head, usize)>, HttpError> {
     let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
-    let mut response = httparse::Response::new(&mut headers);
+    Ok(read(bytes, method, &mut headers, None)?.map(|(full, used)| (full.head, used)))
+}
+
+/// [`parse`] for [`super::Fetch::exchange`]: every header is kept, up to
+/// [`MAX_KEPT_HEADERS`], and a value that is not UTF-8 is refused only where
+/// this client reads it. With `decode`, a body coded `gzip` (or `x-gzip`) or
+/// `br` is taken, one coding at most; any other coding is still refused.
+pub fn parse_full(
+    bytes: &[u8],
+    method: Method,
+    decode: bool,
+) -> Result<Option<(Full, usize)>, HttpError> {
+    let mut headers = [httparse::EMPTY_HEADER; MAX_KEPT_HEADERS];
+    read(bytes, method, &mut headers, Some(decode))
+}
+
+/// The names whose values this client reads, so must be text.
+const READ: [&str; 8] = [
+    "content-length",
+    "transfer-encoding",
+    "content-encoding",
+    "location",
+    "content-range",
+    "retry-after",
+    "connection",
+    "content-type",
+];
+
+/// The head at the start of `bytes`. `full` is `None` for [`parse`]: no
+/// header kept, any header not text refused, any coding refused. `Some(decode)`
+/// keeps them all, and with `decode` takes gzip or br.
+fn read<'b>(
+    bytes: &'b [u8],
+    method: Method,
+    headers: &mut [httparse::Header<'b>],
+    full: Option<bool>,
+) -> Result<Option<(Full, usize)>, HttpError> {
+    let mut response = httparse::Response::new(headers);
     let used = match response.parse(bytes) {
         Ok(httparse::Status::Complete(used)) => used,
         Ok(httparse::Status::Partial) => return Ok(None),
@@ -190,11 +251,21 @@ pub fn parse(bytes: &[u8], method: Method) -> Result<Option<(Head, usize)>, Http
     let mut retry_after = None;
     let mut content_type = None;
     let mut close = false;
+    let mut coding = Coding::Identity;
+    let mut codings = 0;
+    let mut kept = Vec::new();
     for header in response.headers.iter() {
-        let value = core::str::from_utf8(header.value)
-            .map_err(|_| HttpError::Head("a header is not text"))?
-            .trim_matches([' ', '\t']);
         let name = header.name;
+        if full.is_some() {
+            kept.push((String::from(name), trim(header.value).to_vec()));
+        }
+        let value = match core::str::from_utf8(header.value) {
+            Ok(value) => value.trim_matches([' ', '\t']),
+            Err(_) if full.is_some() && !READ.iter().any(|r| name.eq_ignore_ascii_case(r)) => {
+                continue;
+            }
+            Err(_) => return Err(HttpError::Head("a header is not text")),
+        };
         if name.eq_ignore_ascii_case("content-length") {
             let n = number(value).ok_or(HttpError::Head("a bad Content-Length"))?;
             if length.is_some_and(|l| l != n) {
@@ -206,9 +277,29 @@ pub fn parse(bytes: &[u8], method: Method) -> Result<Option<(Head, usize)>, Http
                 return Err(HttpError::Head("a transfer coding other than chunked"));
             }
             chunked = true;
-        } else if name.eq_ignore_ascii_case("content-encoding") {
+        } else if name.eq_ignore_ascii_case("content-encoding") && full.is_none() {
+            // `parse`'s rule, unchanged: identity alone.
             if !value.eq_ignore_ascii_case("identity") {
                 return Err(HttpError::Head("a compressed body"));
+            }
+        } else if name.eq_ignore_ascii_case("content-encoding") {
+            let decode = full == Some(true);
+            for token in value.split(',').map(|t| t.trim_matches([' ', '\t'])) {
+                let this = match token {
+                    t if t.eq_ignore_ascii_case("identity") => continue,
+                    t if decode
+                        && (t.eq_ignore_ascii_case("gzip") || t.eq_ignore_ascii_case("x-gzip")) =>
+                    {
+                        Coding::Gzip
+                    }
+                    t if decode && t.eq_ignore_ascii_case("br") => Coding::Brotli,
+                    _ => return Err(HttpError::Head("a compressed body")),
+                };
+                codings += 1;
+                if codings > 1 {
+                    return Err(HttpError::Head("more than one content coding"));
+                }
+                coding = this;
             }
         } else if name.eq_ignore_ascii_case("location") {
             if location.is_some() {
@@ -251,7 +342,23 @@ pub fn parse(bytes: &[u8], method: Method) -> Result<Option<(Head, usize)>, Http
         reason: response.reason.and_then(reason),
         close,
     };
-    Ok(Some((head, used)))
+    let full = Full {
+        head,
+        headers: kept,
+        coding,
+    };
+    Ok(Some((full, used)))
+}
+
+/// `value` without the spaces and tabs around it.
+fn trim(value: &[u8]) -> &[u8] {
+    let blank = |b: &u8| *b == b' ' || *b == b'\t';
+    let start = value.iter().position(|b| !blank(b)).unwrap_or(value.len());
+    let end = value
+        .iter()
+        .rposition(|b| !blank(b))
+        .map_or(start, |at| at + 1);
+    &value[start..end]
 }
 
 /// A decimal number of at most 19 digits.

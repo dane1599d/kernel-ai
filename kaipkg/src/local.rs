@@ -445,6 +445,14 @@ impl Source for Held<'_> {
 /// longer one is refused whole, never cut short (C on #626).
 pub const MAX_REQUEST: usize = 128;
 
+/// Whether `pkg` serves on after a receive on its endpoint failed with
+/// `error`. Only NotFound (no RECV_H) and Permission (no `serve` in its plan
+/// line) mean there is nothing to serve; any other failure, NoMemory copying
+/// a queued request say, is one receive gone wrong (H3-12).
+pub fn serves_on(error: kabi::Error) -> bool {
+    !matches!(error, kabi::Error::NotFound | kabi::Error::Permission)
+}
+
 /// `local <component> sha256 <hex>`: the shell's ask to install the artifact
 /// it moves, only if its bytes have that SHA-256.
 pub fn install_request(component: &str, sha256: &str) -> String {
@@ -838,5 +846,25 @@ mod tests {
         let back = format!("switch-back {} {}", u64::MAX, u64::MAX);
         assert!(back.len() <= MAX_REQUEST);
         assert!(format!("local-next {name}").len() <= MAX_REQUEST);
+    }
+
+    /// H3-12: only an endpoint `pkg` cannot serve ends its serving; any
+    /// other failed receive is tried again.
+    #[test]
+    fn only_no_endpoint_ends_serving() {
+        use kabi::Error;
+        for stops in [Error::NotFound, Error::Permission] {
+            assert!(!serves_on(stops), "{stops:?}");
+        }
+        let again = [
+            Error::NoMemory,
+            Error::Busy,
+            Error::Woken,
+            Error::Dead,
+            Error::Fault,
+        ];
+        for error in again {
+            assert!(serves_on(error), "{error:?}");
+        }
     }
 }

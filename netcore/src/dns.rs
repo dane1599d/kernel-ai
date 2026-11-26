@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use core::net::Ipv4Addr;
 use smoltcp::wire::{
     DnsFlags, DnsOpcode, DnsPacket, DnsQueryType, DnsQuestion, DnsRcode, DnsRecord, DnsRecordData,
-    DnsRepr,
+    DnsRepr, IpEndpoint,
 };
 
 /// The longest host name, in its dotted form.
@@ -168,6 +168,41 @@ pub fn parse_reply(id: u16, host: &str, bytes: &[u8]) -> Result<Answer, ReplyErr
         records.push((name, record.ttl, data));
     }
     chase(host, &records)
+}
+
+/// The queries one lookup has sent on its socket, as (server, id), oldest
+/// first. A reply to an earlier one still counts while a later one waits, so a
+/// server slower than one try is not given up on.
+#[derive(Default)]
+pub struct Asked {
+    sent: Vec<(IpEndpoint, u16)>,
+}
+
+impl Asked {
+    /// Notes query `id`, sent to `server`, as the newest.
+    pub fn push(&mut self, server: (Ipv4Addr, u16), id: u16) {
+        self.sent.push((IpEndpoint::from(server), id));
+    }
+
+    /// What a reply from `from` says about `host` (normalized), when it ends the
+    /// wait: any reply to the newest query, or a reply to an earlier one that
+    /// settles the name (its addresses, no such host, no address). An earlier
+    /// query's failure was given up on already. None: keep waiting.
+    pub fn reply(
+        &self,
+        from: IpEndpoint,
+        host: &str,
+        bytes: &[u8],
+    ) -> Option<Result<Answer, ReplyError>> {
+        let id = DnsPacket::new_checked(bytes).ok()?.transaction_id();
+        let at = self.sent.iter().position(|&sent| sent == (from, id))?;
+        let newest = at + 1 == self.sent.len();
+        match parse_reply(id, host, bytes) {
+            Err(ReplyError::NotOurs | ReplyError::Malformed) => None,
+            Err(ReplyError::Truncated | ReplyError::Server(_)) if !newest => None,
+            outcome => Some(outcome),
+        }
+    }
 }
 
 enum Data {
@@ -392,6 +427,43 @@ mod tests {
         assert_eq!(
             parse_reply(5, "kai.test", &short),
             Err(ReplyError::Malformed)
+        );
+    }
+
+    #[test]
+    fn a_late_reply_to_an_earlier_query_still_counts() {
+        let server = (Ipv4Addr::new(10, 0, 2, 2), 5353);
+        let (first, second) = (0x1234u16, 0x1234u16.wrapping_add(0x9E37));
+        let mut asked = Asked::default();
+        asked.push(server, first);
+        asked.push(server, second);
+        let from = IpEndpoint::from(server);
+        let found = &[("kai.test", 300, Data::A([10, 0, 2, 99]))];
+        let late = reply(&query(first, "kai.test"), "kai.test", 0, found);
+        // The resolver used to match the newest id alone, and dropped this.
+        assert_eq!(
+            parse_reply(second, "kai.test", &late),
+            Err(ReplyError::NotOurs)
+        );
+        let answer = asked.reply(from, "kai.test", &late).unwrap().unwrap();
+        assert_eq!(answer.addresses, [Ipv4Addr::new(10, 0, 2, 99)]);
+        // From another server, or to an id never sent: not ours.
+        let elsewhere = IpEndpoint::from((Ipv4Addr::new(10, 0, 2, 3), 53));
+        assert_eq!(asked.reply(elsewhere, "kai.test", &late), None);
+        let stray = reply(&query(0x4321, "kai.test"), "kai.test", 0, found);
+        assert_eq!(asked.reply(from, "kai.test", &stray), None);
+        // An earlier query's failure was given up on; the newest's ends the wait.
+        let failed = |id| reply(&query(id, "kai.test"), "kai.test", 2, &[]);
+        assert_eq!(asked.reply(from, "kai.test", &failed(first)), None);
+        assert_eq!(
+            asked.reply(from, "kai.test", &failed(second)),
+            Some(Err(ReplyError::Server(2)))
+        );
+        // No such host settles the name, whichever query it answers.
+        let missing = reply(&query(first, "kai.test"), "kai.test", 3, &[]);
+        assert_eq!(
+            asked.reply(from, "kai.test", &missing),
+            Some(Err(ReplyError::NoSuchHost))
         );
     }
 

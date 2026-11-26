@@ -783,6 +783,7 @@ fn on_exit(services: &mut [Service], exit: &ExitRecord) {
         }
         supervise::Ending::RestartOnRequest => {
             service.restart_on_exit = false;
+            service.record.restarted_on_request();
             println!("{name} {reason}; restarting on request");
             service.start_at_ms = Some(now);
             save(services);
