@@ -106,18 +106,21 @@ fn send_metered(slot: usize, id: u64, data: &[u8]) -> Result<usize, Error> {
     };
     let len = data.len() as u64;
     let today = net::dest::today();
-    if let Err(over) = net::dest::with_meter(&meter, |m| m.try_send(len, today)) {
-        crate::log!(
-            "net: pid {} is over its day's {} bytes ({} used): send refused",
-            owner(slot),
-            over.budget,
-            over.used
-        );
-        return Err(Error::Permission);
-    }
+    let charged = match net::dest::with_meter(&meter, |m| m.try_send(len, today)) {
+        Ok(day) => day,
+        Err(over) => {
+            crate::log!(
+                "net: pid {} is over its day's {} bytes ({} used): send refused",
+                owner(slot),
+                over.budget,
+                over.used
+            );
+            return Err(Error::Permission);
+        }
+    };
     let sent = net::stream::send(owner(slot), id, data);
     let taken = *sent.as_ref().unwrap_or(&0) as u64;
-    net::dest::with_meter(&meter, |m| m.refund(len.saturating_sub(taken), today));
+    net::dest::with_meter(&meter, |m| m.refund(len.saturating_sub(taken), charged));
     sent
 }
 
@@ -138,7 +141,7 @@ fn recv_metered(slot: usize, id: u64, out: &mut [u8]) -> Result<usize, Error> {
     };
     let today = net::dest::today();
     let cap = out.len().min(net::stream::MAX_CALL) as u64;
-    if !net::dest::with_meter(&meter, |m| m.try_receive(cap, today)) {
+    let Some(charged) = net::dest::with_meter(&meter, |m| m.try_receive(cap, today)) else {
         // A receive into no room reads nothing: 0 only once the stream ended.
         return match net::stream::recv(owner(slot), id, &mut []) {
             Ok(0) => Ok(0),
@@ -153,10 +156,10 @@ fn recv_metered(slot: usize, id: u64, out: &mut [u8]) -> Result<usize, Error> {
             }
             Err(error) => Err(error),
         };
-    }
+    };
     let received = net::stream::recv(owner(slot), id, out);
     let read = *received.as_ref().unwrap_or(&0) as u64;
-    net::dest::with_meter(&meter, |m| m.refund(cap.saturating_sub(read), today));
+    net::dest::with_meter(&meter, |m| m.refund(cap.saturating_sub(read), charged));
     received
 }
 

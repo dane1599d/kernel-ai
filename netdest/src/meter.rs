@@ -71,13 +71,15 @@ impl DayMeter {
     }
 
     /// Whether `bytes` may be sent on `day`: charged if so, refused whole if they
-    /// would pass the budget.
-    pub fn try_send(&mut self, bytes: u64, day: u32) -> Result<(), OverBudget> {
+    /// would pass the budget. Gives the day the charge went on (the meter's day
+    /// after the roll: later than `day` when another CPU rolled it first), the
+    /// day to [`DayMeter::refund`] against.
+    pub fn try_send(&mut self, bytes: u64, day: u32) -> Result<u32, OverBudget> {
         self.roll(day);
         match self.used.checked_add(bytes) {
             Some(after) if after <= self.budget => {
                 self.used = after;
-                Ok(())
+                Ok(self.day)
             }
             _ => Err(OverBudget {
                 used: self.used,
@@ -102,14 +104,17 @@ impl DayMeter {
     /// sees it spent at once; [`DayMeter::refund`] gives back what the read did
     /// not take. What came cannot be refused once read, so one receive may pass
     /// the budget by its own bytes, never two: the day's bytes stay under
-    /// `budget + cap`.
-    pub fn try_receive(&mut self, cap: u64, day: u32) -> bool {
+    /// `budget + cap`. Gives the day charged, as [`DayMeter::try_send`] does:
+    /// refund against it, not against `day`, or a receive that read the clock
+    /// just before another CPU rolled the meter keeps its unused bytes on the
+    /// new day.
+    pub fn try_receive(&mut self, cap: u64, day: u32) -> Option<u32> {
         self.roll(day);
         if self.used >= self.budget {
-            return false;
+            return None;
         }
         self.used = self.used.saturating_add(cap);
-        true
+        Some(self.day)
     }
 
     /// Whether anything more may move on `day`.
@@ -143,7 +148,7 @@ mod tests {
     fn sends_within_the_budget_are_charged_and_one_past_it_is_refused_whole() {
         let mut meter = DayMeter::from_mib(10, 1);
         assert_eq!(meter.budget(), 10 * MIB);
-        assert_eq!(meter.try_send(6 * MIB, 1), Ok(()));
+        assert_eq!(meter.try_send(6 * MIB, 1), Ok(1));
         assert_eq!(
             meter.try_send(5 * MIB, 1),
             Err(OverBudget {
@@ -152,11 +157,7 @@ mod tests {
             })
         );
         assert_eq!(meter.used(), 6 * MIB, "a refused send charges nothing");
-        assert_eq!(
-            meter.try_send(4 * MIB, 1),
-            Ok(()),
-            "exactly the budget fits"
-        );
+        assert_eq!(meter.try_send(4 * MIB, 1), Ok(1), "exactly the budget fits");
         assert!(!meter.has_room(1));
         assert!(meter.try_send(1, 1).is_err());
     }
@@ -165,13 +166,13 @@ mod tests {
     fn what_is_received_counts_and_stops_the_day_once_past() {
         let mut meter = DayMeter::from_mib(1, 7);
         // A receive of up to 8 KiB reads 100: the rest is given back.
-        assert!(meter.try_receive(8192, 7));
+        assert!(meter.try_receive(8192, 7).is_some());
         meter.refund(8192 - 100, 7);
         assert_eq!(meter.used(), 100);
         // One that is read cannot be refused: it passes, and the day is done.
-        assert!(meter.try_receive(2 * MIB, 7));
+        assert!(meter.try_receive(2 * MIB, 7).is_some());
         assert_eq!(meter.used(), 100 + 2 * MIB);
-        assert!(!meter.try_receive(1, 7));
+        assert!(meter.try_receive(1, 7).is_none());
         assert!(meter.try_send(1, 7).is_err());
         assert!(!meter.has_room(7));
     }
@@ -183,8 +184,11 @@ mod tests {
         const CAP: u64 = 8192;
         let mut meter = DayMeter::new(MIB, 3);
         assert!(meter.try_send(MIB - 100, 3).is_ok());
-        assert!(meter.try_receive(CAP, 3));
-        assert!(!meter.try_receive(CAP, 3), "the second receive is refused");
+        assert!(meter.try_receive(CAP, 3).is_some());
+        assert!(
+            meter.try_receive(CAP, 3).is_none(),
+            "the second receive is refused"
+        );
         // The first reads its whole cap: the day passes the budget by less
         // than one cap.
         assert_eq!(meter.used(), MIB - 100 + CAP);
@@ -193,17 +197,19 @@ mod tests {
         for readers in 1..=16u64 {
             let mut meter = DayMeter::new(MIB, 3);
             assert!(meter.try_send(MIB - 1, 3).is_ok());
-            let let_in = (0..readers).filter(|_| meter.try_receive(CAP, 3)).count();
+            let let_in = (0..readers)
+                .filter(|_| meter.try_receive(CAP, 3).is_some())
+                .count();
             assert_eq!(let_in, 1);
             assert!(meter.used() < MIB + CAP);
         }
         // A short read gives the rest back, and the next receive may then read.
         let mut meter = DayMeter::new(MIB, 3);
         assert!(meter.try_send(MIB - 100, 3).is_ok());
-        assert!(meter.try_receive(CAP, 3));
+        assert!(meter.try_receive(CAP, 3).is_some());
         meter.refund(CAP - 10, 3);
         assert_eq!(meter.used(), MIB - 90);
-        assert!(meter.try_receive(CAP, 3));
+        assert!(meter.try_receive(CAP, 3).is_some());
     }
 
     #[test]
@@ -244,9 +250,24 @@ mod tests {
         assert_eq!(max.budget(), 512 * MIB);
         assert!(max.try_send(u64::MAX, 1).is_err());
         assert_eq!(max.used(), 0);
-        assert!(max.try_receive(u64::MAX, 1));
+        assert!(max.try_receive(u64::MAX, 1).is_some());
         assert_eq!(max.used(), u64::MAX);
-        assert!(!max.try_receive(1, 1));
+        assert!(max.try_receive(1, 1).is_none());
+    }
+
+    #[test]
+    fn a_receive_that_read_the_clock_before_the_roll_refunds_on_the_day_it_charged() {
+        let mut meter = DayMeter::from_mib(1, 5);
+        // CPU B rolls the meter to day 6, then CPU A, which read day 5, charges.
+        assert!(meter.try_send(1, 6).is_ok());
+        let charged = meter.try_receive(8192, 5).expect("room");
+        assert_eq!(charged, 6, "charged on the meter's day, not the one A read");
+        meter.refund(8192 - 100, charged);
+        assert!(meter.try_send(1 << 20, 6).is_err());
+        assert!(
+            meter.try_send((1 << 20) - 101, 6).is_ok(),
+            "only 100 bytes + 1 are spent"
+        );
     }
 
     #[test]
