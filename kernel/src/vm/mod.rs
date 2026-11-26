@@ -77,6 +77,19 @@ fn tsc_khz() -> u32 {
     ((c1 - c0) as u128 * 1_000_000 / (t1 - t0) as u128) as u32
 }
 
+/// The TSC's rate (kHz), set once by `run` before the guest starts.
+static TSC_KHZ: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Host nanoseconds from the TSC. The run loop reads the clock on every
+/// exit, and under KVM the kernel's clock is the HPET, an MMIO exit to QEMU
+/// of its own (about 10 µs on the nested runners).
+pub fn nanos() -> u64 {
+    let khz = TSC_KHZ.load(core::sync::atomic::Ordering::Relaxed).max(1);
+    // SAFETY: RDTSC has no preconditions.
+    let tsc = unsafe { core::arch::x86_64::_rdtsc() };
+    (tsc as u128 * 1_000_000 / khz as u128) as u64
+}
+
 fn put32(ram: &mut [u8], at: u64, v: u32) {
     ram[at as usize..at as usize + 4].copy_from_slice(&v.to_le_bytes());
 }
@@ -93,6 +106,7 @@ pub fn run() -> Result<(), &'static str> {
         .unwrap_or("")
         .trim();
     let khz = tsc_khz();
+    TSC_KHZ.store(khz as u64, core::sync::atomic::Ordering::Relaxed);
     let cmdline = format!("{CMDLINE} tsc_early_khz={khz} {extra}");
 
     let ram_bytes = GUEST_MIB << 20;

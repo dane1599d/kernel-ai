@@ -4,7 +4,8 @@
 //! `svm` crate's [`svm::dispatch`] (#1494). Throwaway (ADR 0006).
 
 use super::devices::{Devices, Effect, Marker};
-use crate::{hpet, log};
+use super::nanos;
+use crate::log;
 use svm::exit::{Hand, Kernel, Next};
 use svm::intercept::{Intercept, Intercepts, msr_bit};
 use svm::vmcb::{Segment, V_IGN_TPR, V_INTR_MASKING, V_INTR_PRIO_SHIFT, V_IRQ, Vmcb};
@@ -305,9 +306,9 @@ impl<'a> Vcpu<'a> {
 
     /// Runs the guest until it is done, halts for good, or is killed.
     pub fn run(&mut self, dev: &mut Devices) -> Result<End, &'static str> {
-        self.times.start = hpet::nanos();
+        self.times.start = nanos();
         loop {
-            let now = hpet::nanos();
+            let now = nanos();
             dev.update(now);
             self.offer_interrupt(dev);
             // SAFETY: the VMCB, host save page and register block are this
@@ -334,7 +335,7 @@ impl<'a> Vcpu<'a> {
                 Action::Vmm(Hand::Pio(io), Next::To(rip)) if !io.string => {
                     self.stats.io += 1;
                     let rax = self.vmcb.save.rax;
-                    let (read, effect) = dev.io(io.port, io.size, io.input, rax as u32, hpet::nanos());
+                    let (read, effect) = dev.io(io.port, io.size, io.input, rax as u32, nanos());
                     if io.input {
                         self.vmcb.save.rax = match io.size {
                             1 => rax & !0xFF | read as u64,
@@ -456,7 +457,7 @@ impl<'a> Vcpu<'a> {
             return Some(End::Halted);
         }
         loop {
-            dev.update(hpet::nanos());
+            dev.update(nanos());
             if self.vmcb.control.int_control & V_IRQ != 0 || dev.has_interrupt() {
                 return None;
             }
@@ -471,7 +472,7 @@ impl<'a> Vcpu<'a> {
     }
 
     fn effect(&mut self, effect: Effect, dev: &Devices) -> Option<End> {
-        let since = || hpet::nanos() - self.times.start;
+        let since = || nanos() - self.times.start;
         match effect {
             Effect::None => {}
             Effect::Line => {

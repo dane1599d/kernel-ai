@@ -94,6 +94,11 @@ jobs:
             echo "model=$(grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2 | xargs)"
             echo "dev_kvm=$([ -e /dev/kvm ] && echo yes || echo no)"
             echo "kvm_amd_nested=$(cat /sys/module/kvm_amd/parameters/nested 2>/dev/null || echo absent)"
+            echo "runner_virt=$(systemd-detect-virt 2>/dev/null || echo unknown)"
+            for p in npt vgif vls avic nrips; do
+              echo "kvm_amd_$p=$(cat /sys/module/kvm_amd/parameters/$p 2>/dev/null || echo absent)"
+            done
+            echo "cpu_flags_svm=$(grep -m1 '^flags' /proc/cpuinfo | tr ' ' '\n' | grep -E '^(svm|npt|nrip_save|vgif|v_vmsave_vmload|vmcb_clean|flushbyasid|decodeassists|tsc_scale|constant_tsc|nonstop_tsc)$' | xargs)"
           } | tee out/host.txt
       - uses: ./.github/actions/qemu
       - name: Allow KVM for the runner user
