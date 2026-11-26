@@ -289,7 +289,7 @@ pub fn verified_spec(booter: &Booter, path: &Path, shift: u32) -> Result<String,
     let (now, lines) = observe(booter, &mix, shift, &[entry])?;
     if now != recorded {
         return Err(format!(
-            "the guest's summary changed since the recording (SHA-256 {} now, {} recorded); re-record with cargo xtask tune record --local {EXIT_MODEL}",
+            "re-record needed: the guest's summary changed since the recording (SHA-256 {} now, {} recorded); re-record with cargo xtask tune record --local {EXIT_MODEL}",
             sha256(now.text.as_bytes()),
             field("summary_sha256")
         ));
