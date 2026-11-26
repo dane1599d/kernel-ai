@@ -397,12 +397,22 @@ pub fn test_cases() -> Vec<&'static TestCase> {
 /// The M5 exit test: a 10-minute spawn, exit and sleep storm.
 pub const SOAK_CASES: &[TestCase] = &[case("storm-10min", "test=storm-600")];
 
+/// Spike S06-3 (ADR 0006), spike/our-hypervisor only: our throwaway
+/// hypervisor boots the Debian guest that `S063_GUEST` puts on the boot
+/// drive, with `--cpus 1`.
+pub static S063: TestCase = TestCase {
+    expect: &["s06-3: done"],
+    memory_mib: Some(2048),
+    ..case("s06-3", "test=s06-3")
+};
+
 /// Cases booted only when `XTASK_CASE` names one: the screenshot tour, and
 /// the throughput workflow's `net-throughput`.
 pub fn named_only() -> Vec<&'static TestCase> {
     tour::CASES
         .iter()
         .chain(core::iter::once(&throughput::NET_THROUGHPUT))
+        .chain(core::iter::once(&S063))
         .collect()
 }
 

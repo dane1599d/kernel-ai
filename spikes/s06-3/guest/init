@@ -1,0 +1,27 @@
+#!/bin/busybox sh
+# Spike S06-3's /init in the Debian guest's initramfs (ADR 0006). Reads
+# s063.mode (boot or full) and s063.iters from the kernel command line.
+/bin/busybox mkdir -p /proc /sys /dev /tmp
+/bin/busybox mount -t proc proc /proc
+/bin/busybox --install -s /bin
+mount -t sysfs sys /sys
+mount -t devtmpfs dev /dev 2>/dev/null
+s063probe mark 1
+echo "s06-3 guest: init reached; uptime $(cut -d' ' -f1 /proc/uptime) s; kernel $(uname -r)"
+
+mode=boot
+iters=100000
+for w in $(cat /proc/cmdline); do
+  case "$w" in
+    s063.mode=*) mode="${w#*=}" ;;
+    s063.iters=*) iters="${w#*=}" ;;
+  esac
+done
+
+s063probe bench "$iters"
+if [ "$mode" = full ]; then
+  s063probe time sh -c 'dav1d -i /clip.ivf -o /dev/null --muxer null --threads 1 2>&1 | tr "\r" "\n" | tail -n 2'
+fi
+echo "s06-3 guest: done; uptime $(cut -d' ' -f1 /proc/uptime) s"
+s063probe mark 255
+reboot -f

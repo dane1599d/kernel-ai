@@ -69,6 +69,8 @@ pub enum SelfTest {
     WriteProtect,
     StackOverflow,
     Timer,
+    /// Spike S06-3: our throwaway hypervisor boots a Debian guest.
+    S063,
     Keyboard,
     /// M9d: mouse moves and clicks arrive in order with the keyboard's Ctrl.
     Pointer,

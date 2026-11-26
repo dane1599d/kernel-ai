@@ -1621,6 +1621,7 @@ dependencies = [
  "spike-wasmi",
  "spin 0.12.3",
  "supervise",
+ "svm",
  "talc",
  "termcore",
  "uelf",

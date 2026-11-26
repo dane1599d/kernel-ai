@@ -26,6 +26,7 @@ diskmap = { path = "../diskmap" }
 fsproto = { path = "../fsproto" }
 kabi = { path = "../kabi" }
 kaiprofile = { path = "../kaiprofile" }
+svm = { path = "../svm" }
 bootslot = { path = "../bootslot" }
 kaibundle = { path = "../kaibundle" }
 limine = "0.6.5"

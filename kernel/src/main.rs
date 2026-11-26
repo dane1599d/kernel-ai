@@ -162,6 +162,8 @@ mod smp;
 mod smp_tests;
 #[cfg(feature = "spikes")]
 mod spikes;
+// Spike S06-3 (ADR 0006): spike/our-hypervisor only, never merged.
+mod vm;
 mod standing_tests;
 mod start_tests;
 mod stop_tests;
@@ -387,6 +389,7 @@ extern "C" fn boot_continue() -> ! {
             fail(result.err().unwrap_or("stack-overflow test returned"));
         }
         SelfTest::Timer => run_case(timer::sixty_second_check),
+        SelfTest::S063 => run_case(vm::run),
         SelfTest::Keyboard => run_case(keyboard::typing_check),
         SelfTest::Pointer => run_case(pointer::self_test),
         SelfTest::Display => run_case(display_tests::check),

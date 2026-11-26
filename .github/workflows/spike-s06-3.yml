@@ -1,0 +1,172 @@
+# Spike S06-3, our throwaway hypervisor (ADR 0006). spike/our-hypervisor only,
+# never merged, never a gate. Started by pushes to the branch; one run at a
+# time, never cancelled.
+#
+# The guest job builds Debian's stock kernel and our initramfs in a
+# debian:trixie container (spikes/s06-3/build-guest.sh); nothing of Debian's
+# is committed or shipped, and the artifact lives 3 days. Each boot run then:
+# - under TCG (every runner): our kernel's hypervisor boots the guest to init
+#   and times 2,000 port-I/O round trips;
+# - under KVM on an AMD runner (nested SVM): the same with 100,000 round trips
+#   and dav1d decoding the clip, then the baseline: the same kernel,
+#   initramfs and command line under plain KVM (QEMU's -kernel), 1 vCPU.
+name: spike S06-3 hypervisor
+
+on:
+  push:
+    branches: [spike/our-hypervisor]
+
+concurrency:
+  group: spike-s06-3-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The kernel's vm::CMDLINE, for the baseline boot.
+  GUEST_CMDLINE: console=ttyS0,115200 earlyprintk=serial,ttyS0,115200 nolapic noapic acpi=off pci=off nosmp tsc=reliable clocksource=tsc i8042.noaux i8042.nopnp 8250.nr_uarts=1 mitigations=off panic=-1 rdinit=/init
+
+jobs:
+  qemu:
+    name: QEMU in the cache
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/qemu
+
+  guest:
+    name: Debian guest (fetched, never committed)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the guest in debian:trixie
+        run: |
+          mkdir -p "$RUNNER_TEMP/guest"
+          docker run --rm -v "$PWD/spikes/s06-3:/src:ro" -v "$RUNNER_TEMP/guest:/out" debian:trixie sh /src/build-guest.sh
+          ls -l "$RUNNER_TEMP/guest"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guest
+          path: ${{ runner.temp }}/guest
+          retention-days: 3
+    timeout-minutes: 30
+
+  prebuild:
+    name: Build the boot artifacts once
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.build.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for live components
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: qemu
+          save-if: false
+      - id: build
+        run: |
+          cargo xtask build --out "$RUNNER_TEMP/prebuilt"
+          echo "sha=$(sha256sum "$RUNNER_TEMP/prebuilt/manifest.txt" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prebuilt
+          path: ${{ runner.temp }}/prebuilt
+          retention-days: 3
+    timeout-minutes: 30
+
+  boot:
+    name: boot (run ${{ matrix.run }})
+    runs-on: ubuntu-24.04
+    needs: [qemu, guest, prebuild]
+    strategy:
+      fail-fast: false
+      matrix:
+        run: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host facts
+        run: |
+          mkdir -p out
+          {
+            echo "run=${{ matrix.run }}"
+            echo "vendor=$(grep -m1 '^vendor_id' /proc/cpuinfo | cut -d: -f2 | xargs)"
+            echo "model=$(grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2 | xargs)"
+            echo "dev_kvm=$([ -e /dev/kvm ] && echo yes || echo no)"
+            echo "kvm_amd_nested=$(cat /sys/module/kvm_amd/parameters/nested 2>/dev/null || echo absent)"
+          } | tee out/host.txt
+      - uses: ./.github/actions/qemu
+      - name: Allow KVM for the runner user
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for live components
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: qemu
+          save-if: false
+      - name: Fetch the locked crates
+        run: cargo fetch --locked
+      - uses: actions/download-artifact@v4
+        with:
+          name: prebuilt
+          path: ${{ runner.temp }}/prebuilt
+      - uses: actions/download-artifact@v4
+        with:
+          name: guest
+          path: ${{ runner.temp }}/guest
+      - name: Our hypervisor under TCG (boot to init)
+        env:
+          XTASK_CASE: s06-3
+          S063_GUEST: ${{ runner.temp }}/guest
+          PREBUILT_SHA: ${{ needs.prebuild.outputs.sha }}
+        run: |
+          cat "$S063_GUEST/versions.txt"
+          printf 's063.mode=boot s063.iters=2000' > "$S063_GUEST/cmdline"
+          cargo xtask test --accel tcg --cpus 1 --timeout 900 \
+            --prebuilt "$RUNNER_TEMP/prebuilt" --prebuilt-sha "$PREBUILT_SHA" 2>&1 | tee out/tcg.log || true
+      - name: Our hypervisor under KVM, nested SVM (AMD runners)
+        if: always()
+        env:
+          XTASK_CASE: s06-3
+          S063_GUEST: ${{ runner.temp }}/guest
+          PREBUILT_SHA: ${{ needs.prebuild.outputs.sha }}
+        run: |
+          if ! grep -q '^vendor=AuthenticAMD' out/host.txt || [ ! -e /dev/kvm ]; then
+            echo "not an AMD runner with KVM: skipped" | tee out/kvm.log
+            exit 0
+          fi
+          printf 's063.mode=full s063.iters=100000' > "$S063_GUEST/cmdline"
+          cargo xtask test --accel kvm --cpus 1 --timeout 900 \
+            --prebuilt "$RUNNER_TEMP/prebuilt" --prebuilt-sha "$PREBUILT_SHA" 2>&1 | tee out/kvm.log || true
+      - name: Baseline, plain KVM (AMD runners)
+        if: always()
+        run: |
+          if ! grep -q '^vendor=AuthenticAMD' out/host.txt || [ ! -e /dev/kvm ]; then
+            echo "not an AMD runner with KVM: skipped" | tee out/baseline.log
+            exit 0
+          fi
+          g="$RUNNER_TEMP/guest"
+          timeout 900 qemu-system-x86_64 -accel kvm -cpu host -smp 1 -m 512 -no-reboot \
+            -display none -monitor none -serial stdio \
+            -kernel "$g/bzImage" -initrd "$g/initrd" \
+            -append "$GUEST_CMDLINE s063.mode=full s063.iters=100000" 2>&1 | tee out/baseline.log || true
+      - name: Measures
+        if: always()
+        run: |
+          for f in tcg kvm baseline; do
+            echo "== $f"
+            grep -a -E 's06-3: (measure|done|guest killed|bzImage|guest starts|[0-9]+ exits)|s06-3 guest:|Run /init|FAIL|panic' out/$f.log | tr -d '\r' | head -40 || true
+          done | tee out/measures.txt
+          cat out/host.txt out/measures.txt >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: s06-3-run-${{ matrix.run }}
+          path: out
+          retention-days: 14
+    timeout-minutes: 75

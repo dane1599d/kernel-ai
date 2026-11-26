@@ -16,6 +16,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=write-protect" => Some(SelfTest::WriteProtect),
             "test=stack-overflow" => Some(SelfTest::StackOverflow),
             "test=timer" => Some(SelfTest::Timer),
+            "test=s06-3" => Some(SelfTest::S063),
             "test=keyboard" => Some(SelfTest::Keyboard),
             "test=pointer" => Some(SelfTest::Pointer),
             "test=display" => Some(SelfTest::Display),

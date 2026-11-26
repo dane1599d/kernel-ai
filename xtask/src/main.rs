@@ -205,6 +205,22 @@ fn execute(options: &Options) -> Result<(), String> {
             .any(|p| cases::https::is_program_module(&m.path, p))
     });
     modules = shared;
+    // Spike S06-3 (ADR 0006): the guest's bzImage, initramfs and extra
+    // command line from the directory S063_GUEST names, fetched in CI and
+    // never committed.
+    if let Ok(dir) = env::var("S063_GUEST") {
+        for name in ["bzImage", "initrd", "cmdline"] {
+            let path = Path::new(&dir).join(name);
+            if path.exists() {
+                let bytes = fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+                println!("xtask: guest/{name} {} KiB on the boot drive", bytes.len() / 1024);
+                modules.push(esp::Module {
+                    path: format!("guest/{name}"),
+                    bytes,
+                });
+            }
+        }
+    }
     // The built-in apps as the image's signed repository (ADR 0011 §8).
     let mut image = pkgrepo::image(&root, &versions)?;
     modules.extend(versions);
