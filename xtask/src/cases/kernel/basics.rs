@@ -151,6 +151,8 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
     // The graft: keys still echo while every vCPU computes in ring 3.
     TestCase {
         keys: &[KAI],
+        // The kernel reads the accel word to pick its TCG latency limit.
+        accel: true,
         ..case("compute-keys", "test=compute-keys")
     },
     // P1 tasks 14 and 15: PROC_STOP_ONCE, rules, and the supervisor's checks.

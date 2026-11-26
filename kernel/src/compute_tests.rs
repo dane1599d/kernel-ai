@@ -5,8 +5,9 @@
 //!   worker pinned on every CPU gives the same bits as one thread, for 50 rounds.
 //! - `test=compute-keys`: while ring-3 workers compute on every CPU, the harness
 //!   types `kai` and Enter; the keyboard thread, pinned to CPU 0 where IRQ1 lands,
-//!   must run within 20 ms of every key's interrupt (50 ms under TCG), and the workers must still be
-//!   computing at the end. Their process has no burst limit; the test kills it.
+//!   must run within 20 ms of every key's interrupt (50 ms under TCG), and the
+//!   workers must still be computing at the end. Their process has no burst
+//!   limit; the test kills it.
 
 use crate::fpu_tests::wait_exit;
 use crate::i8042;
