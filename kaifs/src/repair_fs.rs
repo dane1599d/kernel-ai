@@ -14,20 +14,21 @@
 //!    dropped, with the UNDO records it backs, and so is an UNDO record that
 //!    does not decode or hold. Those actions lose their undo; nothing else
 //!    changes. The blocks wait for the GC. A snapshot whose root is newer than
-//!    it, or that reaches a block an earlier snapshot of its volume reaches at
-//!    another birth, does not check: a writer trusts births to know what a
+//!    it, that gives a block another birth than its volume's trees agree on, or
+//!    that reaches a block of another structure, does not check
+//!    ([`crate::repair_births`]): a writer trusts births to know what a
 //!    snapshot still reads.
 //!
 //! Before those, a volume table that does not check (its root newer than its
 //! commit, a pointer newer than the node holding it) is written again whole
 //! from its entries, its own commit; the old one's blocks wait for the GC.
-//! Then rules 1-6 run on each volume's live tree. It refuses what
-//! [`repair`] refuses.
+//! Then rules 1-6 run on each volume's live tree, in volume order. It refuses
+//! what [`repair`] refuses.
 
 use crate::Error;
 use crate::allocator::{Allocator, run_of};
 use crate::buddy::Run;
-use crate::check::{Births, Cache, Leaves, summarise, tree_runs};
+use crate::check::{Cache, Held, Leaves, summarise, tree_runs};
 use crate::csum::Csum;
 use crate::dev::BlockDev;
 use crate::format::{self, BlockPtr};
@@ -35,6 +36,7 @@ use crate::fs::{Faults, Fs, Io, Snap, record_of};
 use crate::io::Meta;
 use crate::ns_check::{check_tree, undo_holds};
 use crate::repair::repair;
+use crate::repair_births::{Others, chosen, live_runs};
 use crate::tree::{Child, Key, Node, Tree};
 use crate::vol::decode_undo;
 use alloc::collections::BTreeSet;
@@ -217,7 +219,7 @@ fn reached<D: BlockDev>(fs: &mut Fs<D>, runs: &mut Vec<Run>, seen: &mut BTreeSet
 /// Every run the tree `ptr` names reaches, as far as its nodes read: its nodes
 /// and, in a tree of `values`, their records. Each pointer is followed once, so
 /// a hostile tree that names a node twice, or itself, ends.
-fn reach<D: BlockDev>(
+pub(crate) fn reach<D: BlockDev>(
     io: &mut Io<D>,
     ptr: &BlockPtr,
     values: bool,
@@ -250,9 +252,10 @@ fn history<D: BlockDev>(fs: &mut Fs<D>) -> Result<Vec<String>, Error> {
     let mut fixes = Vec::new();
     let mut cache = Cache::default();
     let (next_oid, committed) = (fs.next_oid(), fs.committed);
+    let others = Others::before(fs, fs.volume());
     let snaps: Vec<(u64, Snap)> = fs.snapshots().iter().map(|(id, s)| (*id, *s)).collect();
     let mut bad = BTreeSet::new();
-    let mut births = Births::default();
+    let mut read: Vec<(u64, Vec<Held>)> = Vec::new();
     for (sid, snap) in &snaps {
         let root = snap.root;
         let runs = match root.birth > snap.generation {
@@ -260,16 +263,28 @@ fn history<D: BlockDev>(fs: &mut Fs<D>) -> Result<Vec<String>, Error> {
             false => check_tree(fs, &root, snap.next_oid, snap.generation, &mut cache)
                 .and_then(|_| tree_runs(&mut fs.io, &root, &mut cache)),
         };
-        let runs = runs.and_then(|runs| match births.disagree(&runs) {
-            Some(why) => Err(format!("{why}, against an earlier snapshot")),
+        let runs = runs.and_then(|runs| match others.clash(&runs) {
+            Some(why) => Err(why),
             None => Ok(runs),
         });
         match runs {
-            Ok(runs) => births.add(&runs),
+            Ok(runs) => read.push((*sid, runs)),
             Err(why) => {
                 fixes.push(format!("snapshot {sid} does not check ({why}): dropped"));
                 bad.insert(*sid);
             }
+        }
+    }
+    // The births the volume's trees agree on, the live tree's word too.
+    let root = fs.live_root().unwrap_or(BlockPtr::NULL);
+    let live = live_runs(fs, &root, &others, &mut cache).ok();
+    let lists: Vec<&[Held]> = read.iter().map(|(_, runs)| &runs[..]).collect();
+    let births = chosen(&lists, live.as_deref());
+    for (sid, runs) in &read {
+        if let Some(why) = births.disagree(runs) {
+            let why = format!("{why}, against its volume's other trees");
+            fixes.push(format!("snapshot {sid} does not check ({why}): dropped"));
+            bad.insert(*sid);
         }
     }
     let mut kept = fs.snapshots().clone();

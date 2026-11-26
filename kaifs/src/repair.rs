@@ -6,8 +6,9 @@
 //!    longer verifies loses the items below it, and the tree is rebuilt from the
 //!    rest, as is a tree whose nodes verify but do not hold together, or whose
 //!    births lie: a root newer than the commit, a pointer newer than its node,
-//!    a block a snapshot reaches at another birth. The old tree's blocks wait
-//!    for the GC, so nothing a snapshot holds is touched.
+//!    a block given another birth than its snapshots agree on, or a block
+//!    another structure reaches ([`crate::repair_births`]). The old tree's
+//!    blocks wait for the GC, so nothing a snapshot holds is touched.
 //! 2. **Items.** An item of an unknown kind, of object 0, or of an object with no
 //!    inode is dropped, as are names in a file, data in a folder, data off a
 //!    128 KiB boundary, past 256 TiB or in a record that no longer verifies, and
@@ -15,10 +16,10 @@
 //!    again under its own. Data is made inline exactly when it fits. A sealed
 //!    file keeps the run of SEALED records from 0, each on its 2 MiB boundary,
 //!    and drops the rest; a SEALED record in another file is dropped. Two items
-//!    never name one block: a later one gets a copy of its bytes in a record of
-//!    its own, or is dropped if the copy would take the reserve. A record a
-//!    snapshot reaches is given the birth the snapshot gives it, and one newer
-//!    than the commit the commit's. The object id counter is raised past
+//!    never name one block, nor an item a block another structure reaches: a
+//!    later one gets a copy of its bytes in a record of its own, or is dropped
+//!    if the copy would take the reserve. A record is given the birth the
+//!    volume's trees agree on, and one newer than the commit the commit's. The object id counter is raised past
 //!    every object found.
 //! 3. **The root.** If inode 1 is missing or not a folder, it becomes an empty
 //!    folder again.
@@ -39,7 +40,7 @@
 
 use crate::Error;
 use crate::allocator::{Spend, run_of};
-use crate::check::{Births, Cache, tree_runs};
+use crate::check::{Births, Cache, Held, tree_runs};
 use crate::dev::BlockDev;
 use crate::format::{BlockPtr, FLAG_SEALED};
 use crate::fs::{
@@ -50,6 +51,7 @@ use crate::items::{
     CHUNK, Entry, FileType, Inode, K_DATA, K_DIRENT, K_INODE, K_XATTR, MAX_FILE, ROOT,
     SEALED_CHUNK, decode_attrs, decode_names, encode_attrs, encode_names, hash_name,
 };
+use crate::repair_births::{Others, chosen, live_runs};
 use crate::tree::{Child, Key, Node};
 use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use alloc::format;
@@ -90,8 +92,10 @@ struct Repair<'a, D> {
     shared: bool,
     /// Why a copy failed other than for room: the repair fails with it.
     failed: Option<Error>,
-    /// The births the volume's snapshots give their runs.
+    /// The births the volume's trees agree on.
     births: Births,
+    /// The blocks other structures reach.
+    others: Others,
     /// The commit repair starts from: no record kept is newer.
     committed: u64,
 }
@@ -324,10 +328,8 @@ impl<D: BlockDev> Repair<'_, D> {
         ptr: BlockPtr,
         len: usize,
     ) -> (Vec<u8>, BlockPtr) {
-        let birth = match self.births.of(&run_of(&ptr)) {
-            Some(birth) => birth,
-            None => ptr.birth.min(self.committed),
-        };
+        let birth = self.births.of(&run_of(&ptr)).unwrap_or(ptr.birth);
+        let birth = birth.min(self.committed);
         if birth == ptr.birth {
             return (raw, ptr);
         }
@@ -343,7 +345,7 @@ impl<D: BlockDev> Repair<'_, D> {
     fn shares(&self, ptr: &BlockPtr) -> bool {
         let run = run_of(ptr);
         let below = self.kept.range(..run.end()).next_back();
-        below.is_some_and(|(_, &end)| end > run.addr)
+        below.is_some_and(|(_, &end)| end > run.addr) || self.others.whose(&run).is_some()
     }
 
     /// Notes the record `ptr` names as kept.
@@ -627,24 +629,28 @@ fn repair_with_reserve<D: BlockDev>(fs: &mut Fs<D>) -> Result<Vec<String>, Error
     }
     let lost_nodes = !fixes.is_empty();
     let (committed, mut cache) = (fs.committed, Cache::default());
-    let mut births = Births::default();
+    let others = Others::before(fs, fs.volume());
+    let mut snaps: Vec<Vec<Held>> = Vec::new();
     for snap in fs.snapshots().values().copied().collect::<Vec<_>>() {
         // `repair_fs` has dropped any that does not check.
         if let Ok(runs) = tree_runs(&mut fs.io, &snap.root, &mut cache) {
-            births.add(&runs);
+            snaps.push(runs);
         }
     }
+    let live = live_runs(fs, &root, &others, &mut cache);
+    let lists: Vec<&[Held]> = snaps.iter().map(|runs| &runs[..]).collect();
+    let births = chosen(&lists, live.as_deref().ok());
     // A tree whose nodes all verify but do not hold together (keys outside
     // their bounds, a level skipped, a node under a quarter full, a block
-    // reached twice), or whose births lie, is rebuilt from its items too.
+    // reached twice), or whose births or blocks lie, is rebuilt from its items
+    // too.
     let unsound = match lost_nodes || root.is_null() {
         true => None,
-        false if root.birth > committed => Some(String::from("its root is newer than its commit")),
-        false => match tree_runs(&mut fs.io, &root, &mut cache) {
+        false => match &live {
             Ok(runs) => births
-                .disagree(&runs)
-                .map(|why| format!("{why}, against a snapshot")),
-            Err(why) => Some(why),
+                .disagree(runs)
+                .map(|why| format!("{why}, against its snapshots")),
+            Err(why) => Some(why.clone()),
         },
     };
     if let Some(why) = &unsound {
@@ -665,6 +671,7 @@ fn repair_with_reserve<D: BlockDev>(fs: &mut Fs<D>) -> Result<Vec<String>, Error
         shared: false,
         failed: None,
         births,
+        others,
         committed,
     };
     for (key, raw) in found.iter().cloned() {

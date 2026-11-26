@@ -29,7 +29,8 @@
 //! - [`ns_check`]: the namespace's rules, checked through the same memo, and the
 //!   digest the crash gates compare;
 //! - [`repair`] and [`repair_fs`]: `check --repair`'s rules, on a volume's
-//!   namespace and on the whole filesystem.
+//!   namespace and on the whole filesystem, with [`repair_births`]: what they
+//!   hold a volume's trees to on births and blocks.
 //!
 //! P2 task 6 adds volumes and undo:
 //! - [`vol`]: the volume table's entries: volumes, snapshots of four kinds, and
@@ -69,6 +70,7 @@ pub mod items;
 pub mod ns;
 pub mod ns_check;
 pub mod repair;
+pub mod repair_births;
 pub mod repair_fs;
 pub mod scope;
 pub mod sealed;
