@@ -697,13 +697,22 @@ fn a_restore_puts_nothing_in_the_volume_root() {
     assert_eq!(trashed.0, Reply::Done);
     let emptied = c.call(ALICE, pkg, DIR_RIGHTS, Request::EmptyTrash).0;
     assert_eq!(emptied, Reply::Emptied { count: 1 });
-    // Bringing `planted` back would put it in the volume's root.
+    // `planted` went for good after the action, so the restore leaves it
+    // (bug hunt 2, H2-2), and nothing lands in the volume's root. Bringing
+    // back what the action itself removed into a folder gone since would put
+    // it there, and is refused (kaifs's `a_scoped_restore_refuses_the_root`).
     let restore = Request::Restore {
         txn: generation,
         action: 8,
     };
-    let reply = c.call(ALICE, pkg, DIR_RIGHTS, restore);
-    assert_eq!(failed(reply), Error::Permission);
+    let reply = c.call(ALICE, pkg, DIR_RIGHTS, restore).0;
+    let Reply::Restored { rows, .. } = reply else {
+        panic!("{reply:?}");
+    };
+    assert!(
+        !rows.is_empty() && rows.iter().all(|(_, o)| *o == Outcome::Left),
+        "{rows:?}"
+    );
     let at_root = c.server.fs().lookup(ROOT, "planted").unwrap();
     assert!(at_root.is_none(), "{at_root:?}");
 }
@@ -818,6 +827,45 @@ fn an_actions_generation_is_the_one_its_commit_gets() {
     c.write(&file, 0, b"named");
     assert_eq!(c.home(Request::Commit).0, Reply::Committed { generation });
     assert_eq!(failed(c.home(Request::Generation)), Error::Invalid);
+}
+
+/// Sync never commits the caller's own action half done: it is refused and
+/// the action stays whole, one commit with one undo record, which Abort still
+/// drops all of.
+#[test]
+fn a_sync_in_the_callers_own_action_is_refused_and_leaves_it_whole() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let a = c.open("a.txt", How::CreateFile).unwrap();
+    let b = c.open("b.txt", How::CreateFile).unwrap();
+    assert_eq!(c.home(Request::Begin { action: 41 }).0, Reply::Done);
+    assert_eq!(c.write(&a, 0, b"x"), Reply::Done);
+    assert_eq!(failed(c.home(Request::Sync)), Error::Invalid);
+    // Another caller's waits for the action, as any change does.
+    let bob = c.call(BOB, HOME_USER, DIR_RIGHTS, Request::Sync);
+    assert_eq!(failed(bob), Error::Busy);
+    assert_eq!(c.write(&b, 0, b"y"), Reply::Done);
+    let Reply::Committed { generation } = c.home(Request::Commit).0 else {
+        panic!("not committed");
+    };
+    // Its Commit's generation undoes both writes.
+    let undo = c.home(Request::Restore {
+        txn: generation,
+        action: 42,
+    });
+    assert!(matches!(undo.0, Reply::Restored { .. }), "{undo:?}");
+    assert_eq!(c.read(&a), Ok(Vec::new()));
+    assert_eq!(c.read(&b), Ok(Vec::new()));
+    // An Abort after a refused Sync leaves none of the action on the disk.
+    let d = c.open("d.txt", How::CreateFile).unwrap();
+    assert_eq!(c.home(Request::Begin { action: 43 }).0, Reply::Done);
+    assert_eq!(c.write(&d, 0, b"kept"), Reply::Done);
+    assert_eq!(failed(c.home(Request::Sync)), Error::Invalid);
+    assert_eq!(c.home(Request::Abort).0, Reply::Done);
+    assert_eq!(c.read(&d), Ok(Vec::new()));
+    // Outside an action it commits, as before.
+    let sync = c.home(Request::Sync).0;
+    assert!(matches!(sync, Reply::Committed { .. }), "{sync:?}");
 }
 
 #[test]
@@ -1028,6 +1076,50 @@ fn emptying_reaches_only_what_was_beneath_the_dir_and_needs_delete() {
     assert_eq!(c.home(Request::EmptyTrash).0, Reply::Emptied { count: 1 });
     assert!(c.trash_paths(HOME_USER).is_empty());
     assert_eq!(c.home(Request::EmptyTrash).0, Reply::Emptied { count: 0 });
+}
+
+/// A folder made at the path of one that went to the trash sees none of what
+/// was trashed from beneath that one: Bob, given it, can neither list, restore
+/// (and so read) nor empty the person's items.
+#[test]
+fn a_new_folder_at_an_old_path_sees_none_of_the_old_ones_trash() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let old = c.open("old", How::Mkdir).unwrap();
+    let secret = c.open("old/secret.txt", How::CreateFile).unwrap();
+    assert_eq!(c.write(&secret, 0, b"s"), Reply::Done);
+    c.trash(old.badge, "secret.txt");
+    c.trash(HOME_USER, "old");
+    let fresh = c.open("old", How::Mkdir).unwrap();
+    assert!(c.trash_paths(fresh.badge).is_empty());
+    let restore = Request::TrashRestore {
+        path: "secret.txt".into(),
+    };
+    let reply = c.call(BOB, fresh.badge, DIR_RIGHTS, restore);
+    assert_eq!(failed(reply), Error::NotFound);
+    let emptied = c.call(BOB, fresh.badge, DIR_RIGHTS, Request::EmptyTrash);
+    assert_eq!(emptied.0, Reply::Emptied { count: 0 });
+    // The person's home still holds both, as they were.
+    assert_eq!(c.trash_paths(HOME_USER), ["old/secret.txt", "old"]);
+}
+
+/// The same for a folder made since and renamed to the old path.
+#[test]
+fn a_folder_renamed_to_an_old_path_sees_none_of_the_old_ones_trash() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let a = c.open("a", How::Mkdir).unwrap();
+    c.open("a/x.txt", How::CreateFile).unwrap();
+    c.trash(a.badge, "x.txt");
+    c.trash(HOME_USER, "a");
+    let b = c.open("b", How::Mkdir).unwrap();
+    let rename = Request::Rename {
+        from: "b".into(),
+        to: "a".into(),
+    };
+    assert_eq!(c.home(rename).0, Reply::Done);
+    assert!(c.trash_paths(b.badge).is_empty());
+    assert_eq!(c.trash_paths(HOME_USER), ["a/x.txt", "a"]);
 }
 
 #[test]

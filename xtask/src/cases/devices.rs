@@ -1,6 +1,6 @@
 //! D and the display: input, disks, the boot image and the screen.
 
-use super::{KAI, TestCase, case};
+use super::{KAI, ROOM_WARNING, TestCase, case};
 use crate::disk::Fixture;
 
 /// One detent of the wheel toward the person (scroll down), through QMP: the
@@ -88,6 +88,11 @@ pub(super) const CASES: &[TestCase] = &[
         expect: &["power: rebooting through the 8042 reset line"],
         ..case("reboot-8042", "test=reboot reboot=8042")
     },
+    // Bug hunt 3 H3-2: a memory-space reset register is written without the memory lock.
+    TestCase {
+        expect: &["power: a memory reset register was written with the memory lock held"],
+        ..case("reboot-memory", "test=reboot-memory")
+    },
     // ADR 0008 "fault": a panic or a failed check resets the machine instead of
     // halting (`panic=reset` asks for that in test mode).
     TestCase {
@@ -105,6 +110,19 @@ pub(super) const CASES: &[TestCase] = &[
             "power: rebooting through the FADT reset register",
         ],
         ..case("fail-reset", "test=panic-reset what=fail panic=reset")
+    },
+    // Bug hunt 4 H4-10: the reset allocates nothing, so a fault inside the
+    // allocator, its lock held on this CPU, still resets the machine.
+    TestCase {
+        resets: true,
+        expect: &[
+            "fault: panic-reset: a panic with the heap locked, on purpose; resetting the machine",
+            "power: rebooting through the FADT reset register (write 0xf to I/O port 0xcf9)",
+        ],
+        ..case(
+            "heap-held-reset",
+            "test=panic-reset what=heap-held panic=reset",
+        )
     },
     // ADR 0008: UEFI runtime services, mapped and switched to virtual addresses.
     TestCase {
@@ -161,7 +179,7 @@ pub(super) const CASES: &[TestCase] = &[
             "power: the console has the screen back from the desktop",
             "power: it is now safe to switch off the computer",
         ],
-        forbid: &["efi: turning off through ResetSystem"],
+        forbid: FALLBACK_FORBID,
         ..case("power-off-fallback", "test=power-off poweroff=fallback")
     },
     // ADR 0007 section 3: a record per bound device, read by DEV_LIST from ring 3.
@@ -290,4 +308,16 @@ pub(super) const CASES: &[TestCase] = &[
         }),
         ..case("display-gop", "test=display")
     },
+];
+
+/// `power-off-fallback`'s forbid: the base list and the ResetSystem path it
+/// must not take.
+const FALLBACK_FORBID: &[&str] = &[
+    "pkg: FAIL",
+    "cannot ask yet",
+    "dropped a result",
+    "did not reach the app",
+    "supervision: supervisor died",
+    ROOM_WARNING,
+    "efi: turning off through ResetSystem",
 ];

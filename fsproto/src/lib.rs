@@ -152,7 +152,9 @@ pub enum Request {
         #[n(0)]
         since: u64,
     },
-    /// Commits whatever is pending; answers the generation.
+    /// Commits whatever is pending; answers the generation. Never inside an
+    /// action, which only [`Request::Commit`] ends: [`Error::Invalid`] in the
+    /// caller's own, [`Error::Busy`] in another caller's.
     #[n(14)]
     Sync,
     /// Free and total 4 KiB blocks.

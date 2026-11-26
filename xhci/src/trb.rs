@@ -35,9 +35,12 @@ const INTERRUPT_ON_COMPLETION: u32 = 1 << 5;
 const IMMEDIATE_DATA: u32 = 1 << 6;
 /// Data and status stages: the stage runs IN, device to host.
 const DIRECTION_IN: u32 = 1 << 16;
+/// Reset Endpoint: keep the transfer state, data toggle included (TSP).
+const TRANSFER_STATE_PRESERVE: u32 = 1 << 9;
 
 // Completion codes.
 pub const SUCCESS: u8 = 1;
+pub const TRANSACTION_ERROR: u8 = 4;
 pub const STALL: u8 = 6;
 pub const SHORT_PACKET: u8 = 13;
 
@@ -47,7 +50,7 @@ pub fn completion_text(code: u8) -> &'static str {
         SUCCESS => "success",
         2 => "data buffer error",
         3 => "babble detected",
-        4 => "USB transaction error",
+        TRANSACTION_ERROR => "USB transaction error",
         5 => "TRB error",
         STALL => "stall",
         7 => "resource error",
@@ -137,6 +140,15 @@ impl Trb {
             0,
             control(RESET_ENDPOINT) | (u32::from(dci) << 16) | (u32::from(slot) << 24),
         ])
+    }
+
+    /// Resets endpoint `dci` of `slot` out of a halt a transaction error caused,
+    /// keeping its transfer state and data toggle (TSP, xHCI 4.6.8.1): rung
+    /// again, it retries the failed transfer where it stopped.
+    pub fn retry_endpoint(slot: u8, dci: u8) -> Self {
+        let mut trb = Self::reset_endpoint(slot, dci);
+        trb.0[3] |= TRANSFER_STATE_PRESERVE;
+        trb
     }
 
     /// Points endpoint `dci` of `slot` at `dequeue` with cycle state `cycle`.
@@ -288,6 +300,14 @@ mod tests {
         let reset = Trb::reset_endpoint(2, 1);
         assert_eq!((reset.0[3] >> 16) & 0x1F, 1);
         assert_eq!(reset.0[3] >> 24, 2);
+        assert_eq!(reset.0[3] & TRANSFER_STATE_PRESERVE, 0);
+        let retry = Trb::retry_endpoint(2, 3);
+        assert_eq!(retry.kind(), RESET_ENDPOINT);
+        assert_eq!(
+            retry.0[3] & TRANSFER_STATE_PRESERVE,
+            TRANSFER_STATE_PRESERVE
+        );
+        assert_eq!(((retry.0[3] >> 16) & 0x1F, retry.0[3] >> 24), (3, 2));
         let dequeue = Trb::set_dequeue(2, 1, 0x5040, true);
         assert_eq!(dequeue.parameter(), 0x5041);
     }

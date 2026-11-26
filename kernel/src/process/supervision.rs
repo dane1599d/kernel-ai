@@ -24,7 +24,7 @@ const MAX_RECORDS: usize = 32;
 /// gets its saved state cleared, in case the state is what kills it.
 const EARLY_DEATHS_BEFORE_RESET: u32 = 3;
 const SUPERVISOR_LIMITS: Limits = Limits {
-    max_pages: 2048,
+    max_pages: kabi::plan::system::SUPERVISOR_PAGES,
     max_burst_ms: 2000,
     // SERVE for the `stop` and `start` requests it takes between exits.
     caps: cap::SUPERVISE | cap::SERVE,
@@ -232,6 +232,7 @@ pub fn kernel_child_exit(pid: u64) -> Option<(ExitReason, u64)> {
 }
 
 fn with_queue<R>(f: impl FnOnce(&mut ExitQueue) -> R) -> R {
+    crate::threads::ready::not_in_ready(&"the exit queue");
     threads::preempt_disable();
     let result = f(&mut QUEUE.lock());
     threads::preempt_enable();

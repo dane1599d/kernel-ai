@@ -81,8 +81,8 @@ fn a_disk_filled_by_growth_can_still_be_emptied_through_fs() {
 
 /// The tiers each request gets: all of the reserve only for work that frees
 /// space at once, half for a trash or a truncate, none for growth or a Sync
-/// outside an action, and an action's commit (by Commit or its owner's Sync)
-/// the least of its changes'.
+/// (its owner's, in an action, is refused), and an action's Commit the least
+/// of its changes'.
 #[test]
 fn each_request_gets_its_tier_and_a_commit_the_least_of_its_actions() {
     let mut disk = MemDisk::new(2 * 1024);
@@ -109,12 +109,12 @@ fn each_request_gets_its_tier_and_a_commit_the_least_of_its_actions() {
     assert_eq!(tier(&mut c, ALICE, sealed_push), Spend::Keep);
     assert_eq!(tier(&mut c, ALICE, Request::Sync), Spend::Keep);
     assert_eq!(tier(&mut c, ALICE, write()), Spend::Keep);
-    // An action of trashes and truncates commits at half; Bob's Sync in it,
-    // which is not his, keeps to the reserve.
+    // An action of trashes and truncates commits at half. A Sync in it keeps
+    // to the reserve, Alice's (refused) as Bob's, and leaves her tier alone.
     assert_eq!(home(&mut c, Request::Begin { action: 1 }), Reply::Done);
     tier(&mut c, ALICE, trash());
     tier(&mut c, ALICE, truncate());
-    assert_eq!(tier(&mut c, ALICE, Request::Sync), Spend::Half);
+    assert_eq!(tier(&mut c, ALICE, Request::Sync), Spend::Keep);
     assert_eq!(tier(&mut c, BOB, Request::Sync), Spend::Keep);
     assert_eq!(tier(&mut c, ALICE, Request::Commit), Spend::Half);
     assert_eq!(home(&mut c, Request::Abort), Reply::Done);

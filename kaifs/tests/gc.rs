@@ -326,3 +326,49 @@ fn a_pass_that_skips_snapshots_is_caught() {
         "the snapshot's blocks were freed and nothing noticed"
     );
 }
+
+/// An abort drops its transaction, not a running pass (bug hunt 5, H5-7): the
+/// pass goes on over what the last commit left, and frees exactly what nothing
+/// reaches, as if the aborted changes had never been made.
+#[test]
+fn an_abort_leaves_a_running_pass_to_finish() {
+    let mut fs = fresh(8192);
+    let files: Vec<u64> = (0..20)
+        .map(|i| write(&mut fs, ROOT, &format!("f{i}"), &[i as u8; 20_000]))
+        .collect();
+    fs.commit().unwrap();
+    fs.clock = 1_000;
+    for round in 0..4u64 {
+        fs.begin(round).unwrap();
+        for f in &files {
+            fs.write_file(*f, &[round as u8; 20_000]).unwrap();
+        }
+        fs.commit().unwrap();
+    }
+    assert_eq!(fs.expire(1_000 + UNDO_LIFE).unwrap().len(), 4);
+    fs.commit().unwrap();
+    let leaked = checked(&mut fs).leaked_blocks;
+    assert!(leaked > 100, "{leaked} blocks are held by nothing");
+    fs.gc_start().unwrap();
+    assert!(!fs.gc_step(1).unwrap().done);
+    // An action that rewrites a file, aborted; then a change outside one.
+    fs.begin(99).unwrap();
+    fs.write_file(files[0], &[7; 20_000]).unwrap();
+    fs.abort().unwrap();
+    fs.write_file(files[1], &[8; 20_000]).unwrap();
+    fs.abort().unwrap();
+    assert!(fs.gc_running(), "an abort ended the pass");
+    let freed = loop {
+        let progress = fs.gc_step(16).unwrap();
+        if progress.done {
+            break progress.freed_blocks;
+        }
+    };
+    assert_eq!(freed, leaked);
+    fs.commit().unwrap();
+    fs.commit().unwrap();
+    assert_eq!(checked(&mut fs).leaked_blocks, 0);
+    for f in &files {
+        assert_eq!(fs.read_file(*f).unwrap(), [3; 20_000]);
+    }
+}

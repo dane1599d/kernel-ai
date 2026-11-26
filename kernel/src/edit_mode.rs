@@ -233,13 +233,9 @@ pub fn command(command: &str, rest: &str) -> Option<Option<Proposal>> {
                 usage(":apply <name>");
                 return Some(None);
             };
+            // The terminal prints the proposal when it asks (bug hunt 6, H6-10).
             match propose(&name, cols, rows) {
-                Ok(proposal) => {
-                    for line in &proposal.lines {
-                        log!("? {line}");
-                    }
-                    return Some(Some(proposal));
-                }
+                Ok(proposal) => return Some(Some(proposal)),
                 Err(why) => log!("! {why}"),
             }
         }

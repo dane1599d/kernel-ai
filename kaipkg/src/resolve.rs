@@ -65,6 +65,22 @@ pub fn resolve(
     installed: &[Installed],
     wants: &[Want<'_>],
 ) -> Result<Vec<Pick>, String> {
+    resolve_stored(index, &[], provided, installed, wants)
+}
+
+/// [`resolve`], with `stored`: entries for installed packages whose object
+/// `index` does not list, each made from its own stored header
+/// ([`crate::store`]). A package kept as installed takes its dependencies from
+/// its own entry, found by its hash, so it keeps them when `index` is another
+/// repository's, as `local`'s is after a mirror install (H3-13). `stored` is
+/// never a source of new picks.
+pub fn resolve_stored(
+    index: &[Entry],
+    stored: &[Entry],
+    provided: &[(&str, Version)],
+    installed: &[Installed],
+    wants: &[Want<'_>],
+) -> Result<Vec<Pick>, String> {
     let mut picks: Vec<Pick> = Vec::new();
     let mut queue: Vec<Queued> = wants
         .iter()
@@ -115,10 +131,13 @@ pub fn resolve(
             .find(|p| p.name == name && range.matches(&p.version));
         let (pick, depends) = match kept {
             Some(p) => {
-                // An installed package's dependencies are already installed.
+                // An installed package's dependencies are already installed:
+                // its own entry's, by its hash, from the index or else from
+                // its stored header.
                 let depends = index
                     .iter()
-                    .find(|e| e.name == name && e.version == p.version)
+                    .chain(stored)
+                    .find(|e| e.sha == p.sha)
                     .map(|e| e.depends.clone())
                     .unwrap_or_default();
                 let pick = Pick {
@@ -260,6 +279,51 @@ mod tests {
         assert_eq!(
             resolve(&index(), OS, &[], &[want("spell-en", Some("^1.5"))]),
             Err("Cannot install spell-en: no version that is not yanked fits.".into())
+        );
+    }
+
+    #[test]
+    fn a_kept_package_keeps_the_dependencies_its_stored_entry_names() {
+        // Installed from one repository, resolved against another's index
+        // that lists neither (H3-13).
+        let stored = vec![
+            entry(
+                "notes",
+                "2.1.0",
+                &[("spell-en", "^1.2"), ("kai:app", "^0.1")],
+                false,
+            ),
+            entry("spell-en", "1.2.3", &[], false),
+        ];
+        let installed: Vec<Installed> = stored
+            .iter()
+            .map(|e| Installed {
+                name: e.name.clone(),
+                version: e.version,
+                sha: e.sha,
+                explicit: e.name == "notes",
+                grants: vec![],
+            })
+            .collect();
+        let other = vec![entry("hello", "0.0.1", &[("kai:app", "^0.1")], false)];
+        let wants = [want("notes", None), want("hello", None)];
+        let picks = resolve_stored(&other, &stored, OS, &installed, &wants).unwrap();
+        let got: Vec<(&str, bool, bool)> = picks
+            .iter()
+            .map(|p| (p.name.as_str(), p.explicit, p.entry.is_some()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("notes", true, false),
+                ("hello", true, true),
+                ("spell-en", false, false)
+            ]
+        );
+        // `stored` only says what a kept package needs: never a new pick.
+        assert_eq!(
+            resolve_stored(&other, &stored, OS, &[], &[want("spell-en", None)]),
+            Err("Cannot install spell-en: no package by that name.".into())
         );
     }
 }

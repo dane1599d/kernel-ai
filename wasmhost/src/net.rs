@@ -175,10 +175,10 @@ pub(crate) fn fetch(
 ) -> Result<(), Error> {
     let core = params.iter().map(core_of).collect::<Result<Vec<_>, _>>()?;
     let func = entry.func(String::new());
-    let mut guest = InCall {
-        caller: &mut caller,
-    };
+    let mut guest = InCall::new(&mut caller);
     let (args, _) = appabi::lift_args(&mut guest, &func, &core).map_err(|t| Error::new(t.0))?;
+    let lifted = guest.fuel;
+    crate::instance::charge(&mut caller, lifted)?;
     let request = request_of(&args).map_err(|why| Error::new(format!("{NET} fetch: {why}")))?;
     let ticket = caller.data_mut().net.push(request)?;
     let [result] = results else {

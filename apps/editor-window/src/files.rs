@@ -24,6 +24,9 @@ const MAX_ROUNDS: usize = 500;
 /// What a read's reason starts with when the path is not there, which makes the
 /// editor start a new file there (`kai:files`).
 pub const MISSING: &str = "missing";
+/// What a create's refusal says when a file is at the path already (the
+/// shell's door words): another writer made it first.
+pub const EXISTS: &str = "exists already";
 /// Most bytes of unsaved text a checkpoint keeps. A checkpoint is at most
 /// `compsdk::MAX_STATE` (64 KiB, the host's limit) with its path and framing, and a
 /// file the editor holds is at most `editcore::MAX_BUNDLE` (60 KiB), so this leaves
@@ -53,6 +56,8 @@ enum Job {
         path: String,
         /// What was sent: the file as it was when Ctrl-S was pressed.
         bytes: Vec<u8>,
+        /// Whether it was to make the file, which must not be there.
+        create: bool,
         ticket: u32,
     },
     Build {
@@ -245,6 +250,7 @@ impl Files {
         self.job = Some(Job::Write {
             path,
             bytes,
+            create: self.new,
             ticket,
         });
     }
@@ -307,6 +313,35 @@ impl Files {
                 screen.note(why, true);
             }
             (Job::Write { path, bytes, .. }, Ok(_)) => self.wrote(screen, &path, &bytes),
+            // Another writer removed or moved the file: the next Ctrl-S makes
+            // it again, as a create, which never writes over anything.
+            (
+                Job::Write {
+                    path,
+                    create: false,
+                    ..
+                },
+                Err(why),
+            ) if why.starts_with(MISSING) && self.path() == Some(path.as_str()) => {
+                self.new = true;
+                screen.note(
+                    format!("not saved: {why}; Ctrl-S again makes it anew"),
+                    true,
+                );
+            }
+            // Another writer made the file first: theirs stays, and the text
+            // moves to a new name beside it, which Ctrl-S makes.
+            (
+                Job::Write {
+                    path, create: true, ..
+                },
+                Err(why),
+            ) if why.contains(EXISTS) && self.path() == Some(path.as_str()) => {
+                match self.unsaved_text(screen) {
+                    Some(text) => self.moved_aside(screen, grid, &path, &why, text, now_ms),
+                    None => screen.note(format!("not saved: {why}"), true),
+                }
+            }
             (Job::Write { .. }, Err(why)) => screen.note(format!("not saved: {why}"), true),
             (Job::Build { .. }, Ok(report)) => {
                 screen.build_report(&String::from_utf8_lossy(&report))
@@ -317,14 +352,20 @@ impl Files {
         }
     }
 
-    /// The OS wrote `bytes`: they are the disk's, unless more was typed meanwhile.
+    /// The OS wrote `bytes`: they are the disk's now. When the text moved on
+    /// while the write was out, it is changed against them, and the edits
+    /// before the save can still be undone; otherwise nothing differs.
     fn wrote(&mut self, screen: &mut Screen, path: &str, bytes: &[u8]) {
         self.new = false;
         if let Some(editor) = self.editor.as_mut()
-            && editor.bytes() == bytes
+            && editor.path() == path
         {
-            editor.saved();
-            screen.saved();
+            if editor.bytes() == bytes {
+                editor.saved();
+                screen.saved();
+            } else {
+                editor.saved_as(bytes);
+            }
         }
         screen.note(format!("saved {path} ({} bytes)", bytes.len()), false);
     }
@@ -359,6 +400,32 @@ impl Files {
         self.say_after = Some(format!(
             "{path} could not be opened again ({why}); the text kept is open as {there}, which Ctrl-S saves"
         ));
+    }
+
+    /// A save that was to make `path` found a file there that another writer
+    /// made since: theirs stays, and `text` is opened as a new file under
+    /// [`Files::recovery_path`], unsaved, as [`Files::recovered`] does with a
+    /// checkpoint's text.
+    fn moved_aside(
+        &mut self,
+        screen: &mut Screen,
+        grid: (usize, usize),
+        path: &str,
+        why: &str,
+        text: String,
+        now_ms: u64,
+    ) {
+        let line = u32::try_from(screen.position().0).unwrap_or(1);
+        self.restore = Some(Kept {
+            text: Some(text),
+            line,
+        });
+        self.recovered(screen, grid, path, why, now_ms);
+        if let Some(there) = self.path().map(String::from) {
+            self.say_after = Some(format!(
+                "not saved: {why}; the text is open as {there}, which Ctrl-S saves"
+            ));
+        }
     }
 
     /// Shows `bytes` as the file at `path`, on a fresh screen.

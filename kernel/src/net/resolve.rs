@@ -1,6 +1,8 @@
 //! The DNS resolver: A records from the server DHCP named (or `dns=`), asked over
 //! UDP with `netcore::dns`, kept in a cache for their TTL. Each server is asked in
-//! turn, twice, within the caller's time.
+//! turn, twice, within the caller's time: the last query waits out what is left
+//! of it, and a reply to any query sent counts, so a server slower than one try
+//! still answers.
 
 use super::{NET, next_port, wait_for_address};
 use crate::hpet;
@@ -14,7 +16,8 @@ use smoltcp::socket::udp;
 use smoltcp::wire::IpAddress;
 use spin::Mutex;
 
-/// The longest one query waits for its reply.
+/// How long a query waits before the next is sent; the last waits until the
+/// caller's deadline.
 const TRY_MS: u64 = 1_000;
 /// Rounds over the servers.
 const ROUNDS: u32 = 2;
@@ -99,7 +102,8 @@ pub fn resolve(
     })
 }
 
-/// Asks each server in turn, [`ROUNDS`] times over, until one answers.
+/// Asks each server in turn, [`ROUNDS`] times over, until one answers. A late
+/// reply to an earlier query still counts, and the last waits until `deadline`.
 fn ask(
     host: &str,
     servers: &[(Ipv4Addr, u16)],
@@ -116,18 +120,25 @@ fn ask(
             )
         };
         let mut socket = udp::Socket::new(buffer(), buffer());
-        socket
-            .bind(next_port())
-            .map_err(|_| "dns: cannot open a socket")?;
+        let port = next_port(&net.sockets).ok_or("dns: cannot open a socket")?;
+        socket.bind(port).map_err(|_| "dns: cannot open a socket")?;
         net.sockets.add(socket)
     };
     let mut result = Err("dns: timed out");
     // The id only has to differ from query to query and be hard to guess offhand.
     let mut id = (hpet::nanos() ^ (hpet::nanos() >> 17)) as u16;
-    'rounds: for _ in 0..ROUNDS {
-        for &server in servers {
+    let mut asked = dns::Asked::default();
+    'rounds: for round in 0..ROUNDS {
+        for (n, &server) in servers.iter().enumerate() {
             id = id.wrapping_add(0x9E37);
-            match ask_one(handle, host, server, id, deadline, cancel) {
+            asked.push(server, id);
+            let last = round + 1 == ROUNDS && n + 1 == servers.len();
+            let give_up = if last {
+                deadline
+            } else {
+                deadline.min(hpet::nanos() + TRY_MS * 1_000_000)
+            };
+            match ask_one(handle, host, server, id, &asked, give_up, cancel) {
                 Ok(answer) => {
                     result = Ok(answer);
                     break 'rounds;
@@ -155,17 +166,19 @@ fn ask(
     result
 }
 
-/// One query to one server; Err(None) when no reply came in time.
+/// Query `id` to `server`, waiting until `give_up` for a reply to it or for one
+/// to an earlier query in `asked` that settles the name; Err(None) when none
+/// came in time.
 fn ask_one(
     handle: smoltcp::iface::SocketHandle,
     host: &str,
     server: (Ipv4Addr, u16),
     id: u16,
-    deadline: u64,
+    asked: &dns::Asked,
+    give_up: u64,
     cancel: &impl Fn() -> bool,
 ) -> Result<Answer, Option<ReplyError>> {
     let query = dns::query(id, host);
-    let give_up = deadline.min(hpet::nanos() + TRY_MS * 1_000_000);
     let endpoint = (IpAddress::Ipv4(server.0), server.1);
     let mut sent = false;
     let mut reply = [0u8; PACKET_BYTES];
@@ -184,12 +197,8 @@ fn ask_one(
             net.poll();
             let socket = net.sockets.get_mut::<udp::Socket>(handle);
             while let Ok((len, meta)) = socket.recv_slice(&mut reply) {
-                if meta.endpoint.addr != endpoint.0 || meta.endpoint.port != server.1 {
-                    continue;
-                }
-                match dns::parse_reply(id, host, &reply[..len]) {
-                    Err(ReplyError::NotOurs | ReplyError::Malformed) => {}
-                    other => return other.map_err(Some),
+                if let Some(outcome) = asked.reply(meta.endpoint, host, &reply[..len]) {
+                    return outcome.map_err(Some);
                 }
             }
         }

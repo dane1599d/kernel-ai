@@ -4,6 +4,12 @@
 //! [`script::answer_within`] under [`script::APP_LIMITS`]. A repair round
 //! sends back the source and why the shell refused it: the pre-check's
 //! problems or `cc build`'s diagnostics.
+//!
+//! A change to an app Kai wrote before (the plan's question 3: a change
+//! rebuilds as a new version) goes the same way: the kept `main.c` comes back
+//! as the previous answer, with the person's words as what to change
+//! ([`change`]), so the model edits the app it wrote instead of writing a new
+//! one.
 
 use crate::chat::{self, Message, Role};
 use crate::pack::capp1;
@@ -11,6 +17,17 @@ use crate::script::{self, Repair};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+
+/// What a change round's "why" starts with, after the kept `main.c`: the
+/// shell's [`change`] and [`request`] agree on it, so the wire stays the
+/// repair round's.
+pub const CHANGE: &str = "change: ";
+
+/// The repair round's "why" for a change to an app Kai wrote: `wanted` is
+/// the person's words.
+pub fn change(wanted: &str) -> String {
+    format!("{CHANGE}{wanted}")
+}
 
 /// The system prompt: the `c-app-1` card.
 pub fn system_prompt() -> String {
@@ -40,7 +57,12 @@ pub fn request(request: &str, repair: Option<Repair<'_>>) -> chat::Request {
     let mut asked = chat::Request::new(Some(&system), &user, script::APP_MAX_TOKENS);
     if let Some(repair) = repair {
         let previous = serde_json::json!({ "script": repair.script, "summary": "" }).to_string();
-        let feedback = format!("{}\nWrite the corrected main.c.{tag}", repair.error);
+        let feedback = match repair.error.strip_prefix(CHANGE) {
+            Some(wanted) => format!(
+                "That is the app's main.c now. Change it: {wanted}\nWrite the whole new main.c.{tag}"
+            ),
+            None => format!("{}\nWrite the corrected main.c.{tag}", repair.error),
+        };
         asked
             .messages
             .push(Message::new(Role::Assistant, &previous));
@@ -138,6 +160,25 @@ mod tests {
                 .contains("undeclared")
         );
         assert_eq!(body["max_tokens"], script::APP_MAX_TOKENS);
+    }
+
+    #[test]
+    fn a_change_carries_the_kept_source_and_the_words() {
+        let kept = "#include <kaiapp.h>\n/* timer */\n";
+        let why = change("make it beep");
+        let repair = Repair {
+            script: kept,
+            error: &why,
+        };
+        let asked = request("timer\nmake it beep", Some(repair));
+        assert_eq!(asked.messages.len(), 4);
+        assert!(asked.messages[2].content.contains("/* timer */"));
+        let told = &asked.messages[3].content;
+        assert!(
+            told.starts_with("That is the app's main.c now. Change it: make it beep\n"),
+            "{told}"
+        );
+        assert!(!told.contains("corrected"), "{told}");
     }
 
     #[test]

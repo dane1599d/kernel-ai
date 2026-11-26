@@ -124,9 +124,13 @@ fn extents(runs: impl IntoIterator<Item = Run>) -> Vec<(u64, u64)> {
     out
 }
 
-/// `runs`, which may overlap, as sorted, disjoint `[start, end)` spans.
+/// `runs`, which may overlap, as sorted, disjoint `[start, end)` spans. A run
+/// that would end past the last address there is holds no block of the disk:
+/// repair claims a hostile pointer's run before it reads it (bug hunt 5,
+/// H5-15), so it is left out, and no end overflows or wraps to 0.
 fn joined(runs: &[Run]) -> Vec<(u64, u64)> {
-    let mut spans: Vec<(u64, u64)> = runs.iter().map(|r| (r.addr, r.end())).collect();
+    let end = |r: &Run| Some((r.addr, r.addr.checked_add(r.blocks())?));
+    let mut spans: Vec<(u64, u64)> = runs.iter().filter_map(end).collect();
     spans.sort_unstable();
     let mut out: Vec<(u64, u64)> = Vec::with_capacity(spans.len());
     for (s, e) in spans {
@@ -531,66 +535,90 @@ impl Allocator {
         let mut alloc = Allocator::new(area);
         alloc.buddy = Buddy::default();
         let mut last: Option<(u8, u64)> = None;
-        // Oldest first: the base, then each delta in turn.
-        for (ptr, block) in blocks.iter().rev() {
-            let (which, txn) = (
-                block[1],
-                u64::from_le_bytes(block[8..16].try_into().unwrap_or([0; 8])),
-            );
-            let count = u32::from_le_bytes(block[4..8].try_into().unwrap_or([0; 4])) as usize;
+        let part_of = |block: &Block| {
+            let txn = u64::from_le_bytes(block[8..16].try_into().unwrap_or([0; 8]));
+            (block[1], txn)
+        };
+        // Oldest first: the base, then each delta in turn. One commit's part
+        // can take several blocks, and its entries are replayed as they were
+        // made: a base's free space before its pending runs, a delta's
+        // allocations before its frees, since a run the delta took and freed
+        // is pending only once taken. Two passes over the part's blocks do
+        // that whichever block holds an entry: `write_chain` has always put a
+        // part's first entries at the head side, the side a replay of whole
+        // blocks, oldest first, reached last.
+        let parts = blocks.chunk_by(|(_, a), (_, b)| part_of(a) == part_of(b));
+        for part in parts.rev() {
+            let (which, txn) = part_of(&part[0].1);
             let ordered = match last {
                 None => which == BASE,
                 Some((BASE, t)) => (which == BASE && txn == t) || (which == DELTA && txn > t),
                 Some((_, t)) => which == DELTA && txn >= t,
             };
-            if block[0] != FMT || count > PER_BLOCK || !ordered || txn > generation {
+            if !ordered || txn > generation {
                 return Err(bad);
             }
             if which == DELTA && last.is_some_and(|(_, t)| txn > t) {
                 alloc.release(txn + early);
             }
             last = Some((which, txn));
-            for j in 0..count {
-                let at = HEADER + j * ENTRY;
-                let word = |k: usize| {
-                    u64::from_le_bytes(
-                        block[at + 8 * k..at + 8 * k + 8]
-                            .try_into()
-                            .unwrap_or([0; 8]),
-                    )
-                };
-                let (start, len, tag) = (word(0), word(1), word(2));
-                let end = start.checked_add(len).ok_or(bad)?;
-                if len == 0 || start < area.0 || end > area.1 {
-                    return Err(bad);
-                }
-                match ((tag & 0xff) as u8, which) {
-                    (OP_FREE, BASE) if tag >> 8 == 0 => {
-                        if alloc.buddy.any_free(start, end) {
+            let count = |block: &Block| {
+                u32::from_le_bytes(block[4..8].try_into().unwrap_or([0; 4])) as usize
+            };
+            if part
+                .iter()
+                .any(|(_, block)| block[0] != FMT || count(block) > PER_BLOCK)
+            {
+                return Err(bad);
+            }
+            for pending in [false, true] {
+                for (_, block) in part {
+                    for j in 0..count(block) {
+                        let at = HEADER + j * ENTRY;
+                        let word = |k: usize| {
+                            u64::from_le_bytes(
+                                block[at + 8 * k..at + 8 * k + 8]
+                                    .try_into()
+                                    .unwrap_or([0; 8]),
+                            )
+                        };
+                        let (start, len, tag) = (word(0), word(1), word(2));
+                        if ((tag & 0xff) as u8 == OP_PENDING) != pending {
+                            continue;
+                        }
+                        let end = start.checked_add(len).ok_or(bad)?;
+                        if len == 0 || start < area.0 || end > area.1 {
                             return Err(bad);
                         }
-                        alloc.buddy.free_extent(start, len);
-                    }
-                    (OP_PENDING, BASE) | (OP_PENDING, DELTA)
-                        if (which == BASE && tag >> 8 <= txn) || tag >> 8 == txn =>
-                    {
-                        if alloc.buddy.any_free(start, end) {
-                            return Err(bad);
+                        match ((tag & 0xff) as u8, which) {
+                            (OP_FREE, BASE) if tag >> 8 == 0 => {
+                                if alloc.buddy.any_free(start, end) {
+                                    return Err(bad);
+                                }
+                                alloc.buddy.free_extent(start, len);
+                            }
+                            (OP_PENDING, BASE) | (OP_PENDING, DELTA)
+                                if (which == BASE && tag >> 8 <= txn) || tag >> 8 == txn =>
+                            {
+                                if alloc.buddy.any_free(start, end) {
+                                    return Err(bad);
+                                }
+                                alloc
+                                    .pending
+                                    .extend(tile(start, end).map(|run| (tag >> 8, run)));
+                            }
+                            (OP_ALLOC, DELTA) if tag >> 8 == 0 => {
+                                if !alloc.buddy.take_extent(start, len) {
+                                    return Err(bad);
+                                }
+                            }
+                            _ => return Err(bad),
                         }
-                        alloc
-                            .pending
-                            .extend(tile(start, end).map(|run| (tag >> 8, run)));
                     }
-                    (OP_ALLOC, DELTA) if tag >> 8 == 0 => {
-                        if !alloc.buddy.take_extent(start, len) {
-                            return Err(bad);
-                        }
-                    }
-                    _ => return Err(bad),
                 }
             }
-            alloc.chain.push(*ptr);
         }
+        alloc.chain = blocks.iter().rev().map(|(ptr, _)| *ptr).collect();
         let mut pending: Vec<Run> = alloc.pending.iter().map(|(_, r)| *r).collect();
         pending.sort_unstable();
         if pending.windows(2).any(|w| w[0].end() > w[1].addr) {
@@ -656,6 +684,34 @@ mod tests {
         assert_eq!(alloc.claim(&used), 0);
     }
 
+    /// Runs at the last addresses there are, as a hostile node or chain
+    /// pointer names (bug hunt 5, H5-15): claim takes nothing for them and
+    /// does not overflow, and a run beside them still takes the pending run
+    /// it overlaps.
+    #[test]
+    fn claim_leaves_out_runs_past_the_last_address() {
+        let mut alloc = Allocator::new(format::data_area(1 << 12));
+        let past = [
+            Run {
+                addr: u64::MAX,
+                level: 0,
+            },
+            Run {
+                addr: u64::MAX - 1,
+                level: 1,
+            },
+        ];
+        assert_eq!(alloc.claim(&past), 0);
+        let a = alloc.alloc(2).unwrap();
+        alloc.free_later(1, a);
+        let at = Run {
+            addr: a.addr,
+            level: 0,
+        };
+        assert_eq!(alloc.claim(&[past[0], at, past[1]]), 4);
+        assert!(!alloc.any_unused(a.addr, a.addr + 4));
+    }
+
     #[test]
     fn a_fresh_disk_is_one_extent_and_one_block() {
         let mut disk = MemDisk::new(1 << 20);
@@ -694,5 +750,81 @@ mod tests {
             assert!(alloc.chain().len() <= MAX_DELTAS as usize + 4);
         }
         assert!(!head.is_null());
+    }
+
+    /// One transaction that allocates 400 blocks and frees every other one:
+    /// about 200 entries, so its delta takes two blocks, and the second holds
+    /// frees of runs the first block's allocation took.
+    fn a_delta_of_two_blocks(disk: &mut MemDisk) -> (Allocator, BlockPtr) {
+        let mut alloc = Allocator::new(format::data_area(1 << 16));
+        alloc.persist(disk, CsumKind::Seahash64, 1).unwrap();
+        alloc.committed(1);
+        for _ in 0..200 {
+            let freed = alloc.alloc(0).unwrap();
+            alloc.alloc(0).unwrap();
+            alloc.free_later(2, freed);
+        }
+        let head = alloc.persist(disk, CsumKind::Seahash64, 2).unwrap();
+        alloc.committed(2);
+        assert_eq!(alloc.chain().len(), 3, "a base and a delta of two blocks");
+        (alloc, head)
+    }
+
+    #[test]
+    fn a_delta_over_blocks_replays_runs_it_took_and_freed() {
+        let mut disk = MemDisk::new(1 << 16);
+        let (mut alloc, head) = a_delta_of_two_blocks(&mut disk);
+        let loaded = Allocator::load(&mut disk, CsumKind::Seahash64, &head, 2).unwrap();
+        assert_eq!(loaded.state(), alloc.state());
+        let addrs = |a: &Allocator| {
+            let mut out: Vec<u64> = a.chain().iter().map(|p| p.addr).collect();
+            out.sort_unstable();
+            out
+        };
+        assert_eq!(addrs(&loaded), addrs(&alloc));
+        // And the chain grows on from it: the next delta, and a later base.
+        for txn in 3..=MAX_DELTAS as u64 + 4 {
+            let run = alloc.alloc(0).unwrap();
+            alloc.free_later(txn, run);
+            let head = alloc.persist(&mut disk, CsumKind::Seahash64, txn).unwrap();
+            alloc.committed(txn);
+            let loaded = Allocator::load(&mut disk, CsumKind::Seahash64, &head, txn).unwrap();
+            assert_eq!(loaded.state(), alloc.state(), "txn {txn}");
+        }
+    }
+
+    /// The same part with its blocks the other way round, the last entries at
+    /// the head: a load does not depend on which block of a part holds what.
+    #[test]
+    fn a_part_loads_whichever_way_its_blocks_lie() {
+        let kind = CsumKind::Seahash64;
+        let mut disk = MemDisk::new(1 << 16);
+        let (alloc, first) = a_delta_of_two_blocks(&mut disk);
+        let read = |disk: &mut MemDisk, ptr: &BlockPtr| {
+            format::read_checked(disk, kind, ptr, "allocator block").unwrap()
+        };
+        let mut a = read(&mut disk, &first);
+        let second = BlockPtr::decode_at(&a[..], 16).unwrap();
+        let mut b = read(&mut disk, &second);
+        let base = BlockPtr::decode_at(&b[..], 16).unwrap();
+        for block in [&a, &b] {
+            assert_eq!((block[1], &block[8..16]), (DELTA, &2u64.to_le_bytes()[..]));
+        }
+        // The second block's entries go first now, at the head, and the first
+        // block's after them, pointing to the base.
+        a[16..HEADER].copy_from_slice(&base.encode());
+        disk.write(second.addr, &a).unwrap();
+        let moved = BlockPtr {
+            csum: kind.sum(&a[..]),
+            ..second
+        };
+        b[16..HEADER].copy_from_slice(&moved.encode());
+        disk.write(first.addr, &b).unwrap();
+        let head = BlockPtr {
+            csum: kind.sum(&b[..]),
+            ..first
+        };
+        let loaded = Allocator::load(&mut disk, kind, &head, 2).unwrap();
+        assert_eq!(loaded.state(), alloc.state());
     }
 }

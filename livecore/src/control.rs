@@ -116,7 +116,8 @@ impl<E: Env> Host<E> {
         })
     }
 
-    /// `ctl reset`: forget the state and start the active version empty.
+    /// `ctl reset`: forget the state and start the active version empty, in
+    /// the kernel and in the app's saved state on disk alike.
     fn reset(
         &mut self,
         version: Version<E::Instance>,
@@ -130,6 +131,17 @@ impl<E: Env> Host<E> {
             .stage(&label, version.artifact, None, false)
             .map_err(|fault| exit(EXIT_NO_VERSION, fault.detail))?;
         let mode = Self::fresh(&mut self.core, fresh)?;
+        // The fresh state goes out as a checkpoint too, which comphost saves to
+        // the app's folder: the RESTORED alone leaves the refused state there,
+        // and the next boot would load it and disable the app again.
+        if let Mode::Serving(version) = &mode {
+            let blob = self.core.checkpoint.clone();
+            self.core.report(&Report {
+                schema: u64::from(version.schema),
+                blob: &blob,
+                ..Report::new(kind::CHECKPOINT)
+            })?;
+        }
         Ok((
             mode,
             text(format!(
