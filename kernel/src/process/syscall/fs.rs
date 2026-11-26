@@ -28,6 +28,7 @@ const CALLS: &[u64] = &[
     call::PART_PEER_ALIVE,
     call::PART_PEER_NAME,
     call::PART_PEER_CAPS,
+    call::PART_SELF,
     call::MODEL_FILL,
 ];
 
@@ -41,6 +42,7 @@ pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u6
         call::PART_PEER_ALIVE => peer_alive(slot, a[0], a[1]),
         call::PART_PEER_NAME => peer_name(slot, a[0], a[1], a[2], a[3]),
         call::PART_PEER_CAPS => peer_caps(slot, a[0], a[1]),
+        call::PART_SELF => part_self(slot, a[0]),
         call::MODEL_FILL => model_fill(slot, a[0], a[1], a[2], a[3]),
         call::ENDPOINT_BADGE => endpoint_badge(slot, a[0], a[1]),
         _ => mint(slot, a[0], a[1], a[2], a[3]),
@@ -218,6 +220,13 @@ fn peer_name(slot: usize, raw: u64, pid: u64, ptr: u64, cap: u64) -> Result<u64,
 pub(crate) fn peer_caps(slot: usize, raw: u64, pid: u64) -> Result<u64, Error> {
     partition(slot, raw, Rights::empty())?;
     crate::process::caps_of(pid).ok_or(Error::NotFound)
+}
+
+/// PART_SELF: the caller's own pid, for `fs` alone (a `Partition` handle),
+/// which tells a caller older than itself that a restart dropped its action.
+fn part_self(slot: usize, raw: u64) -> Result<u64, Error> {
+    partition(slot, raw, Rights::empty())?;
+    Ok(crate::process::identity(slot).pid)
 }
 
 /// MODEL_FILL: the model store's model, from `kai-data` block runs the caller

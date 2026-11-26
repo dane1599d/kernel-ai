@@ -502,3 +502,11 @@ fn an_undone_on_demand_start_ends_back_on_demand_with_no_restart_counted() {
         Ok(Some(0))
     );
 }
+
+#[test]
+fn a_stop_after_a_restart_before_the_exit_keeps_it_down() {
+    // H2-14: restart, then stop, both served before the old instance's exit.
+    // The record says stopped: it must stay down, never restart.
+    assert_eq!(ending(false, false, true, true), Ending::Stopped);
+    assert_eq!(ending(false, false, true, false), Ending::RestartOnRequest);
+}

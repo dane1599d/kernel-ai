@@ -327,6 +327,28 @@ fn the_apps_turn_keeps_to_the_count_it_is_given() {
     );
 }
 
+/// Bug hunt #21: the shell lists running apps first, so a start or stop
+/// reorders the same apps; llm's key for them must not change, or llm builds
+/// (and leaks) a new grammar and a reordered apps turn.
+#[test]
+fn the_apps_key_is_the_same_in_any_order_and_changes_with_an_answers_first_line() {
+    let calc = ("calc", "kai-actions 1\nversion 3\nrow calc_add");
+    let notes = ("notes-window", "kai-actions 1\nversion 1\nrow notes_add");
+    let resting = apps::key(&[calc, notes]);
+    assert_eq!(apps::key(&[notes, calc]), resting);
+    assert_eq!(
+        resting,
+        [
+            (String::from("calc"), String::from("kai-actions 1")),
+            (String::from("notes-window"), String::from("kai-actions 1")),
+        ]
+    );
+    let newer = ("calc", "kai-actions 2\nversion 4");
+    assert_ne!(apps::key(&[notes, newer]), resting);
+    assert_ne!(apps::key(&[calc]), resting);
+    assert_eq!(apps::key(&[]), std::vec![]);
+}
+
 #[test]
 fn a_short_doc_keeps_the_docs_first_words_without_articles() {
     assert_eq!(

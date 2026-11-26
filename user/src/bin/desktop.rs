@@ -137,6 +137,9 @@ struct Pool {
 struct Screen {
     info: DisplayInfo,
     address: u64,
+    /// The `Shm` handle `DISPLAY_CLAIM` minted. Every claim mints a new one, and
+    /// only a close frees its table slot (H6-21).
+    shm: Handle,
 }
 
 struct State {
@@ -352,6 +355,7 @@ fn main() -> i32 {
             return 1;
         };
         let _ = sys::shm_unmap(screen.address);
+        let _ = sys::handle_close(screen.shm);
         println!("desktop: lost the screen to the console");
         if !back && !wait_for_screen() {
             return 1;
@@ -370,12 +374,15 @@ fn main() -> i32 {
 fn claim(palette: &Palette) -> Option<Screen> {
     let mut info = DisplayInfo::default();
     let shm = sys::display_claim(&mut info).ok()?;
-    let address = sys::shm_map(shm, true).ok()?;
+    let Ok(address) = sys::shm_map(shm, true) else {
+        let _ = sys::handle_close(shm);
+        return None;
+    };
     if info.cursor != 0 {
         let _ = sys::display_cursor(&arrow(palette), (0, 0));
         let _ = sys::display_cursor_move(info.width / 2, info.height / 2);
     }
-    Some(Screen { info, address })
+    Some(Screen { info, address, shm })
 }
 
 /// Serves until the screen is taken: `Some(back)` then, `back` when the same
@@ -394,6 +401,9 @@ fn run(state: &mut State, screen: &Screen) -> Option<bool> {
             return None;
         };
         for (at, event) in events[..n].iter().enumerate() {
+            if event.kind == Kind::Screen && event.value == kabi::input::INPUT_LOST {
+                println!("desktop: the kernel dropped input; a release may be lost");
+            }
             if event.kind == Kind::Screen && event.value == 0 {
                 let back = events[at + 1..n]
                     .iter()

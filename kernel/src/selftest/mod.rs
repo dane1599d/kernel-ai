@@ -247,6 +247,8 @@ pub enum SelfTest {
     KeepRunning {
         reread: bool,
     },
+    /// `desktop` serves an app past the processes METRICS lists (H3-8).
+    DeskMany,
     /// Asks answered on `desktop`'s card, and on the console when it dies (P3 task 7).
     DeskCard,
     /// A standing instruction fired by Notes' window minimized and restored (P3 task 11).
