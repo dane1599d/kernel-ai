@@ -40,6 +40,7 @@ pub mod ring;
 pub mod sched;
 pub mod thread;
 pub mod update;
+pub mod vm;
 
 pub use error::Error;
 pub use ipc::{CallRequest, HttpRequest, MAX_MESSAGE};
