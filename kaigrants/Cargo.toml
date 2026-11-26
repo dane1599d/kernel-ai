@@ -10,3 +10,8 @@ publish = false
 # tests share one strict parser.
 [lib]
 doctest = false
+
+[dev-dependencies]
+# The fuzz body (fuzz/grants_harness.rs) also makes grants again as
+# captable's grant tree does at a start.
+captable = { path = "../captable" }
