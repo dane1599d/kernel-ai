@@ -74,6 +74,7 @@ mod mock_echo;
 mod mock_https;
 mod mock_llm;
 mod models;
+mod netd_blob;
 mod notices;
 mod options;
 mod pkgrepo;
@@ -132,6 +133,7 @@ fn main() -> ExitCode {
         Some("notices") => notices::main(&args[1..]),
         Some("decisions") => decisions::main(&args[1..]),
         Some("relay") => relay::main(&args[1..]),
+        Some("netd-blob") => netd_blob::main(&args[1..]),
         Some("wit-check") => wit::main(&args[1..]),
         Some("wit-tables") => wit_tables::main(&args[1..]),
         Some("fs") => fs_tool::main(&args[1..]),

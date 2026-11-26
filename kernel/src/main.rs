@@ -131,6 +131,7 @@ mod net_hold_tests;
 mod net_pf_tests;
 mod net_tests;
 mod net_throughput_tests;
+mod netd_spike;
 mod nvme;
 mod pane_states_tests;
 mod part_tests;
@@ -533,6 +534,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::NetDest => run_case(net_tests::dest_check),
         SelfTest::NetStream => run_case(|| net_tests::stream_check(cmdline())),
         SelfTest::NetThroughput => run_case(|| net_throughput_tests::check(cmdline())),
+        SelfTest::NetdSpike => run_case(|| netd_spike::check(cmdline())),
         SelfTest::HttpsMock => run_case(https_tests::check),
         SelfTest::NetDownload { again, .. } => run_case(|| net_download_tests::check(again)),
         SelfTest::FetchService => run_case(https_tests::fetch_check),

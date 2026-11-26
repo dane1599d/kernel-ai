@@ -100,6 +100,8 @@ const AREAS: &[Area] = &[
     job::handle,
     entropy::handle,
     power::handle,
+    // Spike S07-4 (spike/netd-ring3 only).
+    crate::netd_spike::handle,
     // Model lane. Interim (S10-3): goes at P2 task 10.
     model_kv::handle,
     // S-io (P2).

@@ -122,6 +122,8 @@ pub struct Found {
     pub net_vector: Option<u8>,
     /// A network card was there, but its transport could not be set up.
     pub net_failed: bool,
+    /// Spike S07-4: where the network card's virtio structures are, for `netd`.
+    pub net_card: Option<crate::netd_spike::Card>,
     /// Every block device, in bus order.
     pub disks: Vec<PciTransport>,
     /// The first virtio-gpu; any other is left alone.
@@ -145,6 +147,7 @@ pub fn probe(platform: &acpitables::Platform, cmdline: &str) -> Result<Found, &'
         net: None,
         net_vector: None,
         net_failed: false,
+        net_card: None,
         disks: Vec::new(),
         gpu: None,
         rng: None,
@@ -317,6 +320,7 @@ fn bind(
     };
     match (kind, split) {
         (DeviceType::Network, Ok(transport)) => {
+            found.net_card = card(root, access, at);
             found.net = Some(transport);
             return Some(Outcome::Running(found.net_vector));
         }
@@ -425,4 +429,55 @@ fn memory_bar(
         }
         _ => None,
     }
+}
+
+/// Spike S07-4: the network card's virtio structures (VirtIO 1.2, 4.1.4), all in
+/// one memory BAR, as QEMU places them: that BAR, and each structure's offset in
+/// it, for `netd` to map.
+fn card(
+    root: &mut PciRoot<EcamAccess>,
+    access: &EcamAccess,
+    function: DeviceFunction,
+) -> Option<crate::netd_spike::Card> {
+    let mut found: [Option<(u8, u64)>; 5] = [None; 5];
+    let mut multiplier = 0;
+    let mut at = (access.read_word(function, 0x34) & 0xFC) as u8;
+    for _ in 0..48 {
+        if at == 0 {
+            break;
+        }
+        let header = access.read_word(function, at);
+        let next = (header >> 8) as u8;
+        let kind = (header >> 24) as u8;
+        if header as u8 == 0x09 && (1..=4).contains(&kind) {
+            let bar = (access.read_word(function, at.checked_add(4)?) & 0xFF) as u8;
+            let offset = u64::from(access.read_word(function, at.checked_add(8)?));
+            if found[kind as usize].is_none() {
+                found[kind as usize] = Some((bar, offset));
+                if kind == 2 {
+                    multiplier = access.read_word(function, at.checked_add(16)?);
+                }
+            }
+        }
+        at = next & 0xFC;
+    }
+    let [_, Some(common), Some(notify), Some(isr), Some(device)] = found else {
+        log!("netd-spike: the card's virtio structures were not all found");
+        return None;
+    };
+    let bar = common.0;
+    if [notify.0, isr.0, device.0].iter().any(|b| *b != bar) {
+        log!("netd-spike: the card's virtio structures are in more than one BAR");
+        return None;
+    }
+    let (base, size) = memory_bar(root, function, bar)?;
+    Some(crate::netd_spike::Card {
+        base,
+        size,
+        common: common.1,
+        notify: notify.1,
+        multiplier,
+        isr: isr.1,
+        device: device.1,
+    })
 }

@@ -228,6 +228,19 @@ impl Memory {
         phys: u64,
         write: bool,
     ) -> Result<(), &'static str> {
+        self.map_shared_page_with(space, addr, phys, write, false)
+    }
+
+    /// [`Self::map_shared_page`], uncached when `uncached` (spike S07-4: a
+    /// device's registers in `netd`).
+    pub fn map_shared_page_with(
+        &mut self,
+        space: &mut UserSpace,
+        addr: u64,
+        phys: u64,
+        write: bool,
+        uncached: bool,
+    ) -> Result<(), &'static str> {
         if !is_user_page(addr) {
             return Err("not a user page address");
         }
@@ -236,6 +249,9 @@ impl Memory {
             PageTableFlags::PRESENT | PageTableFlags::USER_ACCESSIBLE | PageTableFlags::NO_EXECUTE;
         if write {
             flags |= PageTableFlags::WRITABLE;
+        }
+        if uncached {
+            flags |= PageTableFlags::NO_CACHE | PageTableFlags::WRITE_THROUGH;
         }
         let parents =
             PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::USER_ACCESSIBLE;

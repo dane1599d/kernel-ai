@@ -1,0 +1,109 @@
+# Spike S07-4 (ADR 0007's gate for `netd`; G37), on spike/netd-ring3 only,
+# never merged: one 1 GiB TCP download to a ring-3 client through the kernel's
+# stack (`netd-kernel`) and through `netd`, the virtio-net driver and smoltcp
+# in ring 3 over a KRNG v1 ring (`netd-ring3`), five boots each, alternated,
+# under KVM. `cargo xtask netd-blob` serves the bytes over a TAP device at
+# 10.0.2.2, as throughput.yml's net job does (slirp's TCP to the guest does not
+# scale its window). The summary has each run, the medians and the ratios
+# against S07-4's bars: throughput at least 0.8x the kernel path, CPU per GiB
+# at most 1.5x.
+name: netd-spike
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [spike/netd-ring3]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  qemu:
+    name: QEMU 11.0.5 (built once, cached)
+    runs-on: ubuntu-24.04
+    env:
+      QEMU_VERSION: "11.0.5"
+      QEMU_SHA256: 38a1a09f349660cb0e20b8fe5f224d6a53ec4235eb36f2e33a31e21bb6138147
+    steps:
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: ~/qemu
+          key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
+          lookup-only: true
+      - if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@v4
+      - name: Build QEMU ${{ env.QEMU_VERSION }}
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: bash .github/actions/qemu/build.sh
+      - name: Save QEMU ${{ env.QEMU_VERSION }}
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/qemu
+          key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
+    timeout-minutes: 40
+
+  netd:
+    name: netd in ring 3 against the kernel's stack
+    runs-on: ubuntu-24.04
+    needs: qemu
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/qemu
+      - name: Allow KVM for the runner user
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for live components
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: qemu-release
+          save-if: false
+      - name: The runner's CPU
+        run: |
+          {
+            echo '### Runner'
+            echo '```'
+            lscpu | grep -E 'Model name|^CPU\(s\)|Thread|Core|Socket|MHz|Hypervisor|Virtualization'
+            nproc
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: A TAP device at 10.0.2.2 for the guest
+        run: |
+          sudo ip tuntap add dev kaitap0 mode tap user "$USER"
+          sudo ip addr add 10.0.2.2/24 dev kaitap0
+          sudo ip link set kaitap0 up
+      - name: Serve 1 GiB on port 8765 (cargo xtask netd-blob)
+        run: |
+          cargo build -p xtask --release
+          nohup target/release/xtask netd-blob 10.0.2.2:8765 1073741824 > "$RUNNER_TEMP/blob.log" 2>&1 &
+          sleep 1
+      - name: Boot each path five times, alternated
+        env:
+          XTASK_NETDEV: tap,id=net0,ifname=kaitap0,script=no,downscript=no
+        shell: bash
+        run: |
+          for run in 1 2 3 4 5; do
+            for path in kernel ring3; do
+              echo "== netd-$path, run $run"
+              XTASK_CASE="netd-$path" cargo xtask test --release --accel kvm --timeout 900 2>&1 \
+                | tee "$RUNNER_TEMP/netd-$path-$run.log" || true
+            done
+          done
+      - name: The figures
+        if: always()
+        run: python3 -I scripts/netd_spike.py "$RUNNER_TEMP" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: netd-spike-logs
+          path: ${{ runner.temp }}/*.log

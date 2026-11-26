@@ -15,7 +15,7 @@ pub mod resolve;
 pub mod setup;
 pub mod stream;
 mod virtio_net;
-mod wake;
+pub mod wake;
 
 pub use wake::on_interrupt;
 

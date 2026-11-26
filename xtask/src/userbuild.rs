@@ -18,6 +18,9 @@ const USER_PROGRAMS: &[&str] = &[
     "edit",
     "work",
     "netcheck",
+    // Spike S07-4 (spike/netd-ring3 only).
+    "netd",
+    "netbench",
     "handles",
     "scriptrun",
     "fs",

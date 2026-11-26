@@ -22,6 +22,10 @@ pub fn init(platform: &acpitables::Platform, cmdline: &str) {
         }
     };
     match found.net {
+        // Spike S07-4: the card is `netd`'s, in ring 3; the kernel's stack stays down.
+        Some(_) if crate::netd_spike::ring3(cmdline) => {
+            crate::netd_spike::take(found.net_card, found.net_vector)
+        }
         Some(transport) => {
             if let Err(message) = crate::net::init(transport) {
                 log!("{message}");

@@ -2887,6 +2887,7 @@ dependencies = [
  "agentabi",
  "agentsched",
  "appabi",
+ "bitflags 2.13.2",
  "bootslot",
  "ccserve",
  "comp-models",
@@ -2920,6 +2921,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "shellcore",
+ "smoltcp",
  "spin 0.12.3",
  "supervise",
  "surfabi",
@@ -2929,7 +2931,9 @@ dependencies = [
  "uikit",
  "uipaint",
  "updatenet",
+ "virtio-drivers",
  "wasmhost",
+ "zerocopy",
 ]
 
 [[package]]

@@ -82,6 +82,8 @@ struct Object {
     pinned: bool,
     /// Who SHM_CREATE charged for it, to refund when it is freed.
     charge: Option<Charge>,
+    /// Device registers (spike S07-4's `netd`): mapped uncached.
+    uncached: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -192,6 +194,7 @@ fn create_charged(pages: u64, charge: Option<Charge>, pinned: bool) -> Result<u6
             mappings: Vec::new(),
             pinned,
             charge,
+            uncached: false,
         });
         Some(pack(index, generation))
     });
@@ -227,10 +230,24 @@ pub fn create_kernel_object(phys: u64, pages: u64) -> Result<u64, Error> {
             mappings: Vec::new(),
             pinned: true,
             charge: None,
+            uncached: false,
         });
         Some(pack(index, generation))
     })
     .ok_or(Error::Busy)
+}
+
+/// Spike S07-4: [`create_kernel_object`] over a device's registers, which every
+/// mapping maps uncached.
+pub fn create_device_object(phys: u64, pages: u64) -> Result<u64, Error> {
+    let object = create_kernel_object(phys, pages)?;
+    let (index, _) = unpack(object);
+    with(|objects| {
+        if let Some(o) = objects.objects[index].as_mut() {
+            o.uncached = true;
+        }
+    });
+    Ok(object)
 }
 
 fn free_frames(frames: &[u64]) {
@@ -339,7 +356,10 @@ pub fn map_entry(slot: usize, entry: &Entry, write: bool) -> Result<u64, Error> 
                 let zero = m.allocate_zeroed_frame().ok_or(Error::NoMemory)?;
                 for (n, &frame) in object.frames.iter().enumerate() {
                     let page = address + n as u64 * PAGE_SIZE;
-                    if m.map_shared_page(space, page, frame, write).is_err() {
+                    let uncached = object.uncached;
+                    if m.map_shared_page_with(space, page, frame, write, uncached)
+                        .is_err()
+                    {
                         let _ = m.set_shared_range(space, address, n as u64, None);
                         let _ = m.free_frame(zero);
                         return Ok(Err(n as u64));

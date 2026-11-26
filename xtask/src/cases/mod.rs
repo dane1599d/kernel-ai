@@ -403,6 +403,7 @@ pub fn named_only() -> Vec<&'static TestCase> {
     tour::CASES
         .iter()
         .chain(core::iter::once(&throughput::NET_THROUGHPUT))
+        .chain([&throughput::NETD_KERNEL, &throughput::NETD_RING3])
         .collect()
 }
 

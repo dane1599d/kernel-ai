@@ -14,3 +14,26 @@ pub const NET_THROUGHPUT: TestCase = TestCase {
         "test=net-throughput ip=static blob=10.0.2.2:8765",
     )
 };
+
+/// Spike S07-4 (`spike/netd-ring3` only): 1 GiB through the kernel's stack to
+/// a ring-3 client, and the same through `netd` in ring 3. The workflow serves
+/// it with `cargo xtask netd-blob` over the TAP device.
+pub const NETD_KERNEL: TestCase = TestCase {
+    expect: &["netd-spike: mode=kernel "],
+    server: false,
+    min_timeout: Some(Duration::from_secs(600)),
+    ..case(
+        "netd-kernel",
+        "test=netd-spike ip=static blob=10.0.2.2:8765 bytes=1073741824",
+    )
+};
+
+pub const NETD_RING3: TestCase = TestCase {
+    expect: &["netd-spike: mode=ring3 "],
+    server: false,
+    min_timeout: Some(Duration::from_secs(600)),
+    ..case(
+        "netd-ring3",
+        "test=netd-spike netd=ring3 ip=static blob=10.0.2.2:8765 bytes=1073741824",
+    )
+};

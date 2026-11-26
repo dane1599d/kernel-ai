@@ -58,6 +58,13 @@ kaiprofile = { path = "../kaiprofile" }
 shellcore = { path = "../shellcore" }
 termcore = { path = "../termcore" }
 spin = "0.12.3"
+# Spike S07-4's `netd` (spike/netd-ring3 only): the kernel's virtio-net driver
+# and stack in ring 3, at the kernel's versions (smoltcp 0BSD, virtio-drivers
+# MIT, zerocopy and bitflags MIT OR Apache-2.0: all in the tree already).
+smoltcp = { version = "0.14.0", default-features = false, features = ["alloc", "medium-ethernet", "proto-ipv4", "socket-tcp"] }
+virtio-drivers = { version = "0.13.0", default-features = false, features = ["alloc"] }
+zerocopy = { version = "0.8.40", default-features = false }
+bitflags = { version = "2.13.2", default-features = false }
 talc = "5.1.1"
 wasmhost = { path = "../wasmhost" }
 uikit = { path = "../uikit" }

@@ -383,6 +383,8 @@ pub enum SelfTest {
     NetStream,
     /// P5-S2's bar on main's driver: one bulk download from the host.
     NetThroughput,
+    /// Spike S07-4: one download through `netd` in ring 3 or the kernel's stack.
+    NetdSpike,
     /// P5 task 12's harness: xtask's HTTPS mock reached from ring 3.
     HttpsMock,
     /// P5 task 6, the roadmap's P5 exit: a download cut and resumed, across a

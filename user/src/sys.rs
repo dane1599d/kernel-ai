@@ -1139,6 +1139,12 @@ pub fn netdest_narrow(dest: Handle, spec: &str, rights: u32) -> Result<Handle, E
     .map(|h| Handle(h as u32))
 }
 
+/// Spike S07-4 (`spike/netd-ring3` only): NETD_WAIT, `netd`'s sleep until the
+/// network card's MSI-X vector fires or `timeout_ms` passes.
+pub fn netd_wait(timeout_ms: u64) -> u64 {
+    call(240, [timeout_ms, 0, 0, 0, 0, 0]).unwrap_or(0)
+}
+
 /// A TCP stream to `addr`:`port` on the `NetDest` handle `dest` (NET_CONNECT);
 /// `flags` may hold `kabi::net::STREAM_BULK`. It connects in the background:
 /// [`net_poll`] says when.
