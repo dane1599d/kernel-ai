@@ -143,11 +143,11 @@ jobs:
           printf 's063.mode=full s063.iters=100000' > "$S063_GUEST/cmdline"
           cargo xtask test --accel kvm --cpus 1 --timeout 900 \
             --prebuilt "$RUNNER_TEMP/prebuilt" --prebuilt-sha "$PREBUILT_SHA" 2>&1 | tee out/kvm.log || true
-      - name: Baseline, plain KVM (AMD runners)
+      - name: Baseline, plain KVM (every runner with KVM)
         if: always()
         run: |
-          if ! grep -q '^vendor=AuthenticAMD' out/host.txt || [ ! -e /dev/kvm ]; then
-            echo "not an AMD runner with KVM: skipped" | tee out/baseline.log
+          if [ ! -e /dev/kvm ]; then
+            echo "no KVM: skipped" | tee out/baseline.log
             exit 0
           fi
           g="$RUNNER_TEMP/guest"
