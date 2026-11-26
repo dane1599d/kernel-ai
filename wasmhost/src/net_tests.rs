@@ -155,7 +155,11 @@ fn fetch_queues_the_request_and_the_host_takes_it() {
 fn a_head_request_says_so() {
     let mut app = load_core_granted(&guest_with(1, true, false), LIMITS, None, granted()).unwrap();
     app.health().unwrap();
-    assert!(app.take_net()[0].1.head);
+    let taken = app.take_net();
+    assert!(taken[0].1.head);
+    // The guest asked for `range=2-`, which a HEAD has no body for: fetch
+    // refuses a ranged HEAD line, so the host never queues one (H6-15).
+    assert_eq!(taken[0].1.range, None);
 }
 
 #[test]

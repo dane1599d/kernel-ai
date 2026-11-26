@@ -296,7 +296,7 @@ mod tests {
     /// The margin is one demand service, as #1036 proposed. On a 1 GiB machine
     /// with no model and the full system plan, the boot services still admit
     /// with MIN_ROOM and the largest demand service beside them. Every demand
-    /// service open at once (296 MiB) fits neither here nor on main (its 16 MiB
+    /// service open at once (299 MiB) fits neither here nor on main (its 16 MiB
     /// cache leaves 249 MiB), so a margin of all of them would allow no cache
     /// above 16 MiB on 1 GiB. The 64 MiB cache costs 48 MiB of that room.
     #[test]
@@ -315,7 +315,7 @@ mod tests {
             .map(|s| s.limits.max_pages);
         let (largest, all) = (demand.clone().max().unwrap(), demand.sum::<u64>());
         assert!(!tight(committed + largest, budget));
-        assert_eq!(all / PAGES_PER_MIB, 296);
+        assert_eq!(all / PAGES_PER_MIB, 299);
         let main_room = fs.room_mib + (fs.cache_mib - 16);
         assert!(
             all / PAGES_PER_MIB > main_room,
