@@ -11,7 +11,10 @@ pub const SERVE: u64 = 1 << 1;
 pub const NET: u64 = 1 << 2;
 /// Call other services.
 pub const CALL: u64 = 1 << 3;
-/// Change the scheduling policy.
+/// Change the scheduling policy. The person's own: the kernel pins it to the
+/// service named and running `shell` (`policy_allowed`), and `fs` reads it
+/// through [`super::call::PART_PEER_CAPS`] to give that caller the person's
+/// share of the space reserve.
 pub const POLICY: u64 = 1 << 4;
 /// Fetch versions of the component named like the process and report its ledger
 /// events. The kernel grants it only to processes running the `comphost` program.
@@ -110,6 +113,9 @@ pub const GRANTABLE: u64 = SERVE
     | ASK
     | EDIT
     | POWER;
+
+/// Caps travel in RAX as one u64 (`PART_PEER_CAPS`): none may use the top bit.
+const _: () = assert!(GRANTABLE >> 63 == 0);
 
 /// The capability behind each startup handle the kernel gives from a line's
 /// caps alone, one entry a handle, in STARTUP's order (ADR 0001 D3's table;

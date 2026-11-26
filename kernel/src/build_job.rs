@@ -28,6 +28,7 @@ enum Phase {
 static JOB: Mutex<Option<Phase>> = Mutex::new(None);
 
 fn with<R>(f: impl FnOnce(&mut Option<Phase>) -> R) -> R {
+    crate::threads::ready::not_in_ready(&"the build job");
     threads::preempt_disable();
     let result = f(&mut JOB.lock());
     threads::preempt_enable();

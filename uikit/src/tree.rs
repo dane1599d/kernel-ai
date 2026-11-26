@@ -61,6 +61,12 @@ impl Tree {
         self.nodes.len()
     }
 
+    /// What its widgets weigh ([`Widget::weight`]); typing into a field can take
+    /// it past [`MAX_BYTES`].
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
     pub fn is_empty(&self) -> bool {
         self.nodes.len() <= 1
     }

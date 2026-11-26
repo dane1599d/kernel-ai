@@ -216,6 +216,24 @@ mod tests {
         );
     }
 
+    /// The model's reserve (`kernel/src/model.rs`) keeps room for the system
+    /// plan's other services: what they commit must stay under
+    /// `OTHER_SERVICES_PAGES`, with and without `kai-data`.
+    #[test]
+    fn the_system_plans_other_services_fit_the_models_reserve() {
+        use kabi::plan::system::{OTHER_SERVICES_PAGES, SUPERVISOR_PAGES, plan};
+        for files in [true, false] {
+            // llm's one page is not another service's.
+            let parsed = parse_plan(&plan("llm pages=1", files));
+            assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+            let committed = boot_pages(&parsed, SUPERVISOR_PAGES) - 1;
+            assert!(
+                committed <= OTHER_SERVICES_PAGES,
+                "files={files}: {committed} pages over {OTHER_SERVICES_PAGES}"
+            );
+        }
+    }
+
     #[test]
     fn under_sixteen_mib_of_room_is_tight() {
         let budget = 26_880;

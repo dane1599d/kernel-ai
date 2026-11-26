@@ -5,7 +5,8 @@
 //! it is dropped: dropping a version frees all of it. Modules are compiled eagerly
 //! (lazy translation would charge the first call for compiling), start functions
 //! and post-2.0 proposals are refused, and every call gets fresh fuel, so a loop
-//! that never ends is a fault rather than a hang.
+//! that never ends is a fault rather than a hang. A host function takes fuel for
+//! its own work too (`instance::charge`), so a loop over host calls is the same.
 //!
 //! Two hazards in dev builds, where ring-3 programs are built under `cargo xtask
 //! test`: wasmi's default dispatch grows the native stack with every instruction

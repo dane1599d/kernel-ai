@@ -311,11 +311,14 @@ pub fn summarise<D: BlockDev>(
                 let value = match leaves {
                     Leaves::Entries => Value::Inline(raw.clone()),
                     Leaves::Values => {
+                        // Read first: a record that reads lies in the data area.
+                        let value = decode_value(raw, io)
+                            .map_err(|e| format!("leaf {}: {e:?}", ptr.addr))?;
                         if let Some((record, _)) = record_of(raw) {
                             runs.push(run_of(&record));
                             own.extend(record.addr..record.addr + u64::from(record.blocks));
                         }
-                        decode_value(raw, io).map_err(|e| format!("leaf {}: {e:?}", ptr.addr))?
+                        value
                     }
                 };
                 digest = digest.wrapping_add(item_hash(key, &value));

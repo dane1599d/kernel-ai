@@ -204,6 +204,31 @@ pub fn sha256(text: &str) -> Result<Sha256, String> {
     Ok(out)
 }
 
+/// The stored model `llm`'s `health` reply says this boot runs, matched by
+/// length and FNV-1a64 among the store's `blobs` (SHA-256, length, FNV-1a64);
+/// none when it runs no model, or one the store does not hold. `state` is the
+/// reply's state word (`trial::health_of` says whose). An error when `llm`
+/// cannot say: no reply in time (it is mapping or loading the model, or
+/// answering), or a reply that names no model while it is not final (an app
+/// job's health while Kai writes an app), so that `model_use` asks again
+/// rather than record none to go back to (bug hunt 1, #26).
+pub fn running(
+    reply: Option<&str>,
+    state: Option<&str>,
+    blobs: &[(Sha256, u64, u64)],
+) -> Result<Option<Sha256>, String> {
+    let unknown = || String::from("llm did not say which model it runs; ask again");
+    let text = reply.ok_or_else(unknown)?;
+    if let Some((len, fnv)) = loaded(text) {
+        return Ok(blobs.iter().find(|b| (b.1, b.2) == (len, fnv)).map(|b| b.0));
+    }
+    match state {
+        // No model, a server alone, or a model that could not be mapped.
+        Some("none" | "remote" | "failed") => Ok(None),
+        _ => Err(unknown()),
+    }
+}
+
 /// What `llm`'s `health` reply says it loaded: the length and FNV-1a64 in its
 /// `model <length> bytes fnv1a64 <16 hex>` words (`llm`'s `Model::describe`),
 /// which the trial is judged by. None for a reply without them.

@@ -13,6 +13,7 @@ extern crate alloc;
 extern crate std;
 
 pub mod grid;
+pub mod hold;
 pub mod keys;
 pub mod line;
 pub mod menu;
