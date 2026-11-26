@@ -145,9 +145,18 @@ jobs:
             echo "not an AMD runner with KVM: skipped" | tee out/kvm.log
             exit 0
           fi
+          # QEMU through a wrapper that logs the CPU state at any reset: one
+          # EPYC 9V45 boot (run 45867814419) ended in a silent reset.
+          w="$RUNNER_TEMP/qemu-debug"
+          printf '#!/bin/sh\nexec qemu-system-x86_64 "$@" -d cpu_reset,guest_errors -D "%s/out/qemu-$S063_LOG.log"\n' "$PWD" > "$w"
+          chmod +x "$w"
           printf 's063.mode=full s063.iters=100000' > "$S063_GUEST/cmdline"
-          cargo xtask test --accel kvm --cpus 1 --timeout 900 \
+          QEMU="$w" S063_LOG=kvm cargo xtask test --accel kvm --cpus 1 --timeout 900 \
             --prebuilt "$RUNNER_TEMP/prebuilt" --prebuilt-sha "$PREBUILT_SHA" 2>&1 | tee out/kvm.log || true
+          # Measure (a) without the console's cost: stock Debian boots quiet.
+          printf 'quiet s063.mode=boot s063.iters=2000' > "$S063_GUEST/cmdline"
+          QEMU="$w" S063_LOG=kvm-quiet cargo xtask test --accel kvm --cpus 1 --timeout 900 \
+            --prebuilt "$RUNNER_TEMP/prebuilt" --prebuilt-sha "$PREBUILT_SHA" 2>&1 | tee out/kvm-quiet.log || true
       - name: Baseline, plain KVM (every runner with KVM)
         if: always()
         run: |
@@ -160,10 +169,14 @@ jobs:
             -display none -monitor none -serial stdio \
             -kernel "$g/bzImage" -initrd "$g/initrd" \
             -append "$GUEST_CMDLINE s063.mode=full s063.iters=100000" 2>&1 | tee out/baseline.log || true
+          timeout 900 qemu-system-x86_64 -accel kvm -cpu host -smp 1 -m 512 -no-reboot \
+            -display none -monitor none -serial stdio \
+            -kernel "$g/bzImage" -initrd "$g/initrd" \
+            -append "$GUEST_CMDLINE quiet s063.mode=boot s063.iters=2000" 2>&1 | tee out/baseline-quiet.log || true
       - name: Measures
         if: always()
         run: |
-          for f in tcg kvm baseline; do
+          for f in tcg kvm kvm-quiet baseline baseline-quiet; do
             echo "== $f"
             grep -a -E 's06-3: (measure|done|guest killed|bzImage|guest starts|[0-9]+ exits)|s06-3 guest:|Run /init|FAIL|panic' out/$f.log | tr -d '\r' | head -40 || true
           done | tee out/measures.txt
