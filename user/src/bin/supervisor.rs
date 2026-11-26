@@ -672,21 +672,32 @@ fn withdraw_package(services: &mut [Service], withdraw: supervise::Run, caller: 
         return String::from("ok");
     }
     let name = service.spec.name.clone();
-    if let Some(pid) = service.pid {
-        service.withdrawn = true;
-        if let Err(error) = sys::kill(pid) {
-            service.withdrawn = false;
-            println!("cannot end {name} (pid {pid}): {error:?}");
-            return format!("err cannot end it: {error:?}");
-        }
+    // Saved cleared before the app is ended: a supervisor that dies in
+    // between must not restart the withdrawn version. A failed kill puts the
+    // version back and saves it again.
+    let pid = service.pid;
+    service.withdrawn = pid.is_some();
+    let killed = supervise::withdraw_saving_first(
+        &mut *services,
+        |services| services[index].record.version.take(),
+        |services, version| services[index].record.version = version,
+        save,
+        |services| match services[index].pid {
+            Some(pid) => sys::kill(pid).map(drop),
+            None => Ok(()),
+        },
+    );
+    let service = &mut services[index];
+    if let Err(error) = killed {
+        service.withdrawn = false;
+        println!("cannot end {name} (pid {}): {error:?}", pid.unwrap_or(0));
+        return format!("err cannot end it: {error:?}");
     }
-    service.record.version = None;
     service.start_at_ms = None;
     println!(
         "{name} ends: pkg took package version {} back out",
         withdraw.version
     );
-    save(services);
     String::from("ok")
 }
 
