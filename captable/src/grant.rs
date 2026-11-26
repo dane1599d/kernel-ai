@@ -244,6 +244,14 @@ impl Tree {
         false
     }
 
+    /// Whether a handle given under `from` (`None` for one that lives as long
+    /// as its process) may be given again under `under`: always when it has no
+    /// node; else only under that node itself or one below it, so revoking
+    /// `from` still revokes the copy (GRANT_DUP; bug hunt 2's H2-18).
+    pub fn may_give_under(&self, from: Option<GrantRef>, under: GrantRef) -> bool {
+        from.is_none_or(|from| self.within(under, from))
+    }
+
     /// Revokes `grant` and every node below it: each is freed and its slot's
     /// generation bumped, so no handle given under any of them works again.
     /// Writes the freed nodes to `freed[..count]`. Roots stay. Not generic, so
@@ -362,6 +370,32 @@ mod tests {
             Err(Error::Full)
         );
         assert_eq!(tree.len(), NODES);
+    }
+
+    /// H2-18: a copy of a handle given under a node may go under that node or
+    /// below it, never beside or above it, where its revoke would miss it.
+    #[test]
+    fn a_copy_stays_under_its_sources_node() {
+        let mut tree = Box::new(Tree::new());
+        let system = tree.root(SYSTEM);
+        let request = tree
+            .create(system, 0, Life::Request, b"request", 0)
+            .unwrap();
+        let below = tree
+            .create(request, 0, Life::Request, b"script", 0)
+            .unwrap();
+        let beside = tree.create(system, 0, Life::Request, b"other", 0).unwrap();
+        // A handle with no node (a startup handle) goes under any node.
+        assert!(tree.may_give_under(None, beside));
+        assert!(tree.may_give_under(Some(request), request));
+        assert!(tree.may_give_under(Some(request), below));
+        assert!(!tree.may_give_under(Some(request), beside));
+        assert!(!tree.may_give_under(Some(below), request));
+        assert!(!tree.may_give_under(Some(request), system));
+        tree.revoke(request, &mut [0; NODES]).unwrap();
+        // Nothing goes under a node that is gone, or from one.
+        assert!(!tree.may_give_under(Some(request), below));
+        assert!(!tree.may_give_under(Some(beside), request));
     }
 
     #[test]

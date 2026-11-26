@@ -80,6 +80,7 @@ static CONTROL: Mutex<Control> = Mutex::new(Control {
 
 /// Runs `f` on the control state with preemption off.
 pub(crate) fn with<R>(f: impl FnOnce(&mut Control) -> R) -> R {
+    crate::threads::ready::not_in_ready(&"the scheduling control");
     threads::preempt_disable();
     let result = f(&mut CONTROL.lock());
     threads::preempt_enable();

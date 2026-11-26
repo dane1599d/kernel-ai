@@ -201,6 +201,17 @@ impl FileEditor {
         }
     }
 
+    /// The OS has written `bytes`, which the text moved on from while the
+    /// write was out: they are the disk's now, so the text is changed against
+    /// them, `reset` comes back to them, and the edits made can still be undone.
+    pub fn saved_as(&mut self, bytes: &[u8]) {
+        let name = Self::name_of(&self.path);
+        let bundle = artifact::bundle(&[(name.as_str(), bytes)]);
+        if let Some(session) = self.service.session.as_mut() {
+            session.keep_as(bundle);
+        }
+    }
+
     /// Answers one request of the screen's, as the edit service would.
     pub fn handle(&mut self, request: &[u8]) -> String {
         match ipc::decode_ipc(request) {

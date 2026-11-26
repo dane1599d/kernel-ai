@@ -485,3 +485,36 @@ fn a_migrated_thread_keeps_its_wait_and_its_wake() {
     // The plain path still works and records nothing it cannot know.
     assert!(a.detach_waiting(|_| false, 7 * MS).is_none());
 }
+
+#[test]
+fn a_woken_thread_pulled_by_balancing_keeps_its_boost_and_takes_the_cpu() {
+    // The typist woke on A behind a hog that round-robin never preempts.
+    let mut a = Core::new(Box::new(RoundRobin::new()), 0, WATCHDOG, 0);
+    let mut b = Core::new(Box::new(Interactive::new()), 1, WATCHDOG, 0);
+    a.adopt(5, "hog", EnqueueReason::New, 0);
+    a.adopt(6, "typist", EnqueueReason::New, 0);
+    assert_eq!(a.preempt(0), Some(5));
+    assert_eq!(a.preempt(MS), Some(6));
+    assert_eq!(a.block_current(MS), 5);
+    assert!(!a.wake(6, 2 * MS));
+    // B runs a hog that never woke, so it holds no boost.
+    b.adopt(7, "other hog", EnqueueReason::New, 0);
+    assert_eq!(b.preempt(0), Some(7));
+    // B's balancing pulls the typist at 5 ms, as the kernel's balance() does.
+    let moved = a.detach_waiting(|tid| tid == 5, 5 * MS).unwrap();
+    assert_eq!(moved.tid, 6);
+    b.adopt_detached(moved, 5 * MS);
+    // It takes B's CPU as a wake on B would,
+    assert_eq!(b.preempt_if_pending(5 * MS), Some(6));
+    // with its whole wake-to-run time recorded once, and its wake counted only
+    // where it woke,
+    let on_b = b.snapshot(5 * MS).threads[6];
+    assert_eq!(
+        (on_b.samples, on_b.latency_sum_ns, on_b.wakes),
+        (1, 3 * MS, 0)
+    );
+    assert_eq!(a.snapshot(5 * MS).threads[6].wakes, 1);
+    // and it keeps its boost: Interactive's 2 ms boosted slice is over at 8 ms,
+    // where a normal 10 ms slice would run on.
+    assert_eq!(b.tick(8 * MS), Some(7));
+}

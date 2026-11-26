@@ -258,6 +258,71 @@ fn frames_coalesce_until_comphost_takes_them() {
     assert!(!frame.damage.is_empty());
 }
 
+/// A guest that loops over one view call, counting the calls at 16: the host's
+/// work in each is charged to the call's fuel, so the loop ends out of fuel
+/// after a few of them, as a loop of instructions does (bug-hunt-4 H4-2).
+const SPINNER: &str = r#"(module
+  (import "kai:ui/view@0.1.0" "open" (func $open (param i32 i32 i32 i32 i32)))
+  (import "kai:ui/view@0.1.0" "set-title" (func $set_title (param i32 i32 i32 i32)))
+  (import "kai:ui/view@0.1.0" "commit" (func $commit (param i32 i32)))
+  (memory (export "memory") 4)
+  (func $tick
+    (i32.store (i32.const 16) (i32.add (i32.load (i32.const 16)) (i32.const 1))))
+  (func (export "spin-title") (param $len i32)
+    (loop $again
+      (call $tick)
+      (call $set_title (i32.const 999) (i32.const 4096) (local.get $len) (i32.const 800))
+      (br $again)))
+  (func (export "spin-commit") (param $len i32)
+    (local $w i32)
+    (call $open (i32.const 4096) (local.get $len) (i32.const 200) (i32.const 100) (i32.const 800))
+    (local.set $w (i32.load (i32.const 804)))
+    (loop $again
+      (call $tick)
+      (call $commit (local.get $w) (i32.const 800))
+      (br $again))))"#;
+
+/// The text the spinner's calls lift, at 4096: 64 KiB.
+const SPIN_TEXT: usize = 64 * 1024;
+
+/// Runs the spinner's `export` with 200,000 fuel: how many view calls it made
+/// before its call faulted, and why it faulted.
+fn spin(export: &str) -> (u32, livecore::Reason) {
+    let limits = Limits {
+        fuel_call: 200_000,
+        ..LIMITS
+    };
+    let mut g = load_core(&wat::parse_str(SPINNER).unwrap(), limits, None).unwrap();
+    g.write(4096, &vec![b'a'; SPIN_TEXT]).unwrap();
+    let func = appabi::Func {
+        export: String::from(export),
+        params: vec![Ty::U32],
+        result: None,
+    };
+    let args = [Val::U32(SPIN_TEXT as u32)];
+    let fault = livecore::Instance::call(&mut g, &func, &args).unwrap_err();
+    (word(&mut g, 16), fault.reason)
+}
+
+/// set-title on a window that is not there answers no-window and never traps,
+/// but each call lifts 64 KiB: 4,096 fuel, so about 48 fit in 200,000. While
+/// the host's work cost nothing, the loop made a call for every 13 fuel or so.
+#[test]
+fn a_loop_of_view_calls_runs_out_of_fuel_after_a_few() {
+    let (calls, why) = spin("spin-title");
+    assert_eq!(why, livecore::Reason::Fuel);
+    assert!((1..=64).contains(&calls), "{calls} set-title calls");
+}
+
+/// A commit of a window titled with 64 KiB costs that and more: two fit in
+/// 200,000, and the third runs out (the count is taken before each call).
+#[test]
+fn a_loop_of_commits_runs_out_of_fuel_after_a_few() {
+    let (calls, why) = spin("spin-commit");
+    assert_eq!(why, livecore::Reason::Fuel);
+    assert!((1..=4).contains(&calls), "{calls} commits");
+}
+
 /// Notes with its window (components/notes-window), when it has been built for
 /// wasm32: it opens its window when it starts, a click and the agent reach the
 /// same note list, and asking to close closes it.
@@ -556,4 +621,22 @@ fn a_new_measure_lays_open_windows_out_again_and_paints_them_whole() {
     let again = frame(&mut g);
     assert_eq!(again.a11y.iter().find(|n| n.id == 1).unwrap().bounds, after);
     assert_eq!(again.damage, [uikit::geom::Rect::new(0, 0, 200, 100)]);
+}
+
+/// `view.open` refuses a size past the most a window may be (bug hunt 2,
+/// H2-11); the most itself opens.
+#[test]
+fn a_window_past_the_largest_size_is_too_big() {
+    use uikit::widget::UiError;
+    let mut host = crate::ui::UiHost::default();
+    let most = crate::desk::MAX_WINDOW_PX;
+    let open = |w, h| [Val::String("x".into()), Val::U16(w), Val::U16(h)];
+    for (w, h) in [(65535, 65535), (most + 1, 10), (10, most + 1)] {
+        let done = crate::ui::run(&mut host, "open", &open(w, h));
+        assert_eq!(done, Ok(Err(UiError::TooBig)), "{w}x{h}");
+    }
+    assert_eq!(
+        crate::ui::run(&mut host, "open", &open(most, most)),
+        Ok(Ok(Some(1)))
+    );
 }

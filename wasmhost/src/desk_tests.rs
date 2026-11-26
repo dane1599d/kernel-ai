@@ -372,3 +372,21 @@ fn a_client_told_the_scale_draws_at_it_and_the_desk_sizes_the_window_in_logical_
     assert!(d.told(&client.take_events(8192)).is_empty());
     assert_eq!(d.scale(), 120);
 }
+
+/// A window bigger than any buffer `desktop` takes: its buffers are cut to the
+/// most a window may be, never past a u32 (bug hunt 2, H2-11). Before, these
+/// sizes overflowed `w * h * 4` and `BUFFERS * ...` and aborted comphost.
+#[test]
+fn a_window_too_big_for_a_buffer_is_cut_to_the_largest() {
+    assert_eq!(desk::MAX_BUFFER_PX, deskcore::server::MAX_BUFFER_PX);
+    for (w, h) in [(32768, 32768), (65535, 8193), (65535, 65535)] {
+        let mut d = Desk::new();
+        let Err(open) = d.frame(1, &frame("x", w, h, "Go")) else {
+            panic!("a first picture opens a window");
+        };
+        let side = u32::from(desk::MAX_WINDOW_PX);
+        assert_eq!(open.target.width, side.min(u32::from(w)));
+        assert_eq!(open.target.height, side.min(u32::from(h)));
+        assert!(open.pool_bytes > 2 * open.target.stride * open.target.height);
+    }
+}

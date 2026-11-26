@@ -194,6 +194,52 @@ fn a_remove_keeps_what_others_need_and_fetches_nothing() {
     w.check();
 }
 
+/// H3-13: an install from an index that lists none of what is installed, as
+/// `local`'s lists only its own builds, keeps the installed packages'
+/// dependencies, read from their stored headers, and the store still checks.
+#[test]
+fn an_install_from_another_index_keeps_what_the_installed_packages_need() {
+    let mut w = World::new();
+    assert_eq!(w.install("notes"), Ok(2));
+    let (all, mut repo) = spoiled("camera", Tamper::None);
+    let only_camera: Vec<_> = all.into_iter().filter(|e| e.name == "camera").collect();
+    let store = w.store;
+    let want = [Want {
+        name: "camera",
+        range: None,
+    }];
+    let made = store.install(&mut w.cx(), &mut repo, &only_camera, OS, &want, false);
+    assert_eq!(made, Ok(3));
+    let mut names = w.names();
+    names.sort();
+    let want = [
+        ("camera", true),
+        ("notes", true),
+        ("spell-en", false),
+        ("ui-kit", false),
+    ];
+    assert_eq!(names, want.map(|(n, e)| (n.to_string(), e)));
+    w.check();
+}
+
+/// H3-13: a remove with such an index keeps what the rest still need.
+#[test]
+fn a_remove_with_another_index_keeps_what_the_rest_need() {
+    let mut w = World::new();
+    w.install("notes").unwrap();
+    w.install("camera").unwrap();
+    let only_camera: Vec<_> = index().into_iter().filter(|e| e.name == "camera").collect();
+    let store = w.store;
+    store
+        .remove(&mut w.cx(), &only_camera, OS, &[], "camera")
+        .unwrap();
+    let mut names = w.names();
+    names.sort();
+    let want = [("notes", true), ("spell-en", false), ("ui-kit", false)];
+    assert_eq!(names, want.map(|(n, e)| (n.to_string(), e)));
+    w.check();
+}
+
 #[test]
 fn a_pinned_app_is_not_removed_but_its_install_still_undoes() {
     let mut w = World::new();

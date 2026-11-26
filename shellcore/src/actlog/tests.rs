@@ -176,6 +176,43 @@ fn live_entries_and_overlaps_decide_what_undo_may_take() {
     );
 }
 
+/// bug-hunt-3 H3-24: what the log writes reads back as it was. An inverse's
+/// names keep a `:` (a time zone's `+05:30`) or a space; a word with parts
+/// left over (a `:` written before names were escaped) is not read as other
+/// values; and a resource read back from disk, `_` for its spaces, still
+/// overlaps the same one in memory.
+#[test]
+fn what_the_log_writes_reads_back_as_it_was() {
+    use crate::undo::{Name, inverse_word, parse_inverse};
+    let zone = Inverse::Appearance {
+        setting: Name::new("time_zone").unwrap(),
+        before: Name::new("+05:30").unwrap(),
+        after: Name::new("UTC").unwrap(),
+    };
+    let spaced = Inverse::Keep {
+        app: Name::new("my app").unwrap(),
+        on: true,
+    };
+    for inverse in [zone, spaced] {
+        let word = inverse_word(Some(inverse));
+        assert!(!word.contains(' '), "{word}");
+        assert_eq!(parse_inverse(&word), Some(Some(inverse)), "{word}");
+    }
+    assert_eq!(parse_inverse("appearance:time_zone:+05:30:UTC"), None);
+    let grant = "weather's network to api.weather.example";
+    let mut log = ActLog::default();
+    let mut first = entry(1, "allow weather", vec![change("always", "asks")]);
+    first.changes[0].res = grant.into();
+    first.changes[0].inverse = Some(zone);
+    log.push(first);
+    let mut log = ActLog::from_records(parse(&log.text()).unwrap());
+    assert_eq!(log.get(1).unwrap().changes[0].inverse, Some(zone));
+    let mut second = entry(2, "revoke it", vec![change("asks", "always")]);
+    second.changes[0].res = grant.into();
+    log.push(second);
+    assert_eq!(log.later_touching(1), [2]);
+}
+
 /// A slot rollback: an older shell reads a log a newer one wrote. An inverse
 /// it cannot read leaves that change without an undo; the log, and every
 /// other entry's undo, still read, and the log it writes back keeps the

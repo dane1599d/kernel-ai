@@ -82,6 +82,20 @@ fn new_forgets_the_conversation_but_not_the_log() {
     assert_eq!(shell.eval("undo"), ok("Undone: policy back to interactive"));
 }
 
+/// bug-hunt-4 H4-12: a `new` llm refuses is not reported as done.
+#[test]
+fn new_says_so_when_llm_keeps_the_conversation() {
+    let (host, mut shell) = with_calls(vec![call(RR)]);
+    shell.eval("switch to round robin");
+    *host.forget_refused.borrow_mut() = Some(String::from("Kai is writing timer"));
+    let reply = shell.eval("new");
+    assert!(
+        !reply.ok && reply.text.contains("Kai is writing timer"),
+        "{reply:?}"
+    );
+    assert!(!reply.text.contains("forgotten"), "{reply:?}");
+}
+
 #[test]
 fn log_actlog_prints_the_records() {
     let (_host, mut shell) = with_calls(vec![call(RR)]);

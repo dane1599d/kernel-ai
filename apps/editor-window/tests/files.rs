@@ -170,8 +170,15 @@ impl Os {
                 if let Some(why) = self.refuse {
                     return Err(why.into());
                 }
+                // The shell's words (`shellcore::door`): a create never
+                // writes over a file, and a write never makes one.
                 if create && self.disk.contains_key(&path) {
-                    return Err("the file exists already".into());
+                    return Err(format!(
+                        "{path} exists already; a new file never overwrites"
+                    ));
+                }
+                if !create && !self.disk.contains_key(&path) {
+                    return Err(format!("missing: {path} is not there"));
                 }
                 self.writes.push((create, data.len()));
                 self.disk.insert(path, data);
@@ -378,4 +385,81 @@ fn the_door_failing_or_a_file_that_is_not_text_says_so() {
     app.on_reply(&mut os, ticket, Err("the OS has no file door".into()))
         .unwrap();
     assert_eq!(os.status(), "the OS has no file door");
+}
+
+/// Another writer removed the file being edited: the save says so, and the
+/// next Ctrl-S makes it again, as a new file, never over another.
+#[test]
+fn a_file_removed_under_the_editor_is_made_again_by_the_next_save() {
+    let (mut app, mut os) = window();
+    os.disk.insert(PATH.into(), todo());
+    open_path(&mut app, &mut os, PATH);
+    type_text(&mut app, &mut os, "x");
+    os.disk.remove(PATH);
+    save(&mut app, &mut os);
+    assert!(
+        os.status().starts_with("not saved: missing"),
+        "{}",
+        os.status()
+    );
+    assert!(!os.disk.contains_key(PATH));
+    save(&mut app, &mut os);
+    assert!(os.disk[PATH].starts_with(b"xbuy milk\r\n"));
+    assert_eq!(
+        os.writes,
+        [(true, todo().len() + 1)],
+        "made, not written over"
+    );
+}
+
+/// Another writer made a file at a new file's path first: theirs stays, and
+/// the text moves to a name of its own, which the next Ctrl-S makes.
+#[test]
+fn a_new_file_another_writer_made_first_is_kept_and_the_text_moves_aside() {
+    let (mut app, mut os) = window();
+    let path = "/home/user/new.txt";
+    open_path(&mut app, &mut os, path);
+    os.disk.insert(path.into(), b"theirs\n".to_vec());
+    type_text(&mut app, &mut os, "mine");
+    save(&mut app, &mut os);
+    let aside = format!("{path}.recovered-0");
+    assert!(os.status().contains(&aside), "{}", os.status());
+    assert_eq!(os.rows()[0], "mine");
+    save(&mut app, &mut os);
+    assert_eq!(os.disk[&aside], b"mine");
+    assert_eq!(os.disk[path], b"theirs\n");
+}
+
+/// "alpha" saved as "balpha", its write answered only after Enter split the
+/// line: the session holds "b\nalpha\n", the disk "balpha\n".
+fn saved_mid_edit() -> (EditorWindow, Os) {
+    let (mut app, mut os) = window();
+    os.disk.insert(PATH.into(), b"alpha\n".to_vec());
+    open_path(&mut app, &mut os, PATH);
+    type_text(&mut app, &mut os, "b");
+    press(&mut app, &mut os, "s", "", keys::CTRL);
+    press(&mut app, &mut os, "enter", "", 0);
+    serve(&mut app, &mut os);
+    assert_eq!(os.disk[PATH], b"balpha\n");
+    (app, os)
+}
+
+#[test]
+fn reset_after_a_save_answered_late_comes_back_to_what_was_saved() {
+    let (mut app, mut os) = saved_mid_edit();
+    press(&mut app, &mut os, "e", "", keys::CTRL);
+    type_text(&mut app, &mut os, "reset");
+    press(&mut app, &mut os, "enter", "", 0);
+    assert_eq!(os.rows()[0], "balpha");
+    press(&mut app, &mut os, "s", "", keys::CTRL);
+    assert_eq!(os.status(), "nothing to save");
+}
+
+#[test]
+fn undo_past_a_save_answered_late_reads_as_not_saved() {
+    let (mut app, mut os) = saved_mid_edit();
+    press(&mut app, &mut os, "z", "", keys::CTRL);
+    press(&mut app, &mut os, "z", "", keys::CTRL);
+    assert_eq!(os.rows()[0], "alpha");
+    assert_eq!(os.unsaved.last(), Some(&true), "the disk has balpha");
 }

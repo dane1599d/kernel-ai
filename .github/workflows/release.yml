@@ -45,7 +45,9 @@
 #
 # Stubbed until the YubiKey root (root-ceremony.md): the publish to
 # `dane1599d/kernel-ai-updates`. No LLM runs.
-# Every action is pinned by commit SHA.
+# Every action is pinned by commit SHA. On a tag nothing comes from the Actions
+# cache: `vm` and `release-boot` build QEMU from its checked tarball, and every
+# model is downloaded and checked. Caches are saved from main only.
 name: Release
 
 on:
@@ -273,13 +275,18 @@ jobs:
       # QEMU as ci.yml's `qemu` job builds and caches it (.github/actions/qemu),
       # restored here with the cache action pinned by SHA. On a miss (GitHub
       # evicted it, and ci.yml may be rebuilding it now) this job builds its
-      # own the same way, about ten minutes, and saves nothing.
+      # own the same way, about ten minutes, and saves nothing. On a tag, where
+      # `publish` needs this job, nothing comes from the cache: any job on main
+      # can write that entry while it is absent, with actions not pinned by SHA,
+      # and a cache archive can write outside ~/qemu. A tag builds QEMU here
+      # from the SHA-256-checked tarball (bug hunt 5, H5-3).
       - id: qemu
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/qemu
           key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
-      - name: Build QEMU ${{ env.QEMU_VERSION }} (the cache missed)
+      - name: Build QEMU ${{ env.QEMU_VERSION }} (a tag, or the cache missed)
         if: steps.qemu.outputs.cache-hit != 'true'
         run: bash .github/actions/qemu/build.sh
       - name: OVMF, QEMU's runtime libraries, and KVM for the runner user
@@ -290,6 +297,15 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+      # A restored entry that holds another QEMU, or none, fails here.
+      - name: The QEMU is ${{ env.QEMU_VERSION }}
+        run: |
+          version=$("$HOME/qemu/bin/qemu-system-x86_64" --version | head -1)
+          echo "$version"
+          case "$version" in
+            "QEMU emulator version $QEMU_VERSION" | "QEMU emulator version $QEMU_VERSION "*) ;;
+            *) echo "~/qemu holds '$version', not QEMU $QEMU_VERSION"; exit 1 ;;
+          esac
       - run: rustup show active-toolchain || rustup toolchain install
       - run: rustup target add wasm32-unknown-unknown
       - name: update-disk, then update-tampered
@@ -302,19 +318,20 @@ jobs:
     name: The release boots and imports qwen3-0.6b under its models role
     needs: build
     runs-on: ubuntu-24.04
-    # 90, and up to 20 more for a QEMU build on a cache miss.
+    # 90, and up to 20 more for a QEMU build (a tag, or a cache miss).
     timeout-minutes: 110
     env:
       MODEL_ID: qwen3-0.6b
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      # QEMU as in `vm`: restored, or built here on a miss.
+      # QEMU as in `vm`: restored, or built here on a miss or a tag.
       - id: qemu
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/qemu
           key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
-      - name: Build QEMU ${{ env.QEMU_VERSION }} (the cache missed)
+      - name: Build QEMU ${{ env.QEMU_VERSION }} (a tag, or the cache missed)
         if: steps.qemu.outputs.cache-hit != 'true'
         run: bash .github/actions/qemu/build.sh
       - name: OVMF, QEMU's runtime libraries, and KVM for the runner user
@@ -325,6 +342,14 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
+      - name: The QEMU is ${{ env.QEMU_VERSION }}
+        run: |
+          version=$("$HOME/qemu/bin/qemu-system-x86_64" --version | head -1)
+          echo "$version"
+          case "$version" in
+            "QEMU emulator version $QEMU_VERSION" | "QEMU emulator version $QEMU_VERSION "*) ;;
+            *) echo "~/qemu holds '$version', not QEMU $QEMU_VERSION"; exit 1 ;;
+          esac
       - run: rustup show active-toolchain || rustup toolchain install
       - run: rustup target add wasm32-unknown-unknown
       - name: Read the pinned file from the catalog
@@ -336,8 +361,13 @@ jobs:
             echo "sha256=$(jq -r .sha256 "$RUNNER_TEMP/entry.json")"
             echo "url=https://huggingface.co/$(jq -r .repo "$RUNNER_TEMP/entry.json")/resolve/$(jq -r .revision "$RUNNER_TEMP/entry.json")/$(jq -r .file "$RUNNER_TEMP/entry.json")"
           } >> "$GITHUB_OUTPUT"
+      # Restored anywhere but a tag (as QEMU above), and saved from main only, as
+      # token-count.yml's: a pull request's or a tag's entry serves only its
+      # own ref, and the store has a 10 GB cap (bug hunt 5, H5-1).
       - name: Reuse the model file from an earlier run
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: model-cache
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ runner.temp }}/kai-models
           key: model-${{ steps.pin.outputs.sha256 }}
@@ -352,6 +382,12 @@ jobs:
             curl -fL --retry 3 -o "$RUNNER_TEMP/kai-models/$FILE" "$URL"
           fi
           echo "$SHA256  $RUNNER_TEMP/kai-models/$FILE" | sha256sum -c -
+      - name: Keep the model for later runs, saved from main only
+        if: github.ref == 'refs/heads/main' && steps.model-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/kai-models
+          key: model-${{ steps.pin.outputs.sha256 }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: build-a
@@ -511,13 +547,23 @@ jobs:
         with:
           name: models-chunks-${{ env.VERSION }}
           path: ${{ runner.temp }}/models-chunks
+      # model-chunks.yml's key; restored anywhere but a tag, saved from main only,
+      # as release-boot's model.
       - name: Reuse the pinned models from an earlier run
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: model-cache
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ runner.temp }}/kai-models
           key: model-chunks-${{ hashFiles('xtask/models.json') }}
       - name: Download every pinned model and check its SHA-256 (hashed, never run)
         run: python3 -I .github/release/fetch_models.py "$RUNNER_TEMP/kai-models"
+      - name: Keep the models for later runs, saved from main only
+        if: github.ref == 'refs/heads/main' && steps.model-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/kai-models
+          key: model-chunks-${{ hashFiles('xtask/models.json') }}
       - run: rustup show active-toolchain || rustup toolchain install
       - name: The committed chunk lists are the pinned files' own, 2 MiB chunk by chunk
         run: cargo xtask pkgrepo chunks --models "$RUNNER_TEMP/kai-models"

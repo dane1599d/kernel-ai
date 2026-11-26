@@ -1,4 +1,6 @@
-//! The pointer's motion and buttons (moved out of `mod.rs`, not changed).
+//! The pointer's motion and buttons. A press in a window's content holds the
+//! pointer for that window until the last button is up (an implicit grab, as
+//! X and Wayland have): it hears the release wherever it comes.
 
 use super::*;
 
@@ -51,6 +53,20 @@ impl Desk {
             }
             None => {}
         }
+        if let Some((window, _)) = self.pressed {
+            if let Some(at) = self.content_at(window, p) {
+                effects.push(Effect::Pointer { window, at });
+                return;
+            }
+            // Its window is gone: nothing holds the pointer.
+            self.pressed = None;
+        }
+        self.hover_content(p, effects);
+    }
+
+    /// The pointer at `p` with no button held in a window: which content it
+    /// is over, a `Leave` for the one it left.
+    fn hover_content(&mut self, p: Point, effects: &mut Vec<Effect>) {
         let hit = self.hit(p);
         let over = match hit {
             Hit::Window(id, Part::Content(at)) => Some((id, at)),
@@ -77,6 +93,25 @@ impl Desk {
                 self.grab = None;
                 return;
             }
+            // The window the press went to hears its release, in or out of
+            // its content; once the last button is up the pointer is over
+            // what it is over again.
+            if let Some((window, held)) = self.pressed {
+                let held = held & !bit(button);
+                if let Some(at) = self.content_at(window, self.pointer) {
+                    effects.push(Effect::Button {
+                        window,
+                        at,
+                        button,
+                        down,
+                    });
+                }
+                self.pressed = (held != 0).then_some((window, held));
+                if held == 0 {
+                    self.hover_content(self.pointer, effects);
+                }
+                return;
+            }
             if let Some(window) = self.over
                 && let Hit::Window(id, Part::Content(at)) = self.hit(self.pointer)
                 && id == window
@@ -88,6 +123,19 @@ impl Desk {
                     down,
                 });
             }
+            return;
+        }
+        // Another button while one is held in a window: that window's too.
+        if let Some((window, held)) = self.pressed
+            && let Some(at) = self.content_at(window, self.pointer)
+        {
+            self.pressed = Some((window, held | bit(button)));
+            effects.push(Effect::Button {
+                window,
+                at,
+                button,
+                down,
+            });
             return;
         }
         // Start takes every press while it is open: one inside is its own,
@@ -129,6 +177,7 @@ impl Desk {
         self.set_focus(Focus::Window(id), effects);
         if button != Button::Left {
             if let Part::Content(at) = part {
+                self.pressed = Some((id, bit(button)));
                 effects.push(Effect::Button {
                     window: id,
                     at,
@@ -142,12 +191,15 @@ impl Desk {
             return;
         };
         match part {
-            Part::Content(at) => effects.push(Effect::Button {
-                window: id,
-                at,
-                button,
-                down,
-            }),
+            Part::Content(at) => {
+                self.pressed = Some((id, bit(button)));
+                effects.push(Effect::Button {
+                    window: id,
+                    at,
+                    button,
+                    down,
+                });
+            }
             Part::Title => {
                 let offset = Point {
                     x: self.pointer.x - frame.x,
@@ -167,5 +219,24 @@ impl Desk {
             Part::Minimize => self.minimize(id, effects),
             Part::Maximize => self.toggle_maximize(id, effects),
         }
+    }
+
+    /// `p` in `window`'s content's own px, wherever `p` is; None when the
+    /// window is gone.
+    fn content_at(&self, window: WindowId, p: Point) -> Option<Point> {
+        let content = self.window(window)?.content();
+        Some(Point {
+            x: p.x - content.x,
+            y: p.y - content.y,
+        })
+    }
+}
+
+/// `button`'s bit among those held.
+fn bit(button: Button) -> u8 {
+    match button {
+        Button::Left => 1,
+        Button::Right => 2,
+        Button::Middle => 4,
     }
 }
