@@ -31,14 +31,23 @@ use serde_json::{Map, Number, Value};
 
 /// The C entry now running.
 pub(crate) struct CEntry {
-    /// The last log entry before it began: its calls' entries come after.
-    start: u64,
     request: String,
     /// The source of the first content a call returned, if any did.
     pub(crate) seen: Option<&'static str>,
     /// Kai's program, when the entry is one (`cmode::program`): the log
     /// records it in place of the calls' one-line scripts.
     pub(crate) program: Option<String>,
+    /// The ids of the entry's own calls: only their log entries join it,
+    /// never a Settings click, an app's effect or an agent's step logged
+    /// while it ran or waited (bug-hunt-3 H3-21).
+    ids: Vec<u64>,
+    /// Its calls' log entries so far, oldest first, taken out of the log as
+    /// each call ends, so an entry of more calls than the log keeps never
+    /// pushes its own first changes, or older entries, out of it (H3-23).
+    parts: Vec<Entry>,
+    /// The id of the stand-in [`Shell::entry_stand_in`] left in the log while
+    /// the entry waits on an answer, if one is there.
+    stand_in: Option<u64>,
 }
 
 /// What a call of an entry came to, for `ccserve`'s `resume`.
@@ -61,10 +70,12 @@ impl Shell {
     pub fn entry_begin(&mut self, request: &str) -> u64 {
         let start = self.log.last_id().max(self.next_id.saturating_sub(1));
         self.c_entry = Some(CEntry {
-            start,
             request: request.to_string(),
             seen: None,
             program: None,
+            ids: Vec::new(),
+            parts: Vec::new(),
+            stand_in: None,
         });
         start
     }
@@ -82,6 +93,9 @@ impl Shell {
         }
         let id = self.next_id;
         self.next_id += 1;
+        if let Some(entry) = self.c_entry.as_mut() {
+            entry.ids.push(id);
+        }
         self.last_value = None;
         let row = self.row_of(&call.name);
         let mut outcome = self.execute(id, &request, call);
@@ -105,6 +119,12 @@ impl Shell {
             entry.seen.get_or_insert(source);
         }
         outcome.value = value;
+        // Its log entries join the entry now; one that waits on an answer
+        // leaves the calls so far in the log as one stand-in.
+        self.entry_gather();
+        if outcome.value.is_none() {
+            self.entry_stand_in();
+        }
         outcome
     }
 
@@ -112,39 +132,16 @@ impl Shell {
     /// entry that failed (`ok` false) puts back at once. Its id, if it changed
     /// anything; an entry that only read is logged too.
     pub fn entry_end(&mut self, ok: bool) -> Option<u64> {
+        self.entry_gather();
         let entry = self.c_entry.take()?;
-        let parts = self.log.take_entries_after(entry.start);
-        if parts.is_empty() {
+        if entry.parts.is_empty() {
             return None;
         }
         let id = self.next_id;
         self.next_id += 1;
-        let changes: Vec<_> = parts.iter().flat_map(|p| p.changes.clone()).collect();
-        let script: Vec<&str> = parts.iter().map(|p| p.script.as_str()).collect();
-        let outcome: Vec<&str> = parts.iter().map(|p| p.outcome.as_str()).collect();
-        let tier = parts.iter().filter_map(|p| p.tier).max();
-        let state = match changes.is_empty() {
-            true => State::Nothing,
-            false => State::Done,
-        };
-        self.log.push(Entry {
-            agent: agentid::Name::kai(),
-            id,
-            t_ns: self.host.now_ns(),
-            form: Form::Call,
-            of: None,
-            tier,
-            pack: None,
-            consent: String::from(match entry.program {
-                Some(_) => "c-program",
-                None => "c-entry",
-            }),
-            state,
-            request: entry.request,
-            script: entry.program.unwrap_or_else(|| script.join("\n")),
-            outcome: outcome.join("; "),
-            changes,
-        });
+        let joined = merged(&entry, id, self.host.now_ns());
+        let state = joined.state;
+        self.log.push(joined);
         if !ok && state == State::Done {
             let reply = self.revert_entry(id, false);
             self.host.audit(&format!(
@@ -154,6 +151,44 @@ impl Shell {
         }
         self.save_log();
         (state == State::Done).then_some(id)
+    }
+
+    /// Takes the running entry's own calls' log entries out of the log into
+    /// it. The stand-in [`Shell::entry_stand_in`] left there comes back as
+    /// the calls so far, with whatever was done to it meanwhile: a file
+    /// change that did not land is gone from it (`ledger::take_not_landed`),
+    /// so it never comes back from the parts it was made of.
+    fn entry_gather(&mut self) {
+        let Some(entry) = self.c_entry.as_mut() else {
+            return;
+        };
+        for mut taken in self.log.take_entries_of(&entry.ids) {
+            // `merged` takes the request from the entry: a part never needs
+            // its own copy, which up to MAX_CALLS parts would hold.
+            taken.request = String::new();
+            match entry.stand_in {
+                Some(id) if id == taken.id => {
+                    entry.stand_in = None;
+                    entry.parts = alloc::vec![taken];
+                }
+                _ => entry.parts.push(taken),
+            }
+        }
+    }
+
+    /// While the entry waits on an answer, the log holds its calls so far as
+    /// one entry under its last call's id, so a shell that stops meanwhile
+    /// keeps their undo. The next gather takes it back in their place.
+    fn entry_stand_in(&mut self) {
+        let Some(entry) = self.c_entry.as_mut() else {
+            return;
+        };
+        let Some(last) = entry.parts.last() else {
+            return;
+        };
+        let stand_in = merged(entry, last.id, last.t_ns);
+        entry.stand_in = Some(stand_in.id);
+        self.log.push(stand_in);
     }
 
     /// The value of asked call `id`, once its answer ran or declined it.
@@ -180,6 +215,47 @@ impl Shell {
     fn row_of(&self, name: &str) -> Option<&'static agentabi::Action> {
         agentabi::find(&agentabi::ROWS, name)
     }
+}
+
+/// `entry`'s calls as one log entry `id`: their changes, scripts and
+/// outcomes, the highest tier, and the request as the user typed it.
+fn merged(entry: &CEntry, id: u64, t_ns: u64) -> Entry {
+    let parts = &entry.parts;
+    let changes: Vec<_> = parts.iter().flat_map(|p| p.changes.clone()).collect();
+    let scripts: Vec<&str> = parts.iter().map(|p| p.script.as_str()).collect();
+    let outcome: Vec<&str> = parts.iter().map(|p| p.outcome.as_str()).collect();
+    let state = match changes.is_empty() {
+        true => State::Nothing,
+        false => State::Done,
+    };
+    let script = match &entry.program {
+        Some(program) => clip(program),
+        None => clip(&scripts.join("\n")),
+    };
+    Entry {
+        agent: agentid::Name::kai(),
+        id,
+        t_ns,
+        form: Form::Call,
+        of: None,
+        tier: parts.iter().filter_map(|p| p.tier).max(),
+        pack: None,
+        consent: String::from(match entry.program {
+            Some(_) => "c-program",
+            None => "c-entry",
+        }),
+        state,
+        request: entry.request.clone(),
+        script,
+        outcome: clip(&outcome.join("; ")),
+        changes,
+    }
+}
+
+/// `text` as one log record carries it: a longer one would make the whole
+/// log on disk unreadable at the next start (`actlog::MAX_TEXT`).
+fn clip(text: &str) -> String {
+    crate::show::truncate(text, crate::actlog::MAX_TEXT - " ...".len())
 }
 
 /// `Refused set_policy: why` as `refused: why`.

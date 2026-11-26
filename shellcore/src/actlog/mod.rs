@@ -10,7 +10,7 @@
 
 mod text;
 
-pub use text::{ParseError, parse, parse_setting_aside};
+pub use text::{MAX_TEXT, ParseError, parse, parse_setting_aside};
 
 use crate::tiers::Tier;
 use crate::undo::Inverse;
@@ -261,12 +261,13 @@ impl ActLog {
         })
     }
 
-    /// Takes the entries after `id` out of the log, oldest first, leaving the
-    /// system's records: a `c>` entry's calls, to be logged as one.
-    pub fn take_entries_after(&mut self, id: u64) -> Vec<Entry> {
+    /// Takes the entries numbered in `ids` out of the log, oldest first,
+    /// leaving every other record: a `c>` entry's own calls, to be logged as
+    /// one.
+    pub fn take_entries_of(&mut self, ids: &[u64]) -> Vec<Entry> {
         let mut taken = Vec::new();
         self.records.retain(|record| match record {
-            Record::Entry(e) if e.id > id => {
+            Record::Entry(e) if ids.contains(&e.id) => {
                 taken.push(e.clone());
                 false
             }
