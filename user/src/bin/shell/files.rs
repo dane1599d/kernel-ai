@@ -15,7 +15,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use fsproto::{Error, How, Outcome, Reply, Request};
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, MAX_TRANSFER, Rights};
 use shellcore::ledger::{self, CommitAnswer, Ledger, Undo};
-use shellcore::{FsChange, FsRead, FsRefused, LogFailed};
+use shellcore::{FsChange, FsRead, FsRefused, FsUndone, LogFailed};
 use user::sys;
 
 #[path = "files/find.rs"]
@@ -310,16 +310,24 @@ impl Files {
         self.with_ledger(|l| l.landed(committed))
     }
 
-    pub fn undo(&self, txn: u64, anyway: bool) -> Result<u64, FsRefused> {
+    pub fn undo(&self, txn: u64) -> Result<FsUndone, FsRefused> {
         let home = self.home().map_err(FsRefused::Failed)?;
         self.heard_dropped(home);
         // A failed run's rollback: its own action is dropped, not restored.
         match self.with_ledger(|l| l.undo(txn)) {
             Undo::AbortOpen => {
                 let _ = ask(home, Request::Abort);
-                return Ok(txn);
+                return Ok(FsUndone {
+                    generation: txn,
+                    left: 0,
+                });
             }
-            Undo::Nothing => return Ok(txn),
+            Undo::Nothing => {
+                return Ok(FsUndone {
+                    generation: txn,
+                    left: 0,
+                });
+            }
             Undo::Restore => {}
         }
         // Another line's action still open (its log was not written) lands first.
@@ -336,18 +344,19 @@ impl Files {
                 // The number is a real change now, even one a lost action had.
                 self.with_ledger(|l| l.committed(generation));
                 // `fs` never restores over a later change; it leaves those.
+                // A restore that put any of the rest back landed, and is the
+                // undo: asking again would restore it again, and each time
+                // write one more `name (restored)` copy (bug-hunt-6 H6-22).
                 let left = rows.iter().filter(|(_, o)| *o == Outcome::Left).count();
-                if rows.iter().any(|(_, o)| *o != Outcome::Left) {
+                let restored = rows.iter().any(|(_, o)| *o != Outcome::Left);
+                if restored {
                     self.changed.set(true);
                 }
-                match (left, anyway) {
-                    (0, _) => Ok(generation),
-                    (n, false) => Err(FsRefused::Later(format!(
-                        "{n} file(s) changed since; fs leaves them"
+                match (left, restored) {
+                    (n, false) if n > 0 => Err(failed(format!(
+                        "{n} file(s) changed since, and fs never restores over a later change, so they stay as they are now"
                     ))),
-                    (n, true) => Err(failed(format!(
-                        "{n} file(s) changed since, and fs never restores over a later change"
-                    ))),
+                    (left, _) => Ok(FsUndone { generation, left }),
                 }
             }
             Reply::Failed(error) => Err(failed(describe(error))),

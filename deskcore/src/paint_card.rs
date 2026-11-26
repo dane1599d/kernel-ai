@@ -48,6 +48,7 @@ impl Painter {
             return;
         };
         fill(c, area, clip, self.palette.raised);
+        self.cover(area, 0, clip);
         fill(
             c,
             Rect::new(area.x, area.y, area.w, BAR),

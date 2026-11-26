@@ -591,6 +591,13 @@ impl Local {
         self.used
     }
 
+    /// Counts nothing used until the next `complete` or script: an agent's job
+    /// that never reaches the engine (a malformed request) is charged nothing,
+    /// and never told the person's last count (bug-hunt-4 H4-15).
+    pub fn forget_used(&mut self) {
+        self.used = 0;
+    }
+
     /// One tagged call for the shell's `request`, within the time it gives and
     /// at most `act::SERVICE_TIMEOUT_MS`; a script's code comes from the script
     /// prompt (`llmproto::local::act::routed`).

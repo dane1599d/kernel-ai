@@ -357,6 +357,32 @@ fn main() -> i32 {
         if let (Some((ticket, asked)), Some(Ok(local))) = (job, &mut backends.local) {
             run_job(local, &mut jobs, ticket, &asked, &mut request);
         }
+        // What came during the round and changes only llm's state, applied now
+        // in the order it came (bug-hunt-4 H4-12).
+        let deferred = jobs.deferred();
+        let changed = !deferred.is_empty();
+        for text in deferred {
+            match text.strip_prefix("warm-lang ") {
+                Some(lang) => {
+                    let lang = match lang.trim() {
+                        "c" => Lang::C,
+                        _ => Lang::Rhai,
+                    };
+                    cold |= lang != warm_lang;
+                    warm_lang = lang;
+                }
+                None => {
+                    stale = true;
+                    if let Err(error) = handle(&mut backends, &text, &mut response) {
+                        let why = script::error_line(&error, MAX_ERROR_CHARS);
+                        println!("after the app round: {why}");
+                    }
+                }
+            }
+        }
+        if changed {
+            backends.warming = local_warmable(&backends, stale, cold);
+        }
     }
 }
 
@@ -439,6 +465,11 @@ fn run_agent_job(
         }
         came.is_some()
     };
+    // What the job is charged, and told with its answer, is what it ran:
+    // never the count left from the person's last request.
+    if let Some(Ok(local)) = &mut backends.local {
+        local.forget_used();
+    }
     let local = matches!(backends.local, Some(Ok(_)));
     let mut response = vec![0u8; http::MAX_RESPONSE];
     let answer = match kind {
@@ -803,7 +834,8 @@ fn query(backends: &mut Backends, text: &str, response: &mut [u8]) -> Result<Str
 
 /// The server's health first, then the model's and the engine's; either side may
 /// be missing, not both. A reply ends with the model's state and speed for the
-/// Monitor app (`llmproto::health`).
+/// Monitor app, and for `updated`'s model trial, even when the server's health
+/// failed beside a local model (`llmproto::health::reply`).
 fn health(backends: &mut Backends, response: &mut [u8]) -> Result<String, String> {
     let status = Status {
         state: match (&backends.local, &backends.server) {
@@ -818,11 +850,6 @@ fn health(backends: &mut Backends, response: &mut [u8]) -> Result<String, String
             _ => 0,
         },
     };
-    described(backends, response).map(|text| format!("{text}; {}", status.line()))
-}
-
-/// [`health`]'s words, before the status.
-fn described(backends: &mut Backends, response: &mut [u8]) -> Result<String, String> {
     let mut local: Vec<String> = Vec::new();
     if let Some(model) = &mut backends.model {
         local.push(model.describe());
@@ -833,13 +860,9 @@ fn described(backends: &mut Backends, response: &mut [u8]) -> Result<String, Str
         None => {}
     }
     let local = (!local.is_empty()).then(|| local.join("; "));
-    let Some(server) = &backends.server else {
-        return local.ok_or_else(|| String::from(NO_MODEL));
-    };
-    match (server.health(response), local) {
-        (Ok(server), Some(local)) => Ok(format!("{server}; {local}")),
-        (Ok(server), None) => Ok(server),
-        (Err(error), Some(local)) => Err(format!("{error}; {local}")),
-        (Err(error), None) => Err(error),
-    }
+    let server = backends
+        .server
+        .as_ref()
+        .map(|server| server.health(response));
+    llmproto::health::reply(server, local, status, MAX_ERROR_CHARS)
 }

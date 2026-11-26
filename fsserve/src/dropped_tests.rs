@@ -382,3 +382,69 @@ fn the_owners_read_that_drops_its_action_is_answered_dropped() {
     assert!(matches!(&read, Reply::Failed(e) if e.ends_action()));
     assert_eq!(c.server.owner, None);
 }
+
+/// A Write past the largest file kaifs holds (or whose end overflows) is
+/// refused at once inside an action too, and the action stays open. It is
+/// never left for whichever request writes the run out, where it would drop
+/// the action and fail another caller's read.
+#[test]
+fn a_write_past_the_largest_file_in_an_action_is_refused_at_once() {
+    for off in [kaifs::items::MAX_FILE, u64::MAX] {
+        let mut disk = MemDisk::new(2 * 1024);
+        let (mut c, _) = Client::start(&mut disk);
+        let doc = create(&mut c, "doc").expect("a file");
+        assert_eq!(
+            home(&mut c, ALICE, Request::Begin { action: 1 }).0,
+            Reply::Done
+        );
+        assert_eq!(
+            write(&mut c, &doc, off, 1),
+            Reply::Failed(Error::Invalid),
+            "{off}"
+        );
+        // Bob's reads write out nothing of it.
+        let list = Request::List {
+            after: None,
+            max: 8,
+        };
+        let listed = home(&mut c, BOB, list).0;
+        assert!(matches!(listed, Reply::Listed { .. }), "{off}: {listed:?}");
+        let stat = home(&mut c, BOB, Request::Stat).0;
+        assert!(matches!(stat, Reply::Stat(_)), "{off}: {stat:?}");
+        // Alice's action goes on and commits.
+        assert_eq!(write(&mut c, &doc, 0, 2), Reply::Done, "{off}");
+        let committed = home(&mut c, ALICE, Request::Commit).0;
+        assert!(
+            matches!(committed, Reply::Committed { .. }),
+            "{off}: {committed:?}"
+        );
+        let read = Request::Read { off: 0, len: 16 };
+        let data = c.call(ALICE, doc.badge, doc.rights, read).0;
+        assert_eq!(data, Reply::Data(vec![7; 2]), "{off}");
+    }
+}
+
+/// The edge of the check above: a Write whose last byte is the largest file's
+/// last byte fits, inside an action as outside one, and commits.
+#[test]
+fn a_write_ending_at_the_largest_file_is_done() {
+    let off = kaifs::items::MAX_FILE - 1;
+    for in_action in [false, true] {
+        let mut disk = MemDisk::new(2 * 1024);
+        let (mut c, _) = Client::start(&mut disk);
+        let doc = create(&mut c, "doc").expect("a file");
+        if in_action {
+            let begin = Request::Begin { action: 1 };
+            assert_eq!(home(&mut c, ALICE, begin).0, Reply::Done);
+        }
+        assert_eq!(write(&mut c, &doc, off, 1), Reply::Done, "{in_action}");
+        let end = match in_action {
+            true => home(&mut c, ALICE, Request::Commit).0,
+            false => home(&mut c, ALICE, Request::Sync).0,
+        };
+        assert!(!matches!(end, Reply::Failed(_)), "{in_action}: {end:?}");
+        let read = Request::Read { off, len: 16 };
+        let data = c.call(ALICE, doc.badge, doc.rights, read).0;
+        assert_eq!(data, Reply::Data(vec![7]), "{in_action}");
+    }
+}

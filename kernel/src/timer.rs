@@ -78,7 +78,7 @@ pub fn on_tick() {
     let cpu = percpu::this();
     let ticks = cpu.ticks.fetch_add(1, Ordering::Relaxed) + 1;
     if percpu::index() == 0 {
-        TICKS.fetch_add(1, Ordering::Relaxed);
+        hpet::on_tick(TICKS.fetch_add(1, Ordering::Relaxed) + 1);
     }
     arm(cpu.tick_start_ns.load(Ordering::Relaxed) + (ticks + 1) * period_ns());
 }

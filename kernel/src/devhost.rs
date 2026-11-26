@@ -4,7 +4,7 @@
 //! physical address. Kernel drivers run from their interrupt handler or the
 //! timer, so `wait` only waits out its timeout.
 
-use crate::{hpet, memory};
+use crate::{hpet, log, memory};
 use core::ptr::NonNull;
 use devkit::{Dma, DmaError, Host, Mmio, Zone};
 
@@ -43,11 +43,19 @@ impl Host for KernelHost {
 
     fn mmio(&mut self, bar: u8, offset: u64, len: u64) -> Result<Mmio, DmaError> {
         let (base, size) = self.bar0;
-        let fits = offset.checked_add(len).is_some_and(|end| end <= size);
-        if bar != 0 || !fits {
+        // Bounded by the BAR firmware assigned, so neither a garbage BAR near
+        // 2^64 nor a driver's offset can overflow or map past its end.
+        let phys = match bar {
+            0 => pci::bar_range(base, size, offset, len),
+            _ => None,
+        };
+        let Some(phys) = phys else {
+            log!(
+                "devhost: BAR{bar} {offset:#x}+{len:#x} is outside BAR0 ({base:#x}, {size:#x} bytes)"
+            );
             return Err(DmaError::OutOfRange);
-        }
-        let virt = memory::map_physical(base + offset, len, crate::virtio::hal::DEVICE)
+        };
+        let virt = memory::map_physical(phys, len, crate::virtio::hal::DEVICE)
             .map_err(|_| DmaError::NoMemory)?;
         let regs = NonNull::new(virt as *mut u32).ok_or(DmaError::NoMemory)?;
         // SAFETY: `len` bytes of the BAR were just mapped uncached, for good.

@@ -130,6 +130,8 @@ struct FakeHost {
     /// Turns sent to the conversation memory, and how often it was forgotten.
     remembered: RefCell<Vec<(String, String, String)>>,
     forgot: Cell<u32>,
+    /// Why llm refuses `new`, if it does.
+    forget_refused: RefCell<Option<String>>,
     audit: RefCell<Vec<String>>,
     /// What the supervisor was told to keep running, and the saved list.
     kept: RefCell<Vec<(String, bool)>>,
@@ -397,6 +399,7 @@ impl FakeHost {
             state: RefCell::new(crate::state::State::default()),
             remembered: RefCell::new(Vec::new()),
             forgot: Cell::new(0),
+            forget_refused: RefCell::new(None),
             audit: RefCell::new(Vec::new()),
             kept: RefCell::new(Vec::new()),
             keep_file: RefCell::new(None),
