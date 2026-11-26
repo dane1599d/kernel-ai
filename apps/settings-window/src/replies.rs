@@ -166,6 +166,16 @@ pub fn apply_rows(settings: &mut Settings, app: &str, answer: &[u8]) -> Result<(
 
 /// Characters that are not drawn as themselves: controls, the zero-width and
 /// direction marks, the line and paragraph separators, and the byte-order mark.
+/// What the shell said about a change it took, for the log, when it said
+/// anything: a removal it could not save says it holds for this boot only and
+/// may come back after a restart (#1344's review), which the page alone, with
+/// the rule gone, does not show. One line, cut and cleaned as every answer is.
+pub fn change_note(answer: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(answer);
+    let text = line(text.trim(), 300);
+    (!text.is_empty()).then(|| format!("settings: {text}"))
+}
+
 fn hidden(c: char) -> bool {
     c.is_control()
         || matches!(
@@ -301,6 +311,17 @@ mod tests {
         let mut s = Settings::default();
         read.apply(&mut s, text.as_bytes()).unwrap();
         s
+    }
+
+    #[test]
+    fn a_change_the_shell_could_not_save_is_noted_and_a_silent_one_is_not() {
+        let unsaved = b"Removed rule #1 (process_stop) for this boot: the rules were not \
+            saved (no /system/state here), so it may come back after a restart\n";
+        let note = change_note(unsaved).unwrap();
+        assert!(note.starts_with("settings: Removed rule #1"), "{note}");
+        assert!(note.ends_with("may come back after a restart"), "{note}");
+        assert_eq!(change_note(b""), None);
+        assert_eq!(change_note(b"\n"), None);
     }
 
     #[test]

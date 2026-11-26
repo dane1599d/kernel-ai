@@ -219,6 +219,9 @@ struct FakeHost {
     log_writes: Cell<u32>,
     /// `/system/state/rules`.
     rules_disk: RefCell<Option<String>>,
+    /// `/system/state/rules.refused`, and whether it can be written.
+    rules_aside: RefCell<Option<String>>,
+    rules_aside_ok: Cell<bool>,
     pub withheld_disk: RefCell<Option<String>>,
     /// Why the withheld file cannot be read, when a test says it cannot.
     pub withheld_error: RefCell<Option<String>>,
@@ -455,6 +458,8 @@ impl FakeHost {
             log_disk: RefCell::new(None),
             log_writes: Cell::new(0),
             rules_disk: RefCell::new(None),
+            rules_aside: RefCell::new(None),
+            rules_aside_ok: Cell::new(false),
             withheld_disk: RefCell::new(None),
             withheld_error: RefCell::new(None),
             read_errors: RefCell::new(Vec::new()),
