@@ -14,7 +14,9 @@ pub mod address;
 pub mod cache;
 pub mod config;
 pub mod dns;
+pub mod ephemeral;
 pub mod fixture;
+pub mod lease;
 pub mod ping;
 
 use alloc::format;

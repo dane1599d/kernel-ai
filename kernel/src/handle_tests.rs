@@ -12,16 +12,20 @@
 //!   3 (`handles mode=grants`), a revoke that ends a call in flight (`mode=hold`
 //!   and `mode=revoke`), and spike S01-1's M2: make a request node, give 8
 //!   handles to 2 processes, revoke, 1,000 times (pass: p99 at most 50 us).
+//! - Bug hunt 3 (H3-28..30): an Allow leaves no ONCE handle or request behind, a
+//!   refused rule leaves nothing, and a shell's rule nodes go when it ends.
 
 use crate::fpu_tests::wait_exit;
 use crate::handle::grant::{self as grants, Kernel};
 use crate::process::{self, MAX_PROCESSES, SpawnRequest};
-use crate::{handle, hpet, ipc, log, threads};
+use crate::{allow, handle, hpet, ipc, log, threads};
 use alloc::vec::Vec;
+use captable::grant::{GrantRef, Life, Live, USER};
 use captable::once::Verdict;
 use core::hint::black_box;
-use kabi::handle::{Kind, Rights};
+use kabi::handle::{Handle, Kind, Rights};
 use kabi::{ExitReason, Limits, cap};
+use termcore::menu::Answer;
 
 const CHECKS: u64 = 100_000;
 
@@ -42,6 +46,7 @@ pub fn check() -> Result<(), &'static str> {
     revoke_mid_call()?;
     held_move()?;
     taken_back_at_start()?;
+    allow_leaves_nothing()?;
     m1();
     m2();
     log!("handles: tables, startup handles and need() on handles all behaved");
@@ -294,6 +299,84 @@ fn kernel_grants() -> Result<(), &'static str> {
     result?;
     log!("handles: request nodes revoke what was given under them; ONCE works once, as shown");
     Ok(())
+}
+
+/// Bug hunt 3 (H3-28 to H3-30): an Allow leaves nothing behind. `hshell`, an
+/// idle `handles`, stands in for the shell.
+fn allow_leaves_nothing() -> Result<(), &'static str> {
+    let pid = process::spawn(&SpawnRequest {
+        name: "hshell",
+        program: "handles",
+        args: b"mode=idle",
+        limits: LIMITS,
+        spawner: 0,
+        supervisor: false,
+        uses: &[],
+    })
+    .map_err(|_| "handles: cannot start the stand-in shell")?;
+    let rule = allows_into(pid);
+    process::kill(pid, ExitReason::Killed).map_err(|_| "handles: cannot end the stand-in shell")?;
+    wait_exit(pid)?;
+    if Kernel.alive(rule?) {
+        return Err("handles: a rule node outlived the shell that held it");
+    }
+    log!(
+        "handles: Allows left no ONCE handle or request behind, and a rule node went with its shell"
+    );
+    Ok(())
+}
+
+/// The checks while `hshell` (`pid`) runs; the node of the rule it is left with.
+fn allows_into(pid: u64) -> Result<GrantRef, &'static str> {
+    const CALL: &str = "process_stop(\"hnobody\")";
+    let slot = process::slot_of_pid(pid).ok_or("handles: the stand-in shell is gone")?;
+    let open = || handle::with(slot, |h| h.table.len()).map_err(|_| "handles: no table");
+    let mut ids = 40_000..;
+    let mut mint =
+        |answer: Answer| allow::allow_into(pid, ids.next().unwrap_or_default(), CALL, answer);
+    let before = open()?;
+    for _ in 0..300 {
+        let allowed = mint(Answer::Allow).map_err(|_| "handles: an Allow could not be minted")?;
+        allow::end(&allowed);
+    }
+    if open()? != before {
+        return Err("handles: an ended Allow left its ONCE handle in the shell's table");
+    }
+    // The kernel's 64 rules in use, as orphans or a full shell leave them.
+    let mut fillers = Vec::new();
+    loop {
+        let node = grants::create(grants::root(USER), 0, Life::Persistent, b"hfill")
+            .map_err(|_| "handles: no node for a filler rule")?;
+        if handle::rules::record(node, CALL, true).is_err() {
+            let _ = grants::revoke(node);
+            break;
+        }
+        fillers.push(node);
+        if fillers.len() > 64 {
+            return Err("handles: the kernel kept more than 64 rules");
+        }
+    }
+    let nodes = grants::nodes();
+    let refused = (0..65).all(|_| mint(Answer::AlwaysKind).is_err());
+    let left = (grants::nodes(), open()?);
+    for node in fillers {
+        let _ = grants::revoke(node);
+    }
+    if !refused || left != (nodes, before) {
+        return Err("handles: a refused Always allow left its request or ONCE handle behind");
+    }
+    // 65 refusals did not fill the ONCE book's 64 digests.
+    let allowed = mint(Answer::Allow).map_err(|_| "handles: refusals filled the ONCE book")?;
+    allow::end(&allowed);
+    let allowed = mint(Answer::AlwaysKind).map_err(|_| "handles: an Always allow made no rule")?;
+    allow::end(&allowed);
+    let rule = allowed.granted.rule.ok_or("handles: no rule handle")?;
+    handle::with(slot, |h| {
+        h.table.get(Handle(rule)).ok().and_then(|e| e.grant)
+    })
+    .ok()
+    .flatten()
+    .ok_or("handles: the rule handle names no node")
 }
 
 /// `handles mode=grants`, started with SUPERVISE and POLICY. It exits owning

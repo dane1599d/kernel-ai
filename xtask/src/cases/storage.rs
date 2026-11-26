@@ -1,7 +1,7 @@
 //! S, storage (ADR 0004, P2): block writes and flushes on the `kai-data` disk,
 //! and S04-3's raw case, replayed from QEMU's blklogwrites log.
 
-use super::{TestCase, case};
+use super::{ROOM_WARNING, TestCase, case};
 use crate::blklog::{Data, Expect};
 use crate::disk::Fixture;
 
@@ -19,6 +19,20 @@ const RAW: Data = Data {
     gpt: false,
     ..VIRTIO
 };
+
+/// `fs-powercut`'s forbid: the base list and any `filecheck: FAIL`. A churn
+/// request refused before the cut ends filecheck's churn, and the cut would
+/// then land on an idle disk that the next boot's check still finds whole.
+/// Forbidden lines are judged on cut boots too.
+const POWERCUT_FORBID: &[&str] = &[
+    "pkg: FAIL",
+    "cannot ask yet",
+    "dropped a result",
+    "did not reach the app",
+    "supervision: supervisor died",
+    ROOM_WARNING,
+    "filecheck: FAIL",
+];
 
 /// Boot 2 of `blk-write`: what boot 1 wrote and flushed reads back.
 const REREAD: TestCase = TestCase {
@@ -178,9 +192,16 @@ pub(super) const CASES: &[TestCase] = &[
         ..case("fs-actions", "test=files-actions")
     },
     // P2 task 9: 20 power cuts while `filecheck` makes file actions, each boot
-    // first finding every file whole; the 21st boot ends the case.
+    // first finding every file whole; the 21st boot ends the case. The cut is
+    // armed only once filecheck has committed actions after the cut before
+    // (`cut_line`), and a churn error before the cut fails that boot, so no cut
+    // lands on an idle disk (bug hunt 5 H5-5).
     TestCase {
-        expect: &["files: boot 21: every file is whole after the cut"],
+        expect: &[
+            "files: boot 21: every file is whole after the cut",
+            "files: boot 21: filecheck is making actions",
+        ],
+        forbid: POWERCUT_FORBID,
         server: false,
         data: Some(VIRTIO),
         cuts: 20,

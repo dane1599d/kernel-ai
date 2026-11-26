@@ -1,7 +1,7 @@
 //! `kai-models 1` and what `llm`'s health says it loaded.
 
 use comp_models::{Models, Signed, Store, Stored};
-use modelchan::listing::{encode, encode_within, loaded, parse};
+use modelchan::listing::{encode, encode_within, loaded, parse, running};
 
 fn signed(id: &str, sha: u8, length: u64) -> Signed {
     Signed {
@@ -154,5 +154,55 @@ fn health_says_which_model_loaded() {
         "model 12 bytes fnv1a64 0123456789abcdef01",
     ] {
         assert_eq!(loaded(none), None, "{none}");
+    }
+}
+
+/// `llm`'s reply to `health` as `updated` reads it: the text, and the state
+/// word `llmproto::health::state_of` gives it.
+fn health(reply: &str) -> (Option<&str>, Option<&'static str>) {
+    let state = llmproto::health::state_of(reply).map(llmproto::health::State::word);
+    (Some(reply), state)
+}
+
+#[test]
+fn which_model_runs_is_asked_again_when_llm_cannot_say() {
+    // The store holds P, 12 bytes with FNV-1a64 0xff, which this boot runs.
+    const P: [u8; 32] = [0x50; 32];
+    let blobs = [(P, 12, 0xff), ([0x51; 32], 99, 0x01)];
+    let runs = |(reply, state): (Option<&str>, Option<&str>)| running(reply, state, &blobs);
+    let ready = "ok HTTP 200 in 3 ms; model 12 bytes fnv1a64 00000000000000ff; local model p (fast tier, 4 workers, context 4096, no answer yet); status state=ready tps10=0";
+    assert_eq!(runs(health(ready)), Ok(Some(P)));
+    // A model mapped that cannot run is still the model this boot runs.
+    let failed = "ok model 12 bytes fnv1a64 00000000000000ff; the model cannot run: no tensors; status state=failed tps10=0";
+    assert_eq!(runs(health(failed)), Ok(Some(P)));
+    // A model the store does not hold, and no model at all, are final: none.
+    let other = "ok model 7 bytes fnv1a64 0000000000000007; local model q (fast tier, 4 workers, context 4096, no answer yet); status state=ready tps10=0";
+    assert_eq!(runs(health(other)), Ok(None));
+    let no_model = format!("err {}", llmproto::chat::NO_MODEL);
+    assert_eq!(runs(health(&no_model)), Ok(None));
+    let remote = "ok HTTP 200 in 3 ms; status state=remote tps10=0";
+    assert_eq!(runs(health(remote)), Ok(None));
+    // A server alone whose health fails, as `llm` serves it: no local model,
+    // so a switch and a remove go on (the review of #1349, MEDIUM 2).
+    use llmproto::health::{State, Status, reply};
+    let status = Status {
+        state: State::Remote,
+        tps10: 0,
+    };
+    let down = reply(
+        Some(Err(String::from("network: refused"))),
+        None,
+        status,
+        160,
+    );
+    let down = format!("err {}", down.expect_err("an error"));
+    assert_eq!(runs(health(&down)), Ok(None), "{down}");
+    // While it writes an app its health names no model, and while it loads
+    // the model it does not answer in time: neither is "no model", so a
+    // switch is not given none to go back to.
+    let busy = "ok Kai is writing notes; status state=busy tps10=0";
+    for unknown in [health(busy), (None, None)] {
+        let why = runs(unknown).expect_err("llm did not say");
+        assert!(why.ends_with("ask again"), "{why}");
     }
 }

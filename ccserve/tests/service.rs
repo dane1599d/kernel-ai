@@ -100,18 +100,52 @@ fn a_retyped_function_keeps_its_def_and_its_retyped_together_or_neither() {
             );
         }
         if let Some(name) = record.strip_prefix("retyped ") {
-            assert!(
-                reply[at - 1].starts_with(&format!("def fn {name} ")),
-                "{name}"
-            );
+            // A pair that did not fit leaves its `retyped` alone, which is
+            // safe: it cannot be taken for a def in place.
+            let paired = reply[at - 1].starts_with(&format!("def fn {name} "));
+            assert!(paired || !defs.contains(&name), "{name}");
         }
     }
-    assert_eq!(
-        reply.iter().filter(|r| r.starts_with("retyped ")).count(),
-        defs.len()
-    );
+    assert!(reply.iter().filter(|r| r.starts_with("retyped ")).count() >= defs.len());
     // The room did run out: some are left out, and some went in.
     assert!(!defs.is_empty() && defs.len() < N, "{} of {N}", defs.len());
+}
+
+/// An entry whose `def` could not go in for room still tells the reader it
+/// defined something: its `retyped` goes in alone when the pair does not fit,
+/// so cc's restart replays the entry (#1317's review).
+#[test]
+fn a_retyped_function_whose_pair_does_not_fit_still_says_it_was_defined() {
+    const N: usize = 12;
+    let mut cc = Cc::open();
+    let names: Vec<String> = (0..N).map(|i| format!("Fn{i:02}{:_<50}", "")).collect();
+    let entry = |ty: &str, body: &str| {
+        names
+            .iter()
+            .map(|n| format!("{ty} {n}() {{ return {body}; }}\n"))
+            .collect::<String>()
+    };
+    cc.ok(&entry("I64", "1"));
+    // Output that takes most of the reply's room, then the retyped functions.
+    let reply = cc.ok(&format!(
+        "I64 i;\nfor (i = 0; i < 900; i++) Print(\"0123456789\");\n{}",
+        entry("F64", "1.5")
+    ));
+    let defs = reply.iter().filter(|r| r.starts_with("def fn ")).count();
+    assert!(defs < N, "{defs} of {N} defs went in");
+    // Some went in whole, and some have their `retyped` alone: the entry
+    // still says it defined them. None has a def without its `retyped`.
+    let alone = names.iter().filter(|n| {
+        reply.contains(&format!("retyped {n}"))
+            && !reply.iter().any(|r| r.starts_with(&format!("def fn {n} ")))
+    });
+    assert!(alone.count() > 0, "{reply:?}");
+    for (at, record) in reply.iter().enumerate() {
+        if let Some(def) = record.strip_prefix("def fn ") {
+            let name = def.split(' ').next().unwrap();
+            assert_eq!(reply[at + 1], format!("retyped {name}"));
+        }
+    }
 }
 
 #[test]

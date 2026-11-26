@@ -21,7 +21,7 @@ const DESKTOP: &str =
     "desktop caps=display+input+serve+ask+call uses=pkg pages=8192 stack_pages=512";
 /// Time for `desktop` to take each step in.
 const STEP_MS: u64 = 400;
-const CTRL_SPACE: [u8; 4] = [0x1D, 0x39, 0xB9, 0x9D];
+pub(crate) const CTRL_SPACE: [u8; 4] = [0x1D, 0x39, 0xB9, 0x9D];
 const APPS_ENTER: [u8; 10] = [0x1E, 0x9E, 0x19, 0x99, 0x19, 0x99, 0x1F, 0x9F, 0x1C, 0x9C];
 const DOWN: [u8; 4] = [0xE0, 0x50, 0xE0, 0xD0];
 const ENTER: [u8; 2] = [0x1C, 0x9C];

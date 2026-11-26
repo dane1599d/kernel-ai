@@ -1,0 +1,14 @@
+[package]
+name = "tzcore"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Time zones with daylight saving time (plan L-1): TZif files and POSIX TZ
+# strings, and UTC to local time and back across transitions. no_std with
+# alloc and no dependencies; host-tested.
+[lib]
+doctest = false
+
+[dependencies]

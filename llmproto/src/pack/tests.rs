@@ -348,3 +348,77 @@ fn the_apps_key_is_the_same_in_any_order_and_changes_with_an_answers_first_line(
     assert_ne!(apps::key(&[calc]), resting);
     assert_eq!(apps::key(&[]), std::vec![]);
 }
+
+#[test]
+fn a_short_doc_keeps_the_docs_first_words_without_articles() {
+    assert_eq!(
+        apps::short_doc("The events on a day, like today.", 12),
+        "events on day"
+    );
+    assert_eq!(
+        apps::short_doc("Skip to the next song.", 12),
+        "skip to next song"
+    );
+    // A cut leaves no preposition dangling.
+    assert_eq!(apps::short_doc("Skip to the next song.", 1), "skip");
+    assert_eq!(
+        apps::short_doc("Add a contact with a phone number.", 3),
+        "add contact"
+    );
+    assert_eq!(apps::short_doc("", 4), "");
+    assert_eq!(apps::short_doc("The.", 4), "");
+}
+
+#[test]
+fn the_described_turn_cuts_descriptions_to_fit_the_shipped_turns_budget() {
+    let doc = |row: &agentabi::Action| apps::short_doc(row.doc, apps::DESCRIBED_MAX_WORDS);
+    let group = notes();
+    let made = apps::described_turn(core::slice::from_ref(&group), apps::estimate);
+    assert_eq!(made.words, apps::DESCRIBED_MAX_WORDS);
+    assert_eq!(
+        made.text,
+        std::format!(
+            "{}\nnotes: notes_add ({}) notes_count ({})",
+            apps::APPS_HEADING,
+            doc(group.rows[0]),
+            doc(group.rows[1])
+        )
+    );
+    // A budget that holds the plain lines but not every description cuts
+    // every description to fewer words; one that holds no description at
+    // all shows the app's plain line, as the shipped turn would.
+    let plain = apps::turn(core::slice::from_ref(&group)).0;
+    // Ten a word: the plain turn fits; the descriptions are cut to the most
+    // words that still fit, and one word more would not.
+    let by_words = |text: &str| 10 * text.split_whitespace().count();
+    let cut = apps::described_turn(core::slice::from_ref(&group), by_words);
+    assert!(cut.plain.is_empty() && cut.left_out.is_empty(), "{cut:?}");
+    assert!(by_words(&cut.text) <= apps::APPS_BUDGET, "{cut:?}");
+    let more = apps::described_line(&group, cut.words + 1);
+    let base = by_words(apps::APPS_HEADING);
+    assert!(
+        cut.words == apps::DESCRIBED_MAX_WORDS
+            || base + by_words(&more) > apps::APPS_BUDGET
+            || more == apps::described_line(&group, cut.words),
+        "{cut:?}"
+    );
+    // The app's line costs more than the budget with any description.
+    let tight = |text: &str| match text.starts_with("notes:") && text.contains('(') {
+        true => apps::APPS_BUDGET + 1,
+        false => apps::estimate(text),
+    };
+    let fallback = apps::described_turn(core::slice::from_ref(&group), tight);
+    assert_eq!(fallback.text, plain);
+    assert_eq!(fallback.plain, ["notes"]);
+    assert_eq!(fallback.words, 1);
+    // An app the shipped turn leaves out is left out here too.
+    let empty = apps::AppGroup {
+        app: "empty".into(),
+        rows: std::vec![],
+    };
+    let made = apps::described_turn(&[empty], apps::estimate);
+    assert_eq!(
+        (made.text.as_str(), made.left_out),
+        ("", std::vec![String::from("empty")])
+    );
+}

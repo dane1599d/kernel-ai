@@ -100,6 +100,131 @@ pub fn flat_turn(groups: &[AppGroup]) -> (String, Vec<String>) {
     }
 }
 
+/// The most words of a row's doc [`described_turn`] tries.
+pub const DESCRIBED_MAX_WORDS: usize = 12;
+
+/// Words [`short_doc`] leaves out: articles anywhere, and these only as the
+/// last word after a cut.
+const ARTICLES: [&str; 3] = ["a", "an", "the"];
+const TRAILING: [&str; 13] = [
+    "on", "to", "for", "of", "with", "in", "off", "by", "at", "that", "are", "is", "this",
+];
+
+/// A row's short description for spike S10-2's described arm: its doc up to
+/// the first ", " or ".", without articles, at most `words` words, with no
+/// preposition left dangling at the end and a lower-case first letter
+/// (`The events on a day, like today.` is `events on day`).
+pub fn short_doc(doc: &str, words: usize) -> String {
+    let end = [doc.find(", "), doc.find('.')]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(doc.len());
+    let mut kept: Vec<&str> = doc[..end]
+        .split_whitespace()
+        .filter(|word| !ARTICLES.contains(&word.to_lowercase().as_str()))
+        .take(words)
+        .collect();
+    while kept.len() > 1 && kept.last().is_some_and(|w| TRAILING.contains(w)) {
+        kept.pop();
+    }
+    let text = kept.join(" ");
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
+/// [`line`] with each row's [`short_doc`] of at most `words` words after its
+/// name: `music: music_play (play a song) music_skip (skip to the next song)`.
+pub fn described_line(group: &AppGroup, words: usize) -> String {
+    let mut line = alloc::format!("{}:", group.app);
+    for row in &group.rows {
+        line.push(' ');
+        line.push_str(row.name);
+        let doc = short_doc(row.doc, words);
+        if !doc.is_empty() {
+            line.push_str(" (");
+            line.push_str(&doc);
+            line.push(')');
+        }
+    }
+    line
+}
+
+/// Spike S10-2's described arm's apps turn (see [`described_turn`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Described {
+    /// The turn, "" for none.
+    pub text: String,
+    /// The words each description was cut to.
+    pub words: usize,
+    /// Apps left out, as [`turn_counted`] leaves them out.
+    pub left_out: Vec<String>,
+    /// Apps shown with their plain [`line`]: no room for a description.
+    pub plain: Vec<String>,
+}
+
+/// Spike S10-2's described arm: [`turn_counted`] with each app's
+/// [`described_line`], under the same heading and [`APPS_BUDGET`] by the same
+/// `count`. Every description is cut to the most words, from
+/// [`DESCRIBED_MAX_WORDS`] down to 1, at which every app that [`turn_counted`]
+/// would show fits with its descriptions. If none does, it is cut to 1 word,
+/// and an app whose described line would pass the budget gets its plain
+/// [`line`] instead, and is left out only when that does not fit either. What
+/// ships is [`turn`].
+pub fn described_turn(groups: &[AppGroup], count: impl Fn(&str) -> usize) -> Described {
+    let shipped_left_out = turn_counted(groups, &count).1;
+    let mut last = None;
+    for words in (1..=DESCRIBED_MAX_WORDS).rev() {
+        let turn = described_at(groups, &count, words);
+        if turn.plain.is_empty() && turn.left_out == shipped_left_out {
+            return turn;
+        }
+        last = Some(turn);
+    }
+    last.unwrap_or_else(|| described_at(groups, &count, 1))
+}
+
+/// [`described_turn`] with every description cut to `words` words.
+fn described_at(groups: &[AppGroup], count: &impl Fn(&str) -> usize, words: usize) -> Described {
+    let mut text = String::from(APPS_HEADING);
+    let mut shown = 0;
+    let (mut left_out, mut plain) = (Vec::new(), Vec::new());
+    for group in groups {
+        let fits = |candidate: &str| count(&text) + count(candidate) <= APPS_BUDGET;
+        let described = described_line(group, words);
+        let plain_line = line(group);
+        let chosen = if group.rows.is_empty() {
+            None
+        } else if fits(&described) {
+            Some(described)
+        } else if fits(&plain_line) {
+            plain.push(group.app.clone());
+            Some(plain_line)
+        } else {
+            None
+        };
+        let Some(chosen) = chosen else {
+            left_out.push(group.app.clone());
+            continue;
+        };
+        text.push('\n');
+        text.push_str(&chosen);
+        shown += 1;
+    }
+    if shown == 0 {
+        text = String::new();
+    }
+    Described {
+        text,
+        words,
+        left_out,
+        plain,
+    }
+}
+
 /// App `group`'s full lines, as a system turn after the request: what a call
 /// naming one of its rows is decoded with the second time. Each row has a line
 /// of its own; the OS's family lines (`service_stop|start`) are for its rows.

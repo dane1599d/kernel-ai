@@ -14,7 +14,6 @@
 //! shell carries out without the model.
 
 use crate::catalog::{App, Sheet, Source};
-use crate::desk::usage;
 use crate::keymap;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -75,8 +74,8 @@ pub struct Start {
     selected: usize,
     /// The selected pinned tile on Home, once an arrow moved there.
     home: Option<usize>,
-    shift: u8,
-    ctrl: u8,
+    /// Shift and Ctrl, as held.
+    held: keymap::Held,
     caps: bool,
 }
 
@@ -89,8 +88,7 @@ impl Start {
             all_apps,
             selected: 0,
             home: None,
-            shift: 0,
-            ctrl: 0,
+            held: keymap::Held::default(),
             caps: false,
         }
     }
@@ -231,21 +229,12 @@ impl Start {
 
     /// A key, `down` or up: whether Start changed, and what was picked.
     pub fn key(&mut self, code: u16, down: bool) -> (bool, Option<Pick>) {
-        let held = |count: &mut u8| {
-            *count = match down {
-                true => count.saturating_add(1),
-                false => count.saturating_sub(1),
-            }
-        };
+        // A held key's repeats are more downs than ups: a count of them
+        // would stay held after the release (#23 of the bug hunt).
+        if self.held.key(code, down) {
+            return (false, None);
+        }
         match code {
-            usage::LEFT_SHIFT | usage::RIGHT_SHIFT => {
-                held(&mut self.shift);
-                return (false, None);
-            }
-            usage::LEFT_CTRL | usage::RIGHT_CTRL => {
-                held(&mut self.ctrl);
-                return (false, None);
-            }
             _ if !down => return (false, None),
             ESCAPE => return (false, Some(Pick::Close)),
             _ => {}
@@ -298,7 +287,7 @@ impl Start {
             _ if matches!(code, UP | DOWN | ENTER | KEYPAD_ENTER) => return (false, None),
             _ => {}
         }
-        let Some(key) = keymap::key_of(code, self.shift > 0, self.ctrl > 0, self.caps) else {
+        let Some(key) = keymap::key_of(code, self.held.shift(), self.held.ctrl(), self.caps) else {
             return (false, None);
         };
         match self.line.apply(key) {
@@ -324,6 +313,7 @@ pub fn open(app: &App) -> Pick {
 mod tests {
     use super::*;
     use crate::catalog::tests::app;
+    use crate::desk::usage;
 
     fn apps() -> Vec<App> {
         alloc::vec![
@@ -348,6 +338,18 @@ mod tests {
             start.key(code, true);
             start.key(code, false);
         }
+    }
+
+    /// Shift's repeats while held, then its one release: not held after.
+    #[test]
+    fn a_repeating_shift_is_let_go_by_its_release() {
+        let mut start = Start::new(apps(), false);
+        for _ in 0..3 {
+            start.key(usage::LEFT_SHIFT, true);
+        }
+        start.key(usage::LEFT_SHIFT, false);
+        typed(&mut start, "a");
+        assert_eq!(start.text(), "a");
     }
 
     #[test]

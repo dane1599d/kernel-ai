@@ -582,6 +582,14 @@ impl Session {
         self.touched();
     }
 
+    /// Takes `bundle` for the version as opened: what a save wrote when the
+    /// text moved on while the write was out. [`Session::changed`] and `reset`
+    /// compare against it, and the edits already made can still be undone.
+    pub fn keep_as(&mut self, bundle: Vec<u8>) {
+        self.original = bundle;
+        self.touched();
+    }
+
     /// Back to the version as opened.
     pub fn reset(&mut self) {
         let fresh = Self::open(&self.component, &self.label, &self.original)

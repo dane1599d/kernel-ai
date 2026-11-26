@@ -150,3 +150,75 @@ fn a_bulk_push_needs_its_shm_the_bytes_it_names_and_the_store() {
         Reply::Failed(Error::Permission)
     );
 }
+
+/// An `Shm` the client changes right after `fs` first reads it: the first read
+/// gives the blob's bytes, every later one gives something else.
+struct Changing {
+    bytes: Vec<u8>,
+    reads: usize,
+}
+
+impl crate::models::ShmBytes for Changing {
+    fn size(&self) -> usize {
+        self.bytes.len()
+    }
+    fn copy_out(&mut self, len: usize) -> Vec<u8> {
+        self.reads += 1;
+        match self.reads {
+            1 => self.bytes[..len].to_vec(),
+            _ => vec![0xEE; len],
+        }
+    }
+}
+
+#[test]
+fn a_push_through_an_shm_reads_it_once_so_the_bytes_hashed_are_the_bytes_kept() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let bytes = model(200_000);
+    let name = name_of(&bytes);
+    assert_eq!(
+        store(&mut c, Request::Begin { action: 1 }, None),
+        Reply::Done
+    );
+    let begin = Request::SealedBegin {
+        name: name.clone(),
+        len: bytes.len() as u64,
+    };
+    assert_eq!(store(&mut c, begin, None), Reply::Done);
+    let request = fsproto::encode_request(&Request::SealedPushShm {
+        len: bytes.len() as u32,
+    });
+    let call = Call {
+        caller: ALICE,
+        badge: MODELS_ROOT,
+        rights: DIR_RIGHTS,
+        request: &request,
+        now: 2_000,
+    };
+    c.server.fs.set_volume(MODELS.into()).unwrap();
+    let target = Target {
+        file: false,
+        object: ROOT,
+        inode: c.server.fs.stat(ROOT).unwrap(),
+    };
+    let mut shm = Changing {
+        bytes: bytes.clone(),
+        reads: 0,
+    };
+    let pushed = c
+        .server
+        .sealed_push_shm(&call, &target, bytes.len() as u32, Some(&mut shm));
+    assert_eq!(pushed, Ok(Reply::Done));
+    assert_eq!(shm.reads, 1, "the Shm was read more than once");
+    // Hashed and kept are the one copy: the name (its SHA-256) still matches.
+    assert_eq!(store(&mut c, Request::SealedFinish, None), Reply::Done);
+    assert!(matches!(
+        store(&mut c, Request::Commit, None),
+        Reply::Committed { .. }
+    ));
+    let fs = &mut c.server.fs;
+    fs.set_volume(MODELS.into()).unwrap();
+    let ino = fs.lookup(ROOT, &name).unwrap().unwrap().ino;
+    assert_eq!(fs.read_file(ino).unwrap(), bytes);
+}

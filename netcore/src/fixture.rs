@@ -26,6 +26,12 @@ pub const MIXED: &str = "mixed.kai.test";
 pub const MIXED_ADDRESS: [u8; 4] = [10, 0, 2, 97];
 /// Never answered, so the resolver times out.
 pub const SILENT: &str = "silent.kai.test";
+/// Answered [`SLOW_DELAY_MS`] late and once per asking socket (xtask's
+/// responder ignores a repeat), so a resolver gets it only if its first
+/// query's reply still counts after its second try's own second has run out.
+pub const SLOW: &str = "slow.kai.test";
+pub const SLOW_ADDRESS: [u8; 4] = [10, 0, 2, 96];
+pub const SLOW_DELAY_MS: u64 = 2_500;
 
 /// xtask's HTTPS mock (P5 task 7): every host it serves is at one address,
 /// which QEMU forwards, on port 443, to the mock on the host (P5 task 12's
@@ -70,19 +76,12 @@ pub enum Data<'a> {
 /// The responder's reply to `query`, or None to stay silent (for [`SILENT`],
 /// and for anything that is not a single-question A query).
 pub fn answer(query: &[u8]) -> Option<Vec<u8>> {
-    let packet = DnsPacket::new_checked(query).ok()?;
-    if packet.question_count() != 1 {
-        return None;
-    }
-    let (_, question) = DnsQuestion::parse(packet.payload()).ok()?;
-    if question.type_ != DnsQueryType::A {
-        return None;
-    }
-    let host = name(&packet, question.name)?;
+    let host = question_name(query)?;
     let (rcode, answers): (u8, &[(&str, u32, Data)]) = match host.as_str() {
         SILENT => return None,
         KAI => (0, &[(KAI, KAI_TTL, Data::A(KAI_ADDRESS))]),
         SHORT => (0, &[(SHORT, SHORT_TTL, Data::A(SHORT_ADDRESS))]),
+        SLOW => (0, &[(SLOW, KAI_TTL, Data::A(SLOW_ADDRESS))]),
         LAN => (0, &[(LAN, KAI_TTL, Data::A(LAN_ADDRESS))]),
         MIXED => (
             0,
@@ -106,6 +105,29 @@ pub fn answer(query: &[u8]) -> Option<Vec<u8>> {
         _ => (3, &[]),
     };
     Some(reply(query, &host, rcode, answers))
+}
+
+/// How long the responder waits before it sends its reply to `query`:
+/// [`SLOW_DELAY_MS`] for [`SLOW`], else not at all.
+pub fn delay_ms(query: &[u8]) -> u64 {
+    if question_name(query).as_deref() == Some(SLOW) {
+        SLOW_DELAY_MS
+    } else {
+        0
+    }
+}
+
+/// The name a single-question A query asks about.
+fn question_name(query: &[u8]) -> Option<String> {
+    let packet = DnsPacket::new_checked(query).ok()?;
+    if packet.question_count() != 1 {
+        return None;
+    }
+    let (_, question) = DnsQuestion::parse(packet.payload()).ok()?;
+    if question.type_ != DnsQueryType::A {
+        return None;
+    }
+    name(&packet, question.name)
 }
 
 /// A reply to `query` (whose question names `host`) with error code `rcode` and
@@ -187,6 +209,10 @@ mod tests {
             parse_reply(4, MISSING, &missing),
             Err(ReplyError::NoSuchHost)
         );
+        let slow = parse_reply(6, SLOW, &answer(&query(6, SLOW)).unwrap()).unwrap();
+        assert_eq!(slow.addresses, [Ipv4Addr::from(SLOW_ADDRESS)]);
+        assert_eq!(delay_ms(&query(6, SLOW)), SLOW_DELAY_MS);
+        assert_eq!(delay_ms(&query(1, KAI)), 0);
         assert!(answer(&query(5, SILENT)).is_none());
         assert!(answer(b"not dns").is_none());
     }
