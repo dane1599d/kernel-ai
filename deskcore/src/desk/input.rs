@@ -97,6 +97,11 @@ impl Desk {
             // its content; once the last button is up the pointer is over
             // what it is over again.
             if let Some((window, held)) = self.pressed {
+                // A button whose press went elsewhere: its release is not
+                // the window's either.
+                if held & bit(button) == 0 {
+                    return;
+                }
                 let held = held & !bit(button);
                 if let Some(at) = self.content_at(window, self.pointer) {
                     effects.push(Effect::Button {
@@ -112,18 +117,19 @@ impl Desk {
                 }
                 return;
             }
-            if let Some(window) = self.over
-                && let Hit::Window(id, Part::Content(at)) = self.hit(self.pointer)
-                && id == window
-            {
-                effects.push(Effect::Button {
-                    window,
-                    at,
-                    button,
-                    down,
-                });
-            }
+            // No press is held: this release is no window's. Its press went
+            // to the chrome, the taskbar, Start or a card, or was ended
+            // (`cancel_press`), or it is the stale release the kernel sends
+            // when the screen comes back with a button held.
             return;
+        }
+        // A press of a button already held: its release was lost (to a card,
+        // or never sent). The window hears it let go, and this press starts
+        // over from what is under the pointer.
+        if let Some((_, held)) = self.pressed
+            && held & bit(button) != 0
+        {
+            self.cancel_press(effects);
         }
         // Another button while one is held in a window: that window's too.
         if let Some((window, held)) = self.pressed
@@ -218,6 +224,54 @@ impl Desk {
             Part::Close => effects.push(Effect::Close { window: id }),
             Part::Minimize => self.minimize(id, effects),
             Part::Maximize => self.toggle_maximize(id, effects),
+        }
+    }
+
+    /// Input was lost (the kernel's queue overflowed): a release may never
+    /// come, so what a button held ends now. A window holding a press hears
+    /// it let go, as for a card, and a move or resize stops where it is.
+    /// Without this a lost Right or Middle release left the press held, and
+    /// every Left click went to that window until the button was pressed
+    /// again.
+    pub fn input_lost(&mut self) -> Vec<Effect> {
+        let mut effects = Vec::new();
+        // A window let go mid-move gets its shadow back, so its place is
+        // drawn again, as on a release.
+        if let Some(id) = self.dragged()
+            && let Some(frame) = self.window(id).map(|w| w.frame)
+        {
+            self.damage.add(frame);
+        }
+        self.grab = None;
+        let held = self.pressed.is_some();
+        self.cancel_press(&mut effects);
+        // With nothing held, the pointer is over what it is over again.
+        if held {
+            self.hover_content(self.pointer, &mut effects);
+        }
+        self.rehover();
+        effects
+    }
+
+    /// Ends a press held in a window: it hears each held button let go
+    /// just outside its content, at (-1, -1), so it drops the press without
+    /// taking it for a click on what is under the pointer.
+    pub(super) fn cancel_press(&mut self, effects: &mut Vec<Effect>) {
+        let Some((window, held)) = self.pressed.take() else {
+            return;
+        };
+        if self.window(window).is_none() {
+            return;
+        }
+        for button in [Button::Left, Button::Right, Button::Middle] {
+            if held & bit(button) != 0 {
+                effects.push(Effect::Button {
+                    window,
+                    at: Point { x: -1, y: -1 },
+                    button,
+                    down: false,
+                });
+            }
         }
     }
 

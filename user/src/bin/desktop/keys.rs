@@ -113,12 +113,24 @@ pub(super) fn input(state: &mut State, screen: &Screen, event: &InputEvent) {
             }
             None
         }
+        // The kernel dropped input since the last read: a release may be
+        // among it, so what a button held ends now (#1352's follow-up).
+        Kind::Screen if event.value == INPUT_LOST => {
+            let effects = state.desk.input_lost();
+            deliver(state, &effects);
+            None
+        }
         _ => None,
     };
     if let Some(input) = input {
         apply_input(state, screen, event, input);
     }
 }
+
+/// `kabi::input::INPUT_LOST`: a `Kind::Screen` event of this value starts
+/// the first read after the kernel's queue dropped events (#1397). Until
+/// that lands, no event has it, and nothing here changes.
+const INPUT_LOST: i32 = 2;
 
 /// One input for the desk, from `event`: the desk's effects carried out,
 /// and the cursor moved with the pointer.

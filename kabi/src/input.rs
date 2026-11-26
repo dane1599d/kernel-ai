@@ -153,6 +153,10 @@ pub struct Set1 {
     super_alone: bool,
     /// The last key decoded was a Super tap's release.
     super_tap: bool,
+    /// Every key held, by make code: bits 0-127 plain, 128-255 after `E0`.
+    /// Unlike the console's decoder, it is never started afresh when the
+    /// keys change hands.
+    down: [u64; 4],
 }
 
 impl Set1 {
@@ -165,7 +169,16 @@ impl Set1 {
             gui: 0,
             super_alone: false,
             super_tap: false,
+            down: [0; 4],
         }
+    }
+
+    /// The keys held now, as the scancode bytes that pressed them: a make code,
+    /// and whether `E0` came first.
+    pub fn held_makes(&self) -> impl Iterator<Item = (bool, u8)> + '_ {
+        (0..256usize)
+            .filter(|&n| self.down[n / 64] >> (n % 64) & 1 != 0)
+            .map(|n| (n >= 128, (n % 128) as u8))
     }
 
     pub fn feed(&mut self, byte: u8) -> Option<(u16, bool)> {
@@ -188,6 +201,11 @@ impl Set1 {
         }
         let extended = core::mem::take(&mut self.extended);
         let (make, down) = (byte & 0x7F, byte & 0x80 == 0);
+        let slot = usize::from(extended) * 128 + usize::from(make);
+        match down {
+            true => self.down[slot / 64] |= 1 << (slot % 64),
+            false => self.down[slot / 64] &= !(1 << (slot % 64)),
+        }
         let usage = match extended {
             false => SET1.get(usize::from(make)).map(|u| u16::from(*u)),
             true => SET1_E0
@@ -321,6 +339,47 @@ pub const INPUT_LOST: i32 = 2;
 /// it is a key pressed, so Super held with it is not a tap.
 pub const UNMAPPED: u8 = 0x54;
 
+/// Who gets the keys: the console (the screen is its, or a lease lends them)
+/// or `desktop`. Changed only at a sequence boundary ([`Set1::at_boundary`]).
+/// Whenever it changes, either way, the side that loses the keys never sees
+/// the releases of keys it saw go down, and the side that gets them never saw
+/// those go down: so the console's ring is emptied and its key decoder starts
+/// afresh (`kernel/src/input`), or a Ctrl held across Ctrl+Alt+F12 stays held
+/// in the console for good (bug hunt 2, H2-13).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hands {
+    console: bool,
+}
+
+impl Hands {
+    /// The console holds the screen at boot, and its keys.
+    pub const fn new() -> Self {
+        Self { console: true }
+    }
+
+    /// At a sequence boundary: `desktop` holds the screen (`taking`), and a
+    /// lease lends the keys to the console (`leased`, which counts only while
+    /// `desktop` holds the screen). True if the keys changed hands.
+    pub fn settle(&mut self, taking: bool, leased: bool) -> bool {
+        let console = !taking || leased;
+        let changed = console != self.console;
+        self.console = console;
+        changed
+    }
+
+    /// Whether keys go to the console now.
+    pub fn console(&self) -> bool {
+        self.console
+    }
+}
+
+impl Default for Hands {
+    /// As [`Hands::new`]: the console holds the keys at boot, not neither.
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Where a key goes ([`Set1::route`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KeyRoute {
@@ -343,6 +402,62 @@ pub enum KeyRoute {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A `Hands` made by `Default` is the console's, as `new()` is.
+    #[test]
+    fn default_hands_are_the_consoles() {
+        assert!(Hands::default().console());
+        assert_eq!(Hands::default(), Hands::new());
+    }
+
+    /// The keys held, plain and after `E0`, until their breaks: the count the
+    /// menu's gate is seeded from.
+    #[test]
+    fn set1_knows_which_keys_are_held() {
+        let mut keys = Set1::new();
+        assert_eq!(keys.held_makes().count(), 0);
+        for byte in [0x15, 0xE0, 0x4B] {
+            keys.feed(byte);
+        }
+        let held: alloc::vec::Vec<_> = keys.held_makes().collect();
+        assert_eq!(held, [(false, 0x15), (true, 0x4B)]);
+        // A repeat is no second key; a break ends it.
+        keys.feed(0x15);
+        keys.feed(0x95);
+        keys.feed(0xE0);
+        keys.feed(0xCB);
+        assert_eq!(keys.held_makes().count(), 0);
+    }
+
+    /// H2-13: each way the keys move, the console's decoder starts afresh,
+    /// and only then.
+    #[test]
+    fn the_keys_change_hands_each_way_the_screen_or_a_lease_moves() {
+        let mut hands = Hands::new();
+        assert!(hands.console());
+        // The console holds the screen: no change while it does.
+        assert!(!hands.settle(false, false));
+        // desktop claims the screen (Ctrl+Alt+F12, or its first claim).
+        assert!(hands.settle(true, false));
+        assert!(!hands.console());
+        assert!(!hands.settle(true, false));
+        // A lease lends the keys to the console, and ends.
+        assert!(hands.settle(true, true));
+        assert!(hands.console());
+        assert!(!hands.settle(true, true));
+        assert!(hands.settle(true, false));
+        // Ctrl+Alt+F12 back to the console, then to desktop again.
+        assert!(hands.settle(false, false));
+        assert!(hands.console());
+        assert!(hands.settle(true, false));
+        // The screen back to the console under a lease: the keys were the
+        // console's already, so nothing changes hands.
+        assert!(hands.settle(true, true));
+        assert!(!hands.settle(false, false));
+        // A lease flag left on while the console holds the screen counts for
+        // nothing.
+        assert!(!hands.settle(false, true));
+    }
 
     fn feed(bytes: &[u8]) -> alloc::vec::Vec<(u16, bool)> {
         let mut set1 = Set1::new();

@@ -1,7 +1,7 @@
 //! `test=desk-agent` and `test=desk-takeover` (P3 task 10's exit cases, ADR
 //! 0005 §6): the agent opens an app and acts inside it, and the user takes
 //! over. Lines are typed in `term`'s window, where an ask shows on `desktop`'s
-//! card; the mock model answers each by its line (`xtask/src/mock_llm.rs`).
+//! card; the mock model answers each by its line (`xtask/src/mock_llm/`).
 //!
 //! `desk-agent`: "open notes" runs `ui_open`, which starts Notes' window
 //! service, `notes-window`, through the supervisor's `app-call` and waits for

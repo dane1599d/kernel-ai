@@ -137,3 +137,95 @@ fn a_row_kai_h_does_not_bind_is_refused_before_the_door() {
         "nothing ran, so nothing is logged"
     );
 }
+
+/// bug-hunt-3 H3-23: an entry of more calls than the log keeps still holds
+/// its first change and leaves the log's earlier entries in it: a failed one
+/// puts the change back, and one that ends logs it with its undo.
+#[test]
+fn an_entry_of_more_calls_than_the_log_keeps_holds_its_first_change() {
+    let cpus = call(r#"{"name":"cpus","arguments":{}}"#);
+    let create = call(r#"{"name":"fs_create","arguments":{"path":"a.txt","text":"one"}}"#);
+    for ok in [false, true] {
+        let host = FakeHost::new();
+        let mut shell = shell(&host);
+        shell.entry_begin("fs_create(\"a.txt\", \"one\");");
+        shell.entry_call(&create);
+        let earlier = shell.entry_end(true).expect("the file was made");
+        shell.entry_begin(&format!("{C_RR} for (I64 i = 0; i < 64; i++) cpus(&n);"));
+        shell.entry_call(&call(RR));
+        for _ in 0..crate::actlog::KEEP {
+            shell.entry_call(&cpus);
+        }
+        let logged = shell.entry_end(ok);
+        if ok {
+            let id = logged.expect("the entry changed the policy");
+            assert_eq!(shell.log.get(id).unwrap().changes.len(), 1);
+            assert!(shell.eval("undo").text.starts_with("Undone: "));
+        }
+        assert_eq!(host.policy.get(), Some(policy::INTERACTIVE), "ok={ok}");
+        assert!(shell.log.get(earlier).is_some(), "ok={ok}");
+    }
+}
+
+/// bug-hunt-3 H3-21's review: while an entry waits on an answer, its calls so
+/// far stand in the log as one entry, and what is done to that stand-in
+/// stays done. A file change whose commit `fs` refused at the answer's log
+/// write is taken out of it, so the entry never offers to undo it.
+#[test]
+fn a_file_change_that_did_not_land_while_the_entry_waited_stays_out_of_it() {
+    let host = FakeHost::new();
+    *host.procs.borrow_mut() = alloc::vec![String::from("notes")];
+    host.one_action.set(true);
+    let mut shell = shell(&host);
+    shell.entry_begin("fs_create(\"a.txt\", \"one\"); process_stop(\"notes\");");
+    let create = call(r#"{"name":"fs_create","arguments":{"path":"a.txt","text":"one"}}"#);
+    let made = shell.entry_call(&create);
+    assert_eq!(made.value, Some(Ok(Value::Null)), "{:?}", made.reply);
+    let stop = call(r#"{"name":"process_stop","arguments":{"name":"notes"}}"#);
+    let asked = shell.entry_call(&stop).reply.confirm.expect("a stop asks");
+    host.commit_refused.set(true);
+    let once = host.mint(asked, "process_stop(\"notes\")");
+    shell.eval(&format!("answer {asked} allow once={once}"));
+    let id = shell.entry_end(true).expect("the stop changed things");
+    let entry = shell.log.get(id).unwrap();
+    assert!(
+        entry.changes.iter().all(|c| c.action != "fs_create"),
+        "{entry:?}"
+    );
+    assert!(entry.outcome.contains("did not land"), "{}", entry.outcome);
+}
+
+/// #1370's review: an entry whose outcome was clipped to the longest text a
+/// log record carries, and whose file commit `fs` then refused, still reads
+/// back at the next start. The note that its files did not land is kept
+/// whole, the outcome before it giving way.
+#[test]
+fn a_clipped_entry_whose_files_did_not_land_still_reads_back() {
+    use crate::actlog::MAX_TEXT;
+    let host = FakeHost::new();
+    host.one_action.set(true);
+    let mut shell = shell(&host);
+    shell.entry_begin(&format!(
+        "{C_RR} fs_create(\"a.txt\", \"one\"); for (;;) cpus(&n);"
+    ));
+    shell.entry_call(&call(RR));
+    let create = call(r#"{"name":"fs_create","arguments":{"path":"a.txt","text":"one"}}"#);
+    shell.entry_call(&create);
+    // Each call's outcome is at least `ran`: so many pass the longest text.
+    let cpus = call(r#"{"name":"cpus","arguments":{}}"#);
+    for _ in 0..MAX_TEXT / "ran; ".len() {
+        shell.entry_call(&cpus);
+    }
+    host.commit_refused.set(true);
+    let id = shell.entry_end(true).expect("the entry changed the policy");
+    let outcome = &shell.log.get(id).unwrap().outcome;
+    assert!(outcome.len() <= MAX_TEXT, "{} bytes", outcome.len());
+    let note = " ...; its file changes did not land: Dropped(NoSpace)";
+    let tail = outcome.get(outcome.len().saturating_sub(80)..);
+    assert!(outcome.ends_with(note), "{tail:?}");
+    // The next line writes the log, and a shell on the same disk reads it.
+    shell.eval("1 + 1");
+    let after = super::shell(&host);
+    let read = after.log.get(id).expect("the log was read back");
+    assert_eq!(read.changes.len(), 1, "the policy alone: {read:?}");
+}

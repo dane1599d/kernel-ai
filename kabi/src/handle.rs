@@ -23,7 +23,7 @@ use bitflags::bitflags;
 /// node again under a node outside it, so GRANT_REVOKE of the source's
 /// node still reaches the copy (bug hunt 2's H2-18; decision row
 /// `2026-11-25-grant-revoke-reaches-derived-handles`). No in-tree caller did so.
-pub const ABI: (u32, u32) = (1, 5);
+pub const ABI: (u32, u32) = (1, 6);
 
 /// The name of the ELF note that carries [`ABI`], and its type.
 pub const NOTE_NAME: &[u8; 4] = b"KAI\0";

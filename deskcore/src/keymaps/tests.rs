@@ -143,6 +143,8 @@ fn spanish_has_enye_cedilla_and_the_inverted_marks() {
     assert_eq!(typed("es", 0x34, false, false), D(Accent::Acute));
     assert_eq!(typed("es", 0x34, true, false), D(Accent::Diaeresis));
     assert_eq!(typed("es", 0x1F, false, true), C('@'), "AltGr 2");
+    assert_eq!(typed("es", 0x22, false, true), C('€'), "AltGr 5");
+    assert_eq!(typed("es", 0x08, false, true), C('€'), "AltGr E");
     assert_eq!(typed("es", 0x20, true, false), C('·'), "Shift 3");
 }
 

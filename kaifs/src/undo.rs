@@ -57,7 +57,19 @@ pub enum Outcome {
     /// Made by the action, and removed again.
     Removed,
     /// Left as it is: changed later, or a folder that still holds names.
-    Left,
+    /// `folder` says which kind it is: a later change that only added or
+    /// removed a name in a folder leaves that folder too, and a caller that
+    /// counts what stays changed counts files.
+    Left { folder: bool },
+}
+
+impl Outcome {
+    /// [`Outcome::Left`] for an object of kind `kind`.
+    pub fn left(kind: FileType) -> Self {
+        Outcome::Left {
+            folder: kind == FileType::Dir,
+        }
+    }
 }
 
 /// One version of an object in a snapshot.
@@ -276,7 +288,7 @@ impl<D: BlockDev> Fs<D> {
             (Some(_), Some((at, now))) if !in_place => {
                 if let Err(e) = self.rename(at, &now, dir, &name) {
                     return match e {
-                        Error::Invalid(_) | Error::Exists => Ok(Outcome::Left),
+                        Error::Invalid(_) | Error::Exists => Ok(Outcome::left(old.kind)),
                         e => Err(e),
                     };
                 }
@@ -315,10 +327,10 @@ impl<D: BlockDev> Fs<D> {
         live: &Inode,
     ) -> Result<Outcome, Error> {
         if old.kind != FileType::File || live.kind != FileType::File {
-            return Ok(Outcome::Left);
+            return Ok(Outcome::left(live.kind));
         }
         let Some(old_name) = self.name_in(View::Tree(root), old.parent, ino)? else {
-            return Ok(Outcome::Left);
+            return Ok(Outcome::left(live.kind));
         };
         let dir = live.parent;
         let name = self.beside(dir, &old_name.name)?;
@@ -377,7 +389,7 @@ impl<D: BlockDev> Fs<D> {
                 (_, Some(l)) if changed_since => {
                     let outcome = match old {
                         Some(o) => self.keep_beside(root, ino, &o, &l)?,
-                        None => Outcome::Left,
+                        None => Outcome::left(l.kind),
                     };
                     out.push((ino, outcome));
                 }
@@ -395,7 +407,7 @@ impl<D: BlockDev> Fs<D> {
                     };
                     match removed && !later.contains(&ino) {
                         true => were.push((self.depth_in(then, ino)?, ino, o)),
-                        false => out.push((ino, Outcome::Left)),
+                        false => out.push((ino, Outcome::left(o.kind))),
                     }
                 }
                 (None, None) => {}
@@ -448,7 +460,7 @@ impl<D: BlockDev> Fs<D> {
                 && left.parent == live.parent
                 && left.mtime == live.mtime
                 && left.crtime == live.crtime
-                && self.bytes_in(then, ino)? == self.bytes_in(View::Live, ino)?
+                && self.data_alike(then, ino)?
                 && self.items_in(then, ino, K_XATTR)? == self.items_in(View::Live, ino, K_XATTR)?
                 && self.name_in(then, left.parent, ino)?.map(|e| e.name)
                     == self.name_in(View::Live, live.parent, ino)?.map(|e| e.name);
@@ -457,13 +469,30 @@ impl<D: BlockDev> Fs<D> {
         Ok(false)
     }
 
-    /// File `ino`'s data in `view`, each item at its offset.
-    fn bytes_in(&mut self, view: View, ino: u64) -> Result<Vec<(u64, Vec<u8>)>, Error> {
-        let mut out = Vec::new();
-        for (key, raw) in self.items_in(view, ino, K_DATA)? {
-            out.push((key.off, decode_value(&raw, &mut self.io)?.into_bytes()));
+    /// Whether file `ino`'s data items in `view` hold what the live tree's
+    /// do, item by item at the same offsets. Alike raw items are alike data (a
+    /// restore copies them as they are), so only a pair that differs is read,
+    /// one pair at a time.
+    fn data_alike(&mut self, view: View, ino: u64) -> Result<bool, Error> {
+        let then = self.items_in(view, ino, K_DATA)?;
+        let now = self.items_in(View::Live, ino, K_DATA)?;
+        if then.len() != now.len() {
+            return Ok(false);
         }
-        Ok(out)
+        for ((a_key, a), (b_key, b)) in then.iter().zip(&now) {
+            if a_key.off != b_key.off {
+                return Ok(false);
+            }
+            if a == b {
+                continue;
+            }
+            let a = decode_value(a, &mut self.io)?;
+            let b = decode_value(b, &mut self.io)?;
+            if a.bytes() != b.bytes() {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Removes, as rule 2 says, an object the action made: a folder only once it
@@ -471,12 +500,12 @@ impl<D: BlockDev> Fs<D> {
     fn unmake(&mut self, ino: u64) -> Result<Outcome, Error> {
         let live = self.stat(ino)?;
         Ok(match self.name_in(View::Live, live.parent, ino)? {
-            Some(_) if live.kind == FileType::Dir && live.size > 0 => Outcome::Left,
+            Some(_) if live.kind == FileType::Dir && live.size > 0 => Outcome::left(live.kind),
             Some(e) => {
                 self.remove(live.parent, &e.name)?;
                 Outcome::Removed
             }
-            None => Outcome::Left,
+            None => Outcome::left(live.kind),
         })
     }
 

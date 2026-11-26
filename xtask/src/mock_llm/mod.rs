@@ -6,6 +6,7 @@
 
 mod act;
 mod acts;
+mod app;
 mod query;
 mod sends;
 #[cfg(test)]
@@ -14,6 +15,7 @@ mod tune;
 
 use crate::httpd::{self, HttpError};
 use act::{act, act_line};
+
 use query::query;
 use serde_json::{Value, json};
 use std::net::{TcpListener, TcpStream};
@@ -200,6 +202,9 @@ fn chat_content(request: &Value) -> String {
     }
     if request["messages"][0]["content"] == llmproto::query::SYSTEM_PROMPT {
         return query(request);
+    }
+    if app::is_app(request) {
+        return app::app();
     }
     let is_script = request["response_format"]["json_schema"]["name"] == "rhai_script";
     if !is_script {

@@ -117,6 +117,17 @@ enum Padding {
     Pss,
 }
 
+/// A PKCS#1 RSA public key, taking moduli up to [`RSA_BITS`]'s end. The
+/// `rsa` crate's own decoders (`from_pkcs1_der`, `RsaPublicKey::new`) stop
+/// at 4096 bits, so a key of 4097 to 8192 bits is built from its parts.
+fn rsa_key(public_key: &[u8]) -> Result<rsa::RsaPublicKey, InvalidSignature> {
+    use rsa::pkcs1::der::Decode;
+    let parts = rsa::pkcs1::RsaPublicKey::from_der(public_key).map_err(|_| InvalidSignature)?;
+    let n = rsa::BigUint::from_bytes_be(parts.modulus.as_bytes());
+    let e = rsa::BigUint::from_bytes_be(parts.public_exponent.as_bytes());
+    rsa::RsaPublicKey::new_with_max_size(n, e, *RSA_BITS.end()).map_err(|_| InvalidSignature)
+}
+
 #[derive(Debug)]
 struct Rsa {
     padding: Padding,
@@ -131,10 +142,9 @@ impl SignatureVerificationAlgorithm for Rsa {
         message: &[u8],
         signature: &[u8],
     ) -> Result<(), InvalidSignature> {
-        use rsa::pkcs1::DecodeRsaPublicKey;
         use rsa::sha2::{Digest, Sha256, Sha384, Sha512};
         use rsa::{Pkcs1v15Sign, Pss};
-        let key = rsa::RsaPublicKey::from_pkcs1_der(public_key).map_err(|_| InvalidSignature)?;
+        let key = rsa_key(public_key)?;
         if !RSA_BITS.contains(&key.n().bits()) {
             return Err(InvalidSignature);
         }
@@ -267,3 +277,41 @@ pub static ALGORITHMS: WebPkiSupportedAlgorithms = WebPkiSupportedAlgorithms {
         (SignatureScheme::RSA_PKCS1_SHA256, &[&RSA_PKCS1_SHA256]),
     ],
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MESSAGE: &[u8] = b"kai: a message to sign";
+
+    /// RSA-PSS-SHA256 signatures over [`MESSAGE`], made with openssl, from
+    /// keys of 4096 and 8192 bits (their PKCS#1 public keys beside them).
+    #[test]
+    fn rsa_keys_up_to_8192_bits_verify() {
+        for (key, signature) in [
+            (
+                &include_bytes!("testdata/pub4096.der")[..],
+                &include_bytes!("testdata/pss4096.sig")[..],
+            ),
+            (
+                &include_bytes!("testdata/pub8192.der")[..],
+                &include_bytes!("testdata/pss8192.sig")[..],
+            ),
+        ] {
+            let bits = rsa_key(key).map(|k| k.n().bits()).unwrap_or(0);
+            assert!(
+                RSA_PSS_SHA256
+                    .verify_signature(key, MESSAGE, signature)
+                    .is_ok(),
+                "{bits} bits"
+            );
+            // The same signature over another message is refused.
+            assert!(
+                RSA_PSS_SHA256
+                    .verify_signature(key, b"another message", signature)
+                    .is_err(),
+                "{bits} bits"
+            );
+        }
+    }
+}

@@ -134,18 +134,19 @@ pub fn from_line(line: &str) -> Option<&str> {
     // units?" and "do you remember …?" ask, they do not tell, and "you
     // remember …" alone is a statement.
     let (mut polite, mut request) = (false, false);
-    loop {
+    // What follows the word "remember", with any ':' or ',' it had: "Remember:
+    // my sister is Ana" is "my sister is Ana".
+    let mut text = loop {
         let (word, after) = rest.split_once(' ')?;
         let bare = word.trim_end_matches([',', ':']).to_ascii_lowercase();
         match bare.as_str() {
-            "remember" => break,
+            "remember" => break after.trim_start(),
             "you" if polite => request = true,
             lead if LEADS.contains(&lead) => polite |= POLITE.contains(&lead),
             _ => return None,
         }
         rest = after.trim_start();
-    }
-    let mut text = rest["remember".len()..].trim_start();
+    };
     if text.ends_with('?') && !request {
         return None;
     }

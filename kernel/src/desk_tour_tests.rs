@@ -58,7 +58,7 @@ fn shot(name: &str) {
 
 /// A line to the shell, as the console sends it; its reply is logged. A row
 /// runs only from the model's script, so each step is a request the mock
-/// model answers (`xtask/src/mock_llm.rs`). A step the shell asks about is
+/// model answers (`xtask/src/mock_llm/`). A step the shell asks about is
 /// allowed through the trusted path, as `app-terminal` allows its line.
 fn line(text: &str) {
     let Some(reply) = say(text) else {

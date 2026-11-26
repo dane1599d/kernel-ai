@@ -21,7 +21,7 @@
 //! | 130-139 | D, drivers (ADR 0007) | RING_ATTACH, RING_NOTIFY, NOTIFY_WAIT, INPUT_PUSH; POWER_OFF 134 (K, ADR 0007 §8) |
 //! | 140-149 | C, components | EDIT_CALL (lane E), CARD_READY |
 //! | 150-159 | V, virtual machines (P6) | |
-//! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE, PROC_QUOTA_SET, PROC_CLASS_SET, PROC_ALIVE 166 |
+//! | 160-169 | M, memory | MEM_RESERVE, MEM_COMMIT, MEM_RELEASE, PROC_QUOTA_SET, PROC_CLASS_SET, PROC_ALIVE 166, PROC_NAME 167 |
 //! | 170-179 | U, updates (P4) | SLOT_INFO, SLOT_READ, SLOT_WRITE, SLOT_FLUSH, BOOTREC_GET, BOOTREC_SET, TRUST_ROOT, TRUST_TIME |
 //! | 180-189 | G-core (P3), second block | ASK_READ, ASK_ANSWER, EVENT_POST, EVENT_READ, APP_CTL, APP_CALL |
 //! | 190-191 | S-io (P2), second block | PART_PEER_ALIVE, PART_PEER_NAME |
@@ -607,6 +607,15 @@ pub const PROC_CLASS_SET: u64 = 164;
 /// processes start and end (ADR 0001). Numbered at merge, M's block; 165 is
 /// SHM_SIZE's (#1141).
 pub const PROC_ALIVE: u64 = 166;
+/// `proc_name(pid, ptr, cap) -> len`: the name live process `pid` runs
+/// under, from the process table, for `desktop`, which knows every caller
+/// by it however many processes run: METRICS lists only the first
+/// [`super::MAX_METRIC_PROCESSES`] (H3-8). Needs [`super::cap::DISPLAY`] or
+/// [`super::cap::SUPERVISE`], as [`PROC_ALIVE`], whose answer a name gives
+/// too; Permission otherwise. NotFound when `pid` is not running (pid 0,
+/// the kernel, has no name); TooBig when `cap` is under the name's length,
+/// at most [`super::MAX_NAME`]. Numbered at merge, M's block.
+pub const PROC_NAME: u64 = 167;
 
 // ---- U, 170-179 ----
 

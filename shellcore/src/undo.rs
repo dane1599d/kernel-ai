@@ -235,6 +235,9 @@ pub enum Refused {
     Moved(String),
     /// It could not be put back yet.
     Failed(String),
+    /// It was not put back, and asking again would not change that: `fs`
+    /// keeps what a later change touched.
+    Kept(String),
 }
 
 /// One change a script made, as the action log records it.
@@ -322,6 +325,7 @@ pub fn revert(
                 Inverse::Fs { txn: generation },
             )),
             Err(crate::FsRefused::Failed(why)) => Err(Refused::Failed(why)),
+            Err(crate::FsRefused::Kept(why)) => Err(Refused::Kept(why)),
         },
         // An app's undo is kept as a call of its own, so its redo undoes that.
         Inverse::App { app, id } => {

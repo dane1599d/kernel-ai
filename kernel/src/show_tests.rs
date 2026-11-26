@@ -5,8 +5,12 @@
 //! unused, and a note added through its action wakes it (a reload, whose
 //! window used to come back unasked) and redraws it; the window stays hidden.
 //! The first `kai-show 1` puts it back as it was, with no reload; the second
-//! finds it open, with the note.
+//! finds it open, with the note. Between the close and the nap the console
+//! takes the screen and gives it back (H3-26): `desktop` forgets comphost's
+//! connection, which has nothing on the desk to poll for, and the show must
+//! still open one window, not two.
 
+use crate::claim_tests::{CTRL_ALT_F12, type_keys};
 use crate::display::claim;
 use crate::ui_tests::report;
 use crate::ui_tests::{APP_FRAME_W, DESK};
@@ -54,6 +58,7 @@ pub fn check() -> Result<(), &'static str> {
     report(0, 0, 0);
     threads::sleep_ms(2_000);
     log!("ui-window-show: Notes' window was closed");
+    console_and_back()?;
     // Unused and hidden, it naps; the call below wakes it, a reload.
     threads::sleep_ms(NAP_MS);
     // A redraw of its own: it used to open the window again.
@@ -78,5 +83,38 @@ pub fn check() -> Result<(), &'static str> {
         return Err("ui-window-show: the note did not survive the show");
     }
     log!("ui-window-show: a closed window stayed closed until asked, then came back with its note");
+    Ok(())
+}
+
+/// Whether `desktop` has the screen.
+fn desktop_shows() -> bool {
+    let desktop = process::named("desktop").first().map(|&(pid, _)| pid);
+    let shows = desktop
+        .and_then(|pid| process::with_table(|t| t.iter().position(|p| p.live() && p.pid == pid)));
+    shows.is_some_and(claim::shows)
+}
+
+/// Waits for `done`, at most [`WAIT_MS`]: `why` when it never is.
+fn wait_for(done: impl Fn() -> bool, why: &'static str) -> Result<(), &'static str> {
+    for _ in 0..WAIT_MS / 50 {
+        if done() {
+            return Ok(());
+        }
+        threads::sleep_ms(50);
+    }
+    Err(why)
+}
+
+/// Ctrl+Alt+F12 twice: the console takes the screen, then `desktop` has it
+/// again, its connections built anew.
+fn console_and_back() -> Result<(), &'static str> {
+    type_keys(&CTRL_ALT_F12);
+    let took = || !console::suspended();
+    wait_for(took, "ui-window-show: the console did not take the screen")?;
+    type_keys(&CTRL_ALT_F12);
+    let back = || desktop_shows() && console::suspended();
+    wait_for(back, "ui-window-show: desktop did not have the screen back")?;
+    threads::sleep_ms(2_000);
+    log!("ui-window-show: the console took the screen and gave it back");
     Ok(())
 }

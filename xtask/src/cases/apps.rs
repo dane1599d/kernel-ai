@@ -7,6 +7,7 @@
 use super::{TestCase, case};
 use crate::blklog::Data;
 use crate::disk::Fixture;
+use std::time::Duration;
 
 /// A fresh `kai-data` disk, for the model store.
 pub(super) const DATA: Data = Data {
@@ -18,6 +19,9 @@ pub(super) const DATA: Data = Data {
 /// `fs` on the data disk, `desktop` and a window together pass the page budget
 /// (half the free memory) of the default 512 MiB guest (`keep-running`'s).
 pub(super) const WINDOW_AND_FS_MIB: u64 = 1024;
+/// fs, pkg, the model, cc, desktop, the shell and the built app's window
+/// together pass the default 512 MiB guest's page budget, as `c-build`'s do.
+const APP_BUILD_MIB: u64 = 1024;
 
 pub(super) const CASES: &[TestCase] = &[
     // P4 task 4: the AI types into the Terminal app, a person's Enter runs the line
@@ -119,5 +123,58 @@ pub(super) const CASES: &[TestCase] = &[
         store: Some(Fixture::Gguf),
         import: Some(Fixture::Gguf2),
         ..case("app-models", "test=app-models")
+    },
+    // "Kai builds apps" end to end with the mock model
+    // (`kernel/src/app_build_tests.rs`): a typed line calls `app_build`, llm
+    // runs the `c-app-1` round as a job, the mock answers with the card's
+    // shopping list, and the shell builds and tries it in the background.
+    // Its install card opens by itself; `y y` (the card's two-step Allow)
+    // installs it from `local` as generation 2 and its window opens, and
+    // `undo` removes it while its source stays.
+    TestCase {
+        keys: &[&["~600", "y", "y"]],
+        expect: &[
+            "pkg: generation 1 starts no app from a package",
+            "app-build: the line started building shopping in the background",
+            "card: the terminal asked the shell for its waiting card",
+            "card: the shell's waiting card goes to desktop",
+            "app-build: shopping 0.0.1 was built and tried, and its install card opened by itself on desktop; nothing is installed",
+            "pkg: started from local: shopping 0.0.1 as p-",
+            "\"Shopping\" shown at ",
+            "\"Shopping\" opened at ",
+            "app-build: the Allow installed shopping 0.0.1 from local as generation 2, and it runs",
+            "pkg: switched back from generation 2 to 1's packages as generation 3",
+            "pkg: ended, undone: shopping as p-",
+            "app-build: undo removed shopping, and its source stays in /home/user/apps/shopping/",
+        ],
+        data: Some(DATA),
+        memory_mib: Some(APP_BUILD_MIB),
+        min_timeout: Some(Duration::from_secs(600)),
+        ..case("app-build", "test=app-build")
+    },
+    // The same build ending on the card's Deny (`n`, at once): nothing is
+    // installed or started, and the source stays.
+    TestCase {
+        keys: &[&["~600", "n"]],
+        expect: &[
+            "app-build-deny: the line started building shopping in the background",
+            "card: the shell's waiting card goes to desktop",
+            "app-build-deny: shopping 0.0.1 was built and tried, and its install card opened by itself on desktop; nothing is installed",
+            "app-build-deny: the Deny installed nothing: packages are still generation 1, and shopping's source stays in /home/user/apps/shopping/",
+        ],
+        forbid: &[
+            "pkg: FAIL",
+            "cannot ask yet",
+            "dropped a result",
+            "did not reach the app",
+            "supervision: supervisor died",
+            super::ROOM_WARNING,
+            "pkg: started from local",
+            "\"Shopping\" shown at ",
+        ],
+        data: Some(DATA),
+        memory_mib: Some(APP_BUILD_MIB),
+        min_timeout: Some(Duration::from_secs(600)),
+        ..case("app-build-deny", "test=app-build-deny")
     },
 ];

@@ -11,11 +11,14 @@ pub(super) const CASES: &[TestCase] = &[
         expect: &[
             "comphost: window 1 hidden until it is shown",
             "ui-window-show: Notes' window was closed",
+            "ui-window-show: the console took the screen and gave it back",
             "comphost: notes-window napped, unused",
             "ui-window-show: the first show answered ok shown",
+            "comphost: desktop had forgotten it; its windows open anew",
             "comphost: shown again, as it was",
             "ui-window-show: a closed window stayed closed until asked, then came back with its note",
         ],
+        forbid: SHOW_FORBID,
         ..case("ui-window-show", "test=ui-window-show")
     },
     // The founder-walk (#922): Notes opened by "open notes", closed from its
@@ -96,4 +99,16 @@ const REOPEN_FORBID: &[&str] = &[
     ROOM_WARNING,
     "was asked to show its window",
     "showed no window",
+];
+
+/// `ui-window-show`'s: [`FORBID`], and comphost opening its windows a second
+/// time after the console had the screen (H3-26).
+const SHOW_FORBID: &[&str] = &[
+    "pkg: FAIL",
+    "cannot ask yet",
+    "dropped a result",
+    "did not reach the app",
+    "supervision: supervisor died",
+    ROOM_WARNING,
+    "reopened its windows after desktop restarted",
 ];
