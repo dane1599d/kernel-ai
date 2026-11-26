@@ -607,10 +607,12 @@ fn negation_at_for(words: &[Word], i: usize, row: Option<&Action>) -> bool {
 /// was a mistake"). "stop everything" and "Stop. Bring up the terminal" stop
 /// none, but "stop anything from switching" and "stop everything that
 /// switches" do. For a `row` that asks anyway (it derives above Run), whose
-/// own cue "stop" is, "stop running" is the row's verb, which changes only its
-/// card's wording: "stop running the miner" asks to stop the miner. Any other
-/// -ing word negates: "stop shutting down build-3" kills nothing, so no
-/// standing rule may run it (#1460 review).
+/// own cue "stop" is, "stop running" in one clause is the row's verb: "stop
+/// running the miner" asks for the stop, so the call asks as a change with no
+/// undo, which a standing rule for the row may run, not as one the model
+/// added. "Stop! Running the miner is fine" stops nothing. Any other -ing word
+/// negates: "stop shutting down build-3" kills nothing, so no standing rule
+/// may run it (#1460 review).
 fn stops_an_action(words: &[Word], i: usize, row: Option<&Action>) -> bool {
     let clause = words[i].clause;
     let alone = words.iter().filter(|w| w.clause == clause).all(|w| {
@@ -636,7 +638,7 @@ fn stops_an_action(words: &[Word], i: usize, row: Option<&Action>) -> bool {
     }
     match row {
         Some(row) if derive(row) != Tier::Run && is_own_cue(row, &words[i].text) => {
-            next.text != "running"
+            !(next.text == "running" && next.clause == clause)
         }
         _ => true,
     }
