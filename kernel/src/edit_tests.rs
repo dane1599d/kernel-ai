@@ -10,6 +10,8 @@ use crate::{build_service, edit_mode, edit_session, hpet, ipc, log, threads};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use editcore::ipc::{Ipc, encode_ipc};
 use editcore::scenario::{self, Applied, Driver};
 use kabi::{Error, ExitReason, cap};
 use livecore::ledger::Ledger;
@@ -21,6 +23,36 @@ const NAME: &str = "notes";
 const START_TIMEOUT_MS: u64 = 60_000;
 /// How long git may take to acknowledge the outbox.
 const SYNC_TIMEOUT_MS: u64 = 60_000;
+/// How long the edit service holds its next reply when a check asks it to.
+const HOLD_MS: u64 = 500;
+/// The pid whose next `svc_reply` waits [`HOLD_MS`] first; 0: none.
+static HOLD: AtomicU64 = AtomicU64::new(0);
+/// Set while that reply waits: the service took the message and made it.
+static HELD: AtomicBool = AtomicBool::new(false);
+/// The thread waiting for that reply, woken once it is held, as a kill wakes
+/// a killed app's threads.
+static WAITER: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+/// `svc_reply`: the process [`HOLD`] names waits before it answers, once, so
+/// a check can act while the service holds a call. One load when unset.
+pub fn hold_reply(slot: usize) {
+    let pid = HOLD.load(Ordering::SeqCst);
+    if pid == 0 || process::identity(slot).pid != pid {
+        return;
+    }
+    if HOLD
+        .compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst)
+        .is_ok()
+    {
+        HELD.store(true, Ordering::SeqCst);
+        let waiter = WAITER.swap(usize::MAX, Ordering::SeqCst);
+        if waiter != usize::MAX {
+            x86_64::instructions::interrupts::without_interrupts(|| threads::wake(waiter));
+        }
+        threads::sleep_ms(HOLD_MS);
+        HELD.store(false, Ordering::SeqCst);
+    }
+}
 
 struct Kernel {
     live: live_tests::Kernel,
@@ -228,11 +260,61 @@ pub fn check() -> Result<(), &'static str> {
         );
         return Err("edit: the reply counts are wrong");
     }
+    if let Err(why) = killed_after_the_take(&mut kernel) {
+        log!("{why}");
+        return Err("edit: a killed app's edit was not journaled");
+    }
     log!(
         "edit: {} steps passed in {} s: edited, built, applied, rolled back, restarted and reverted ({} builds)",
         scenario::STEPS.len(),
         (hpet::nanos() - started) / 1_000_000_000,
         build_service::builds()
     );
+    Ok(())
+}
+
+/// H6-18: an app killed while the edit service holds its message. The service
+/// made the edit, so the journal has it, and a restarted service gets it back.
+fn killed_after_the_take(kernel: &mut Kernel) -> Result<(), String> {
+    const MARKER: &str = "// H6-18: a killed app's edit";
+    let opened = edit_mode::open(NAME, None);
+    if !opened.starts_with("ok ") {
+        return Err(format!("edit: :edit {NAME} said {opened:?}"));
+    }
+    let cmd = |line: &str| edit_session::call(&encode_ipc(&Ipc::Cmd(line)));
+    let server = ipc::server_of("edit").ok_or("edit: no edit service is running")?;
+    WAITER.store(threads::current_tid(), Ordering::SeqCst);
+    HOLD.store(server, Ordering::SeqCst);
+    let insert = format!("i 1 {MARKER}");
+    // The app is killed once the service has taken the message.
+    let killed = || HELD.load(Ordering::SeqCst);
+    let reply = edit_session::call_for_app(&encode_ipc(&Ipc::Cmd(&insert)), &killed, &|| false);
+    HOLD.store(0, Ordering::SeqCst);
+    WAITER.store(usize::MAX, Ordering::SeqCst);
+    let shown = cmd("p 1");
+    if !shown.contains(MARKER) {
+        return Err(format!(
+            "edit: the service never made the insert ({reply:?}; p 1: {shown:?})"
+        ));
+    }
+    let journal = edit_session::journal();
+    if !journal.contains(MARKER) {
+        return Err(format!(
+            "edit: the insert was made but not journaled ({reply:?}): {journal}"
+        ));
+    }
+    kernel.restart_editor()?;
+    let shown = cmd("p 1");
+    let restored = edit_session::restored().unwrap_or_default();
+    if !shown.contains(MARKER) || restored.contains("could not") || restored.contains("did not") {
+        return Err(format!(
+            "edit: after a restart, {restored:?}; p 1: {shown:?}"
+        ));
+    }
+    let deleted = cmd("d 1");
+    if !deleted.starts_with("ok") {
+        return Err(format!("edit: d 1 said {deleted:?}"));
+    }
+    log!("edit: a killed app's taken edit was journaled and came back after a restart");
     Ok(())
 }
