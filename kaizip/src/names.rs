@@ -9,6 +9,24 @@ pub const MAX_NAME: usize = 1024;
 /// The longest part of a name, in bytes.
 pub const MAX_PART: usize = 255;
 
+/// `raw`, an entry's name as its bytes are, for a refusal that names it
+/// before it is checked: lossy, with control characters and the bidi
+/// controls (which reorder what follows) escaped, so a hostile name cannot
+/// break the message's line or make it read as another name.
+pub fn shown(raw: &[u8]) -> String {
+    let lossy = String::from_utf8_lossy(raw);
+    let mut out = String::with_capacity(lossy.len());
+    for ch in lossy.chars() {
+        let bidi = matches!(ch, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+        if ch.is_control() || bidi {
+            out.extend(ch.escape_debug());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
 /// `raw`, an entry's name, as a relative path of plain parts joined by `/`,
 /// without the trailing `/` that marks a folder; whether it was a folder.
 pub fn check(raw: &str, limits: &Limits) -> Result<(String, bool), Error> {

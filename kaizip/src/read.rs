@@ -113,7 +113,7 @@ impl<R: Read + Seek> Archive<R> {
         let mut total = 0u64;
         for index in 0..zip.len() {
             let data = zip.by_index_data(index).map_err(not_zip)?;
-            let raw = String::from_utf8_lossy(data.name_raw()).into_owned();
+            let raw = names::shown(data.name_raw());
             let name = data.name().map_err(not_zip)?;
             if data.encrypted() {
                 return Err(Error::Encrypted { name: raw });

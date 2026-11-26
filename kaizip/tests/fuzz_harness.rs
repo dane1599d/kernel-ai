@@ -23,9 +23,14 @@ fn the_zip_harness_returns_for_mutated_archives() {
     let mut maker = Maker::new(Cursor::new(Vec::new()), Limits::default());
     maker.folder("docs").unwrap();
     maker
-        .file("docs/a.txt", &mut &b"some text, some text, some text"[..])
+        .file(
+            "docs/a.txt",
+            &mut Cursor::new(b"some text, some text, some text"),
+        )
         .unwrap();
-    maker.file("b.bin", &mut &[0u8, 1, 2, 3, 255][..]).unwrap();
+    maker
+        .file("b.bin", &mut Cursor::new([0u8, 1, 2, 3, 255]))
+        .unwrap();
     let made = maker.finish().unwrap().into_inner();
     let raw = kit::archive(&[
         Raw::stored("x/y.txt", b"stored bytes"),
