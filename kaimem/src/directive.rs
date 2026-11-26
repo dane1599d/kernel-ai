@@ -182,7 +182,19 @@ pub fn problem(text: &str) -> Option<&'static str> {
             "a word mixes letters of different alphabets, as look-alike letters do, so that is not kept",
         );
     }
-    let found: Vec<&'static str> = readings
+    // Each reading also as its look-alike skeleton (H6-7) and with a hyphen
+    // that splits a listed word taken out (H6-6).
+    let mut read_as: Vec<String> = Vec::new();
+    for folded in &readings {
+        let skeleton = skeleton(folded);
+        let joined = joined(&skeleton);
+        for text in [folded.clone(), skeleton, joined] {
+            if !read_as.contains(&text) {
+                read_as.push(text);
+            }
+        }
+    }
+    let found: Vec<&'static str> = read_as
         .iter()
         .flat_map(|folded| [View::Hosts, View::Parts].map(|view| verdict(folded, view)))
         .chain([verdict(&before, View::AsBefore)])
@@ -250,7 +262,7 @@ fn acts_at(words: &[String], at: usize) -> bool {
     let word = words[at].as_str();
     let next = words.get(at + 1).map(String::as_str);
     let after = words.get(at + 2).map(String::as_str);
-    if ACTIONS.iter().any(|a| word.starts_with(a)) {
+    if is_action(word) {
         return true;
     }
     if word.starts_with("ping") && next != Some("pong") {
@@ -260,6 +272,23 @@ fn acts_at(words: &[String], at: usize) -> bool {
         return true;
     }
     word.starts_with("look") && next == Some("up") && after != Some("to")
+}
+
+/// Whether `word` is a form of an [`ACTIONS`] verb: the verb and its -s and
+/// -ed forms, and for a verb ending in "e" its -ing, noun and -al forms too
+/// ("deleting", "deletion", "wiping", "removal", "erasure"). "tuna" and
+/// "tunnel" are no tuning (bug-hunt-6 H6-4).
+fn is_action(word: &str) -> bool {
+    ACTIONS.iter().any(|a| {
+        word.starts_with(a)
+            || a.strip_suffix('e').is_some_and(|stem| {
+                word.strip_prefix(stem).is_some_and(|rest| {
+                    ["ing", "ion", "al", "ure"]
+                        .iter()
+                        .any(|ending| rest.starts_with(ending))
+                })
+            })
+    })
 }
 
 /// Whether `words` vouch for something, at an occurrence not turned round by a
@@ -344,6 +373,14 @@ fn fold_char(c: char) -> Option<char> {
         // Dots that read as one: one-dot leader, halfwidth and ideographic full
         // stops, small full stop.
         0x2024 | 0xff61 | 0x3002 | 0xfe52 => Some('.'),
+        // Dashes that read as a hyphen: hyphen, non-breaking hyphen, figure
+        // and other dashes, minus, small and small-form hyphen-minus (H6-6).
+        0x2010..=0x2015 | 0x2212 | 0xfe58 | 0xfe63 => Some('-'),
+        // A precomposed accented Latin letter is its base letter, as the
+        // same letter with a combining mark is; so are the look-alikes
+        // dotless i, long s, kra and the click letter (H6-5).
+        0x00c0..=0x017f => latin_base(c).or(Some(c)),
+        0x01c0 => Some('l'),
         // Mathematical letters: styles of 52 letters, A to Z then a to z.
         0x1d400..=0x1d6a3 => {
             let at = (code - 0x1d400) % 52;
@@ -366,6 +403,119 @@ fn fold_char(c: char) -> Option<char> {
         0xfe20..=0xfe2f => None,
         _ => Some(c),
     }
+}
+
+/// The base letters of U+00C0..U+00FF and U+0100..U+017F, in order; `?` for
+/// a letter that is no accented one (Æ, ß, Þ, Œ, Ĳ, ×, ÷).
+const LATIN_BASES: &str = concat!(
+    "AAAAAA?CEEEEIIIIDNOOOOO?OUUUUY??",
+    "aaaaaa?ceeeeiiiidnooooo?ouuuuy?y",
+    "AaAaAaCcCcCcCcDdDdEeEeEeEeEeGgGgGgGgHhHhIiIiIiIiIi??JjKkkLlLlLlLlLl",
+    "NnNnNnnNnOoOoOo??RrRrRrSsSsSsSsTtTtTtUuUuUuUuUuUuWwYyYZzZzZzs",
+);
+
+/// `c`'s base letter, if it is an accented or look-alike Latin letter.
+fn latin_base(c: char) -> Option<char> {
+    let at = (c as u32).checked_sub(0xc0)? as usize;
+    LATIN_BASES
+        .as_bytes()
+        .get(at)
+        .filter(|b| **b != b'?')
+        .map(|b| char::from(*b))
+}
+
+/// Cyrillic, Greek and Armenian letters that look like a Latin one, and the
+/// letter they look like (H6-7). Real Russian or Greek text does not spell
+/// a listed English word with them.
+const LOOK_ALIKES: &[(char, char)] = &[
+    ('\u{430}', 'a'),
+    ('\u{435}', 'e'),
+    ('\u{43e}', 'o'),
+    ('\u{440}', 'p'),
+    ('\u{441}', 'c'),
+    ('\u{443}', 'y'),
+    ('\u{445}', 'x'),
+    ('\u{442}', 't'),
+    ('\u{43a}', 'k'),
+    ('\u{455}', 's'),
+    ('\u{456}', 'i'),
+    ('\u{457}', 'i'),
+    ('\u{458}', 'j'),
+    ('\u{4bb}', 'h'),
+    ('\u{4cf}', 'l'),
+    ('\u{501}', 'd'),
+    ('\u{51b}', 'q'),
+    ('\u{51d}', 'w'),
+    ('\u{3b1}', 'a'),
+    ('\u{3b9}', 'i'),
+    ('\u{3ba}', 'k'),
+    ('\u{3bd}', 'v'),
+    ('\u{3bf}', 'o'),
+    ('\u{3c1}', 'p'),
+    ('\u{3c4}', 't'),
+    ('\u{3c5}', 'u'),
+    ('\u{3c7}', 'x'),
+    ('\u{570}', 'h'),
+    ('\u{578}', 'n'),
+    ('\u{57d}', 'u'),
+    ('\u{585}', 'o'),
+];
+
+/// `folded` with every look-alike letter as the Latin one it looks like: a
+/// word made only of look-alikes ("\u{51d}\u{456}\u{440}\u{435}") reads as the
+/// English word, as the model reads it.
+fn skeleton(folded: &str) -> String {
+    folded
+        .chars()
+        .map(|c| {
+            LOOK_ALIKES
+                .iter()
+                .find(|(alike, _)| *alike == c)
+                .map_or(c, |(_, latin)| *latin)
+        })
+        .collect()
+}
+
+/// `folded` with a hyphen inside a word taken out where that makes a listed
+/// word the part before it is not: "re-start", "per-mitted", "tr-usts". A
+/// hyphen whose first part is already listed stays, so "ping-pong" is the
+/// game it was.
+fn joined(folded: &str) -> String {
+    let chars: Vec<char> = folded.chars().collect();
+    let run = |range: &mut dyn Iterator<Item = usize>| -> String {
+        range
+            .take_while(|&i| chars[i].is_alphanumeric())
+            .map(|i| chars[i])
+            .collect()
+    };
+    let mut out = String::new();
+    for (at, &c) in chars.iter().enumerate() {
+        if c == '-' && at > 0 {
+            let mut left: Vec<char> = run(&mut (0..at).rev()).chars().collect();
+            left.reverse();
+            let left: String = left.into_iter().collect();
+            let right = run(&mut (at + 1..chars.len()));
+            if !left.is_empty()
+                && !right.is_empty()
+                && listed(&format!("{left}{right}"))
+                && !listed(&left)
+            {
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Whether `word` starts a listed word: an action, a network verb, a vouch or
+/// a permission.
+fn listed(word: &str) -> bool {
+    is_action(word)
+        || word.starts_with("ping")
+        || word.starts_with("resolv")
+        || VOUCH_STEMS.iter().any(|stem| word.starts_with(stem))
+        || PERMITS.contains(&word)
 }
 
 /// Whether a word mixes ASCII letters with letters of another alphabet: a
@@ -467,4 +617,29 @@ fn words_as_before(text: &str) -> Vec<String> {
         .filter(|w| !w.is_empty())
         .map(String::from)
         .collect()
+}
+
+#[cfg(test)]
+mod latin_tests {
+    #[test]
+    fn the_latin_bases_cover_both_blocks_in_order() {
+        assert_eq!(super::LATIN_BASES.len(), 0x180 - 0xc0);
+        for (c, base) in [
+            ('\u{c0}', Some('A')),
+            ('\u{e9}', Some('e')),
+            ('\u{fa}', Some('u')),
+            ('\u{ff}', Some('y')),
+            ('\u{df}', None),
+            ('\u{100}', Some('A')),
+            ('\u{131}', Some('i')),
+            ('\u{138}', Some('k')),
+            ('\u{142}', Some('l')),
+            ('\u{153}', None),
+            ('\u{161}', Some('s')),
+            ('\u{17e}', Some('z')),
+            ('\u{17f}', Some('s')),
+        ] {
+            assert_eq!(super::latin_base(c), base, "{c:?}");
+        }
+    }
 }
