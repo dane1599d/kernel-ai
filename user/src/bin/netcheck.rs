@@ -36,6 +36,10 @@
 //!   left. It sends those 8 KiB, and once the echo is back, a receive, a
 //!   further send and a new connect are each refused with Permission, the
 //!   echo left unread (bug hunt 5's H5-18).
+//! - `stream=budget-end`: its `NetDest` is an agent's, with 8 bytes of the
+//!   day left. It sends `bye\n`, which the echo server sends back and then
+//!   closes; reading it spends the day, and a receive once the stream ended
+//!   still gives 0, not Permission, while a send is refused (#1433's review).
 
 #![no_std]
 #![no_main]
@@ -167,6 +171,7 @@ fn main() -> i32 {
             "revoke" => stream_revoke(dest, port),
             "replace" => stream_replace(dest, port),
             "budget" => stream_budget(dest, port),
+            "budget-end" => stream_budget_end(dest, port),
             _ => Err(format!("no stream mode {mode}")),
         };
         return match result {
@@ -234,6 +239,8 @@ fn main() -> i32 {
 
 const SERVER: [u8; 4] = [10, 0, 2, 2];
 const WAIT_MS: u64 = 10_000;
+/// The line after which xtask's echo server closes the stream.
+const BYE: &[u8] = b"bye\n";
 /// `stream=revoke`'s wait for the kernel's revoke: NET_POLL's longest.
 const REVOKE_WAIT_MS: u64 = 60_000;
 
@@ -459,6 +466,52 @@ fn stream_replace(dest: Handle, port: u16) -> Result<(), String> {
     println!(
         "17 streams were each refused a HANDLE_REPLACE, wider or with an undefined bit, which closed them: none was Busy"
     );
+    Ok(())
+}
+
+/// `stream=budget-end`: see the module's comment. The kernel left `dest`'s
+/// day exactly 8 bytes: `bye\n` out and back.
+fn stream_budget_end(dest: Handle, port: u16) -> Result<(), String> {
+    let stream = open(dest, port, 0)?;
+    match sys::net_send(stream, BYE) {
+        Ok(n) if n == BYE.len() => {}
+        other => return Err(format!("sending bye gave {other:?}")),
+    }
+    let mut back = alloc::vec::Vec::new();
+    let mut buf = [0u8; 4096];
+    while back.len() < BYE.len() {
+        let state = sys::net_poll(stream, kabi::net::STREAM_READABLE, WAIT_MS)
+            .map_err(|e| format!("poll: {e:?}"))?;
+        if state & kabi::net::STREAM_READABLE == 0 {
+            return Err(format!(
+                "the echo of bye never came back (state {state:#x})"
+            ));
+        }
+        match sys::net_recv(stream, &mut buf) {
+            Ok(n) => back.extend_from_slice(&buf[..n]),
+            other => return Err(format!("reading the echo of bye gave {other:?}")),
+        }
+    }
+    if back != BYE {
+        return Err(format!("the echo of bye was {back:?}"));
+    }
+    let state = sys::net_poll(stream, kabi::net::STREAM_CLOSED, WAIT_MS)
+        .map_err(|e| format!("poll: {e:?}"))?;
+    if state & kabi::net::STREAM_CLOSED == 0 {
+        return Err(format!("the server never closed (state {state:#x})"));
+    }
+    let ended = sys::net_recv(stream, &mut buf);
+    if ended != Ok(0) {
+        return Err(format!(
+            "a receive on an ended stream past the day's bytes gave {ended:?}"
+        ));
+    }
+    let sent = sys::net_send(stream, b"x");
+    if sent != Err(Error::Permission) {
+        return Err(format!("a send past the day's bytes gave {sent:?}"));
+    }
+    sys::net_close(stream).map_err(|e| format!("close: {e:?}"))?;
+    println!("past its day's bytes, a receive on an ended stream gave 0 and a send was refused");
     Ok(())
 }
 

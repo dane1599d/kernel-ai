@@ -114,6 +114,10 @@ pub(super) const CASES: &[TestCase] = &[
             // refused a receive, not only a send and a connect.
             "[netstream-e] past its day's bytes, a receive, a send and a connect were each refused, the echo left unread",
             "net-stream: an agent's NetDest past its day's bytes was refused a receive, a send and a connect, and counted nothing past its budget",
+            // #1433's review: past the day's bytes, an ended stream still
+            // gives 0, not Permission.
+            "[netstream-f] past its day's bytes, a receive on an ended stream gave 0 and a send was refused",
+            "net-stream: past its day's bytes, a receive on an ended stream gave 0, not Permission",
             // H5-19: a connect skips a port a live stream holds.
             "net-stream: with the port counter come round to a live stream's port ",
         ],
@@ -134,6 +138,7 @@ pub(super) const CASES: &[TestCase] = &[
             "net-stream: a revoke aborted the 3 streams on a granted NetDest and its narrowing at once; each use after answered Revoked",
             "net-stream: a refused HANDLE_REPLACE closed the stream with its handle: 17 in a row never met the limit of 16",
             "net-stream: an agent's NetDest past its day's bytes was refused a receive, a send and a connect, and counted nothing past its budget",
+            "net-stream: past its day's bytes, a receive on an ended stream gave 0, not Permission",
             "net-stream: with the port counter come round to a live stream's port ",
         ],
         ..case("net-stream-polled", "test=net-stream")
