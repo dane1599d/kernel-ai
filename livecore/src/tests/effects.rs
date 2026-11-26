@@ -286,6 +286,23 @@ fn a_faulting_or_overspending_call_keeps_nothing_and_the_version_reloads() {
     assert_eq!((ledger.counters.faults, ledger.counters.restarts), (2, 2));
 }
 
+/// Faults on calls that are not requests count toward the restarts as a
+/// request's do: the fourth within a minute is an `Exit`, which comphost's
+/// `serve_shown` ends on, since the host is left between modes.
+#[test]
+fn a_call_that_is_not_a_request_faulting_four_times_in_a_minute_ends_the_host() {
+    let _guard = alone();
+    let kernel = kernel(&[A]);
+    let mut host = host_with(&kernel, 10, "version=a probation_calls=3 probation_ms=0");
+    for _ in 0..3 {
+        assert_eq!(ui_call(&mut host, b"poison"), None);
+    }
+    let exit = host
+        .serve_with(|instance| instance.handle(b"poison"))
+        .unwrap_err();
+    assert_eq!(exit.code, crate::host::EXIT_RESTARTS);
+}
+
 #[test]
 fn during_probation_a_read_on_the_candidate_commits_nothing() {
     let _guard = alone();

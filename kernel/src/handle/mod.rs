@@ -46,6 +46,7 @@ static HANDLES: [Mutex<Option<Handles>>; MAX_PROCESSES] =
 /// interrupts off (`shm::collect`, the NetDest sweep) never spin on a lock
 /// whose holder cannot run (audit K #8, #10). Nothing that sleeps runs under it.
 pub(crate) fn lock(slot: usize) -> Locked<'static> {
+    crate::threads::ready::not_in_ready(&"a handle table");
     crate::threads::preempt_disable();
     Locked {
         guard: ManuallyDrop::new(HANDLES[slot].lock()),
@@ -107,6 +108,12 @@ pub fn names(kind: Kind, object: u64) -> bool {
 /// The entry `handle` names in `slot`'s table.
 pub fn entry(slot: usize, handle: kabi::handle::Handle) -> Result<Entry, kabi::Error> {
     with(slot, |h| h.table.get(handle).copied())?.map_err(kabi::Error::from)
+}
+
+/// [`entry`] for a call that uses the handle: Revoked once the grant node it
+/// was given under is.
+pub fn live_entry(slot: usize, handle: kabi::handle::Handle) -> Result<Entry, kabi::Error> {
+    with(slot, |h| h.table.live(handle, &grant::Kernel))?.map_err(kabi::Error::from)
 }
 
 /// Services routes can name: the id of a route's service is its index here, plus 1.

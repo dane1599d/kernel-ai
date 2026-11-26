@@ -8,8 +8,9 @@
 //!   trusted layer, are never made `background`, and their quota is never set
 //!   below what they have;
 //! - no quota is raised past the global admission rule: every live process's
-//!   quota adds up to at most the budget (free / 2 at boot), so the kernel's
-//!   own half of memory is never promised away;
+//!   quota, or what it holds when that is more (a quota lowered under it),
+//!   adds up to at most the budget (free / 2 at boot), so the kernel's own
+//!   half of memory is never promised away;
 //! - a system service, one holding a capability of the running system
 //!   ([`SYSTEM_CAPS`]: the terminal's TERM, `fs`'s PARTITION and the like), is
 //!   never made `background`, so it keeps its CPU share under every profile.
@@ -72,15 +73,11 @@ pub fn quota_set_with(pid: u64, pages: u64, flags: u64) -> Result<u64, Error> {
             return Err(Error::Permission);
         }
         if pages > old {
-            let committed: u64 = table
-                .iter()
-                .filter(|p| p.live())
-                .map(|p| p.limits.max_pages)
-                .sum();
-            // The others' quotas include none of this one's, and the
-            // comparison never adds `pages`, so no size of it can overflow.
-            let others = committed.saturating_sub(old);
-            if pages > super::page_budget().saturating_sub(others) {
+            // This one counts as the larger of its quota and what it holds,
+            // read once; the others' sum leaves it out, and the comparison
+            // never adds `pages`, so no size of it can overflow.
+            let others = super::committed_but(table, Some(at));
+            if pages.max(super::held(at)) > super::page_budget().saturating_sub(others) {
                 return Err(Error::NoMemory);
             }
         }

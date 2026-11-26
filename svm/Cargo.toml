@@ -1,0 +1,12 @@
+[package]
+name = "svm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# AMD SVM's data, without std and with no OS in it (ADR 0006 item 2): the VMCB
+# layout, exit codes, intercept sets, EVENTINJ and NPT entries, tested on the
+# host. The kernel's `vm` module (ADR 0006 item 3) runs it.
+[lib]
+doctest = false

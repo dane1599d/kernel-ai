@@ -45,6 +45,12 @@ impl<D: BlockDev> Fs<D> {
         self.undo_scan(undo_key(self.active, 0, 0), None)
     }
 
+    /// The active volume's UNDO records of actions committed after `txn`,
+    /// oldest first: those before it are never read.
+    pub fn undo_records_after(&mut self, txn: u64) -> Result<Vec<Undo>, Error> {
+        self.undo_scan(undo_key(self.active, txn.saturating_add(1), 0), None)
+    }
+
     /// The active volume's UNDO records as stored, undecoded: each action's
     /// parts with their numbers. For repair, which drops the ones that do not
     /// hold.
@@ -127,11 +133,14 @@ impl<D: BlockDev> Fs<D> {
         self.action
     }
 
-    /// Drops everything since the last commit, an open action and a running GC
-    /// pass with it: the allocator and the volumes are read again from the newest
-    /// commit on the disk, as a mount reads them. The `Fs` stays where it is, so a
-    /// server holding it needs nothing moved; after an I/O error mid-operation,
-    /// this is how the transaction is dropped. The volume calls act on is kept.
+    /// Drops everything since the last commit, an open action with it: the
+    /// allocator and the volumes are read again from the newest commit on the
+    /// disk, as a mount reads them. The `Fs` stays where it is, so a server
+    /// holding it needs nothing moved; after an I/O error mid-operation, this is
+    /// how the transaction is dropped. The volume calls act on is kept, and so is
+    /// a running GC pass: it marks from a commit at or before the one read, and
+    /// every transaction since, the dropped one too, kept what it may still read
+    /// (bug hunt 5, H5-7).
     ///
     /// Returns the generation it read. That is the last commit, or the one an
     /// error interrupted if that one had landed whole (an error after a
@@ -155,12 +164,11 @@ impl<D: BlockDev> Fs<D> {
         }
         self.io.alloc = loaded.alloc;
         self.io.txn = sb.generation + 1;
-        self.io.gc_pin = 0;
+        self.io.gc_pin = self.gc.as_ref().map_or(0, |gc| gc.generation);
         self.io.deferred.clear();
         self.volumes = loaded.volumes;
         self.vols = loaded.vols;
         self.action = None;
-        self.gc = None;
         self.committed = sb.generation;
         if !self.vols.contains_key(&self.active) {
             self.active = loaded.active;

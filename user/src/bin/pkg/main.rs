@@ -161,7 +161,9 @@ static KNOWN: spin::Mutex<(Vec<Index>, Vec<Index>)> = spin::Mutex::new((Vec::new
 /// Apps sheet's `catalog <offset>` (P4 task 3) and `cc build`'s `local`
 /// requests (P4 task 13, [`local`]). Every handle a request moved is closed
 /// once it is answered, and an answer is at most one message. With no `serve`
-/// in its plan line it idles.
+/// in its plan line it idles. Any other receive that fails is tried again a
+/// second later: the supervisor restarts a service that exited, never one
+/// that idles (H3-12).
 fn serve(mut answer: impl FnMut(&str, &[Handle], u64) -> String) -> ! {
     let mut request = [0u8; kaipkg::local::MAX_REQUEST];
     loop {
@@ -192,6 +194,12 @@ fn serve(mut answer: impl FnMut(&str, &[Handle], u64) -> String) -> ! {
                 }
             }
             Err(Error::TimedOut) => {}
+            // NoMemory copying a queued request, say: one receive gone
+            // wrong, not the end of serving.
+            Err(why) if kaipkg::local::serves_on(why) => {
+                println!("pkg: a receive failed: {why:?}");
+                sys::sleep_ms(1_000);
+            }
             Err(_) => idle(),
         }
     }

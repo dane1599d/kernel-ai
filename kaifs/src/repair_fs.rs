@@ -242,10 +242,10 @@ mod tests {
     use crate::check::check;
     use crate::fs::HOME;
     use crate::io::Meta;
-    use crate::items::ROOT;
+    use crate::items::{K_DATA, ROOT};
     use crate::ns_check::check_namespace;
-    use crate::tree::Tree;
-    use crate::vol::{encode_undo, undo_key};
+    use crate::tree::{Key, Tree};
+    use crate::vol::{encode_snapshot, encode_undo, snap_key, undo_key};
     use crate::{BLOCK, MemDisk};
     use alloc::rc::Rc;
     use alloc::vec;
@@ -434,5 +434,101 @@ mod tests {
         assert!(lines[0].starts_with("home: the live tree does not check"));
         assert!(lines[0].ends_with("rebuilt from its items"));
         assert_eq!(digest(&mut fs), before);
+    }
+
+    /// The object id `name` names in the root.
+    fn ino(fs: &mut Fs<MemDisk>, name: &str) -> u64 {
+        fs.lookup(ROOT, name).unwrap().unwrap().ino
+    }
+
+    /// The first block of the record `ino`'s data item at 0 names.
+    fn record_at_0(fs: &mut Fs<MemDisk>, ino: u64) -> u64 {
+        let raw = fs.get_raw(&Key::new(ino, K_DATA, 0)).unwrap().unwrap();
+        record_of(&raw).unwrap().0.addr
+    }
+
+    /// `populated()`, with file 58's data item naming file 59's record, as an
+    /// allocator used twice can leave; the two files' object ids, and what
+    /// file 59 reads.
+    fn sharing() -> (Fs<MemDisk>, u64, u64, Vec<u8>) {
+        let mut fs = populated();
+        // Over what an item holds inline: both are records.
+        let (a, b) = (ino(&mut fs, "file 58"), ino(&mut fs, "file 59"));
+        let raw = fs.get_raw(&Key::new(b, K_DATA, 0)).unwrap().unwrap();
+        let bytes = fs.read_file(b).unwrap();
+        fs.set(Key::new(a, K_DATA, 0), raw).unwrap();
+        fs.commit().unwrap();
+        assert_eq!(record_at_0(&mut fs, a), record_at_0(&mut fs, b));
+        (fs, a, b, bytes)
+    }
+
+    /// Two files whose data items name one record (bug hunt 5, H5-14): the
+    /// rebuilt tree gives the second a copy in a record of its own, so each
+    /// block is named once, both read what they read before, and a second
+    /// repair finds nothing.
+    #[test]
+    fn two_items_naming_one_record_each_get_their_own() {
+        let (fs, a, b, bytes) = sharing();
+        let (mut fs, lines) = repaired(fs);
+        let copied = format!("home: file {b}: data at 0 given a record of its own");
+        assert!(lines.contains(&copied), "{lines:#?}");
+        assert_ne!(record_at_0(&mut fs, a), record_at_0(&mut fs, b));
+        assert_eq!(fs.read_file(a).unwrap(), bytes);
+        assert_eq!(fs.read_file(b).unwrap(), bytes);
+    }
+
+    /// The same on a disk filled to its reserve (bug hunt 5, H5-14): a copy
+    /// may not take what the rebuild and its commit need, so the second item
+    /// is dropped instead, and the repair still commits.
+    #[test]
+    fn an_item_sharing_a_record_is_dropped_when_a_copy_would_take_the_reserve() {
+        let (mut fs, a, b, bytes) = sharing();
+        // Blocks held by nothing, down to the reserve: the GC's. A commit
+        // gives back what the one before it freed, so fill until one does not.
+        fs.freeing(|fs| {
+            loop {
+                while fs.io.alloc.free_blocks() > fs.io.alloc.reserve() {
+                    fs.io.alloc.alloc(0).unwrap();
+                }
+                fs.commit().unwrap();
+                if fs.io.alloc.free_blocks() <= fs.io.alloc.reserve() {
+                    break;
+                }
+            }
+        });
+        let (mut fs, lines) = repaired(fs);
+        let what = "data in a record another item names (no room for a copy)";
+        let dropped = format!("home: file {b}: dropped {what} at 0");
+        assert!(lines.contains(&dropped), "{lines:#?}");
+        assert!(fs.get_raw(&Key::new(b, K_DATA, 0)).unwrap().is_none());
+        assert_eq!(fs.read_file(a).unwrap(), bytes);
+    }
+
+    /// A snapshot whose root names a node at the last address there is (bug
+    /// hunt 5, H5-15): check refuses it, and repair drops it without working
+    /// out where that node's run would end.
+    #[test]
+    fn a_snapshot_rooted_past_the_disk_is_dropped() {
+        let mut fs = populated();
+        let root = BlockPtr {
+            addr: u64::MAX,
+            birth: 1,
+            blocks: 1,
+            kind: format::KIND_NODE,
+            level: 0,
+            flags: 0,
+            csum: [0; 32],
+        };
+        let snap = Snap::named(root, fs.committed, fs.next_oid());
+        let key = snap_key(HOME, 1_000);
+        fs.volumes
+            .insert(key, encode_snapshot(&snap), &mut Meta(&mut fs.io))
+            .unwrap();
+        fs.commit().unwrap();
+        let (fs, lines) = repaired(fs);
+        assert_eq!(lines.len(), 1, "{lines:#?}");
+        let dropped = "home: snapshot 1000 does not check";
+        assert!(lines[0].starts_with(dropped), "{lines:#?}");
+        assert!(!fs.snapshots().contains_key(&1_000));
     }
 }
