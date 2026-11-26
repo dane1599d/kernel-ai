@@ -421,6 +421,13 @@ fn stop_negates_only_an_action_in_its_clause() {
         &ROWS,
     )[0];
     assert_eq!(decision.why, Why::NoUndo, "{decision:?}");
+    // "running" in the next sentence is no verb of the stop (#1467 review).
+    let decision = decide(
+        "Stop! Running the miner is fine, leave it.",
+        &one("service_stop", "name", "miner"),
+        &ROWS,
+    )[0];
+    assert_eq!(decision.why, Why::Added, "{decision:?}");
     // The #1460 review: only "running" is the row's own verb. Any other -ing
     // word after it negates, so the call is one the model added and no
     // standing rule ("Always allow process_stop") runs it without a card.
