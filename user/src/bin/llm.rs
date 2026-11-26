@@ -290,7 +290,7 @@ fn main() -> i32 {
                 pid: caller.caller_pid,
                 badge: caller.badge,
             };
-            let mut reply = agent_command(&mut backends, from, text);
+            let mut reply = agent_command(&mut backends.jobs, from, text);
             reply.truncate(reply.floor_char_boundary(kabi::MAX_MESSAGE));
             if let Err(error) = sys::svc_reply(reply.as_bytes()) {
                 println!("svc_reply failed: {error:?}");
@@ -442,7 +442,7 @@ fn now() -> Now {
 /// Answers an `agent-*` command from the route with `badge` (F3 slice 2a). Its
 /// prompt's tokens are estimated from its bytes, for the scheduler's checks; what
 /// it really took is charged when it has run.
-fn agent_command(backends: &mut Backends, caller: Caller, text: &str) -> String {
+fn agent_command(jobs: &mut Jobs, caller: Caller, text: &str) -> String {
     let command = match jobs::parse(text) {
         Ok(Some(command)) => command,
         Ok(None) => return format!("err unknown request {text:?}"),
@@ -459,9 +459,7 @@ fn agent_command(backends: &mut Backends, caller: Caller, text: &str) -> String 
         ),
         _ => (0, 0),
     };
-    backends
-        .jobs
-        .handle(caller, command, prompt, max_new, now())
+    jobs.handle(caller, command, prompt, max_new, now())
 }
 
 /// The most an agent's `act`, `ask` and `script` answers are counted at before they
@@ -474,9 +472,11 @@ const AGENT_SCRIPT_TOKENS: u32 = 1024;
 const AGENT_POLL_NS: u64 = 50_000_000;
 
 /// Runs the next agent job, whole, while no request waits (F3 slice 2a). On the
-/// local model it asks every [`AGENT_POLL_NS`] whether a request came; one that did
-/// stops it, is answered next, and the job starts again from its prompt in a later
-/// idle turn, exactly (ADR 0013 section 2). `Some(len)` when a request came.
+/// local model it asks every [`AGENT_POLL_NS`] whether a request came. Agents'
+/// commands, `warm` and `health` are answered at once and the job goes on; the
+/// person's request, or the job's own `agent-stop`, stops it, is answered next,
+/// and the job starts again from its prompt in a later idle turn, exactly (ADR
+/// 0013 section 2; [`jobs::while_job`]). `Some(len)` when such a request came.
 fn run_agent_job(
     backends: &mut Backends,
     request: &mut [u8],
@@ -485,15 +485,36 @@ fn run_agent_job(
     stale: &mut bool,
 ) -> Option<usize> {
     let (ticket, job) = backends.jobs.next_job()?;
-    let (kind, queued) = (job.kind, job.queued?);
+    let (kind, queued, owner) = (job.kind, job.queued?, job.badge);
     let text = format!("{} {}", kind.word(), job.request);
+    let local = matches!(backends.local, Some(Ok(_)));
+    let mut response = vec![0u8; http::MAX_RESPONSE];
+    // Only the local model polls. While it runs, `health` is answered from what
+    // it said as the job started, and agents' commands from the jobs, moved out
+    // of `backends` for the run.
+    let health_now = match local {
+        true => match health(backends, &mut response) {
+            Ok(text) => format!("ok {text}"),
+            Err(error) => format!("err {}", script::error_line(&error, MAX_ERROR_CHARS)),
+        },
+        false => String::new(),
+    };
+    let mut jobs = core::mem::replace(
+        &mut backends.jobs,
+        Jobs::new(agentsched::Config::default(), 0),
+    );
     let mut came = None;
     let mut polled = 0;
     let mut stop = || {
         let at = sys::time_ns();
         if came.is_none() && at.saturating_sub(polled) >= AGENT_POLL_NS {
             polled = at;
-            request_came(request, caller, &mut came);
+            let running = Running {
+                ticket,
+                owner,
+                health: &health_now,
+            };
+            job_poll(request, caller, &mut came, &mut jobs, &running);
         }
         came.is_some()
     };
@@ -502,13 +523,12 @@ fn run_agent_job(
     if let Some(Ok(local)) = &mut backends.local {
         local.forget_used();
     }
-    let local = matches!(backends.local, Some(Ok(_)));
-    let mut response = vec![0u8; http::MAX_RESPONSE];
     let answer = match kind {
         jobs::Kind::Script => agent_script(backends, &text, &mut response, &mut stop),
         jobs::Kind::Ask => agent_ask(backends, &text, &mut response, &mut stop),
         jobs::Kind::Act => agent_act(backends, &text, &mut response, &mut stop),
     };
+    backends.jobs = jobs;
     // The script slot held the agent's prompt: it is warmed again first. An agent's
     // call also took the act slot, with no conversation: the person's act prefix and
     // history are computed again before their next request.
@@ -655,6 +675,48 @@ fn warm_act(local: &mut local::Local, request: &mut [u8], caller: &mut RecvInfo)
         println!("local: the act prefix was not cached: {why}");
     }
     came
+}
+
+/// The agent job a request that came may stop, and what `health` says meanwhile.
+struct Running<'a> {
+    ticket: u64,
+    owner: u64,
+    health: &'a str,
+}
+
+/// One request, if any came, while agent job `running` runs: answered at once
+/// unless [`jobs::while_job`] says it stops the job, which then leaves it in
+/// `request` (its length in `came`) for the main loop (bug hunt #19).
+fn job_poll(
+    request: &mut [u8],
+    caller: &mut RecvInfo,
+    came: &mut Option<usize>,
+    jobs: &mut Jobs,
+    running: &Running<'_>,
+) {
+    *came = recv(request, 1, caller).ok();
+    let Some(len) = *came else {
+        return;
+    };
+    let text = core::str::from_utf8(&request[..len.min(request.len())]).unwrap_or("");
+    if jobs::while_job(caller.badge, text, running.ticket, running.owner) == jobs::WhileJob::Stop {
+        return;
+    }
+    let from = Caller {
+        pid: caller.caller_pid,
+        badge: caller.badge,
+    };
+    let mut reply = match text.split([' ', '\n']).next().unwrap_or("") {
+        _ if !jobs::may_serve(caller.badge, text) => String::from(jobs::AGENTS_USE_JOBS),
+        "warm" => String::from("ok no"),
+        "health" => String::from(running.health),
+        _ => agent_command(jobs, from, text),
+    };
+    reply.truncate(reply.floor_char_boundary(kabi::MAX_MESSAGE));
+    if let Err(error) = sys::svc_reply(reply.as_bytes()) {
+        println!("svc_reply failed: {error:?}");
+    }
+    *came = None;
 }
 
 /// Whether a request came while a warm-up computes, which then stops and leaves

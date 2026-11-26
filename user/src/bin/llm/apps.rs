@@ -14,7 +14,8 @@ use user::println;
 #[derive(Default)]
 pub struct Apps {
     rows: AppRows,
-    /// (app, its answer's `version` line) of the last request's apps.
+    /// (app, its answer's `version` line) of the last request's apps, sorted
+    /// by app (`apps::key`).
     key: Vec<(String, String)>,
 }
 
@@ -31,13 +32,8 @@ impl Apps {
             println!("llm: the request's apps are malformed; keeping the last");
             return None;
         };
-        let key: Vec<(String, String)> = entries
-            .iter()
-            .map(|(app, answer)| {
-                let head = answer.lines().next().unwrap_or("");
-                (String::from(*app), String::from(head))
-            })
-            .collect();
+        // In any order: the same set of (app, version) keeps the grammar.
+        let key = apps::key(&entries);
         if key == self.key {
             return None;
         }
