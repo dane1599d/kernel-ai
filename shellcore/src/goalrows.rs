@@ -110,6 +110,26 @@ impl GoalBook {
         });
     }
 
+    /// Room for one more goal at `goals`, which keeps at most
+    /// [`goalcore::MAX_GOALS`] unfinished: checked before the person is asked,
+    /// and again before the yes grants a ceiling, so `goal-add` is not refused
+    /// after it (bug-hunt-6 H6-25). A goal here running or paused may still be
+    /// unfinished there; every other state has ended.
+    fn room(&self) -> Result<(), String> {
+        let unfinished = self
+            .goals
+            .iter()
+            .filter(|g| matches!(g.state, "running" | "paused"))
+            .count();
+        match unfinished < goalcore::MAX_GOALS {
+            true => Ok(()),
+            false => Err(format!(
+                "{} goals are running or paused; cancel one first",
+                goalcore::MAX_GOALS
+            )),
+        }
+    }
+
     pub(crate) fn goal(&mut self, id: u64) -> Result<&mut Kept, String> {
         self.goals
             .iter_mut()
@@ -167,6 +187,9 @@ impl Shell {
 
     /// `goal_set`: the spec checked, then the one ask with its approval.
     fn goal_set(&mut self, id: u64, request: &str, values: &[(&'static str, String)]) -> Reply {
+        if let Err(why) = self.goal_book.room() {
+            return Reply::err(format!("no goal set: {why}"));
+        }
         // The scope is the person's line's, never the model's arguments'.
         let spec = match self.goal_spec(request, values) {
             Ok(spec) => spec,
@@ -340,6 +363,10 @@ asked first: a goal row always asks",
         // Goal ids are never used twice, across restarts too: the log keeps
         // every goal this shell set.
         let goal = self.goal_book.next_goal.max(self.last_logged_goal() + 1);
+        // Goals set while this card was open may have taken the last place.
+        if let Err(why) = self.goal_book.room() {
+            return Reply::err(format!("no goal set: {why}"));
+        }
         let Ok(kai) = self.roster.caller(KAI_BADGE) else {
             return Reply::err("no goal set: the shell is not on its roster");
         };
