@@ -382,7 +382,14 @@ compose() {
     done
     # One PR that changes what the model sees per batch, so a fluency miss names
     # its PR without a split.
-    if gh pr diff $p --repo "$R" --name-only | grep -qE "$MODEL_PATHS"; then
+    # A diff that cannot be read fails closed: the PR counts as model input,
+    # or it would skip the fluency gate.
+    unreadable=""
+    files=$(gh pr diff $p --repo "$R" --name-only) || {
+      echo "  ! #$p: its diff could not be read; treated as changing what the model sees"
+      unreadable=1
+    }
+    if [ -n "$unreadable" ] || echo "$files" | grep -qE "$MODEL_PATHS"; then
       if [ -n "$model" ]; then
         echo "  - #$p changes what the model sees, and so does$model; left out until the next batch"
         skipped="$skipped$br "; model_heads="$model_heads $head"

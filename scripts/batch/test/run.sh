@@ -26,6 +26,11 @@ gone() { ! git -C "$T/origin.git" rev-parse -q --verify "refs/heads/$1" >/dev/nu
 # kill-on-merged: just after it), as a PC stop would.
 ff() { bash "$B/batch-ff.sh" "$@" > "$T/out" 2>&1 & echo $! > "$T/ffpid"; wait 2>/dev/null; }
 
+# sed -i differs between GNU and BSD: a temp file and mv work on both.
+edit_state() {  # sed script for $T/state/current-batch
+  sed "$1" "$T/state/current-batch" > "$T/state/current-batch.new" && mv "$T/state/current-batch.new" "$T/state/current-batch"
+}
+
 mkpr() {  # n branch base files...
   local n=$1 br=$2 b=$3 f; shift 3
   git -C "$T/work" checkout -q -B "$br" "origin/$b"
@@ -39,7 +44,7 @@ mkpr() {  # n branch base files...
 }
 
 setup() {
-  rm -rf "$T/origin.git" "$T/work" "$T/prs" "$T/state" "$T"/kill-* "$T/fluency-dispatches" "$T/list-fails" "$T/others" "$T/others-fail" "$T/fail-with" "$T/compile.log" "$T"/on-ci-wait-* "$T/ci-waits" "$T/on-fluency-wait" "$T/ready-hook" "$T/fluency-hook" "$T/on-ready" "$T/moved-head" "$T/edit-fails" "$T/ffpid"
+  rm -rf "$T/origin.git" "$T/work" "$T/prs" "$T/state" "$T"/kill-* "$T/fluency-dispatches" "$T/list-fails" "$T/others" "$T/others-fail" "$T/fail-with" "$T/compile.log" "$T"/on-ci-wait-* "$T/ci-waits" "$T/on-fluency-wait" "$T/ready-hook" "$T/fluency-hook" "$T/on-ready" "$T/moved-head" "$T/edit-fails" "$T/comment-fails" "$T/ffpid"
   git init -q --bare "$T/origin.git"
   git -C "$T/origin.git" symbolic-ref HEAD refs/heads/main
   git clone -q "$T/origin.git" "$T/work" 2>/dev/null
@@ -63,7 +68,7 @@ ff 1 2 3 4 5 7
 check "the first model PR goes in"            'has "  + #2 (feat/m1)"'
 check "a second model PR waits"               'has "  - #3 changes what the model sees, and so does #2"'
 check "its stacked child waits with it"       'has "  - #4 is stacked on a left-out PR"'
-check "the fluency gate ran once"             '[ "$(wc -l < "$T/fluency-dispatches")" = 1 ]'
+check "the fluency gate ran once"             '[ "$(wc -l < "$T/fluency-dispatches" | tr -d " ")" = 1 ]'
 check "dispatched with CI, before it is read" 'awk "/workflow run fluency-model/ && !w {w=NR} /run list .*--workflow ci.yml/ && !c {c=NR} END {exit !(w && c && w < c)}" "$T/gh.log"'
 check "main holds the tested batch"           'has "main fast-forwarded to the tested batch"'
 check "landed heads are deleted"              'gone feat/a && gone feat/m1'
@@ -76,7 +81,7 @@ touch "$T/kill-on-ready"; ff 3 4
 check "the stop leaves a green state"         'grep -q "^phase=green" "$T/state/current-batch"'
 ff --resume
 check "the resume lands both"                 'has "  #3: MERGED" && has "  #4: MERGED"'
-check "the resume did not re-run fluency"     '[ "$(wc -l < "$T/fluency-dispatches")" = 2 ]'
+check "the resume did not re-run fluency"     '[ "$(wc -l < "$T/fluency-dispatches" | tr -d " ")" = 2 ]'
 check "the resume deletes the heads"          'gone feat/m2 && gone feat/c'
 check "the state is cleared"                  '[ ! -f "$T/state/current-batch" ]'
 
@@ -95,7 +100,7 @@ check "and finishes the tidying"              'has "  #1: MERGED" && gone feat/a
 
 echo "== a resume refuses when main moved"
 touch "$T/kill-on-ready"; ff 2
-sed -i 's/^phase=.*/phase=pushed/' "$T/state/current-batch"
+edit_state 's/^phase=.*/phase=pushed/'
 git -C "$T/work" fetch -q origin && git -C "$T/work" checkout -q --detach origin/main
 echo x > "$T/work/x.txt"; git -C "$T/work" add -A; git -C "$T/work" commit -qm moved; git -C "$T/work" push -q origin HEAD:main
 ff --resume
@@ -318,7 +323,7 @@ check "a lone PR gets its full batch first"   'grep -q "no-boot batch of 8 faile
 echo "== batch-auto.sh: a resumed no-boot batch that fails is tried once as a full batch"
 nb_setup 8
 touch "$T/kill-on-ready"; ff --noboot 8
-sed -i 's/^phase=.*/phase=pushed/' "$T/state/current-batch"
+edit_state 's/^phase=.*/phase=pushed/'
 CI_RESULT=failure auto_until "failed alone"
 check "the resume's failure gets its full batch" 'grep -q "resuming the unfinished batch: 8" "$L" && grep -q "no-boot batch of 8 failed; trying it once as a full batch" "$L" && grep -q "#8 failed alone" "$L"'
 
@@ -338,7 +343,7 @@ touch "$T/kill-on-ready"; ff --noboot 8 9
 check "the state says no-boot"                'grep -q "^noboot=1" "$T/state/current-batch" && grep -q "^name=batch/noboot-" "$T/state/current-batch"'
 # With the flag wiped, only the branch name can give the lint-only gate, and
 # the full gate would refuse the skipped boot jobs.
-sed -i 's/^phase=.*/phase=pushed/; s/^noboot=.*/noboot=/' "$T/state/current-batch"
+edit_state 's/^phase=.*/phase=pushed/; s/^noboot=.*/noboot=/'
 ff --resume
 check "the branch name decides it: it lands"  'has "  #8: MERGED" && has "  #9: MERGED"'
 nb_setup 1
@@ -711,6 +716,7 @@ git -C "$T/work" checkout -q feat/a && echo more >> "$T/work/a.txt" && git -C "$
 EOF
 ff 1
 check "no landed-but-open line for a moved branch" '! has "#1 landed but GitHub still shows it open"'
+check "it did land, and the PR is still open"  'has "main fast-forwarded to the tested batch" && has "  #1: OPEN"'
 
 echo "== batch-ff.sh: the files split out of agentcore.rs count as the model's, as agentcore.rs does"
 setup
@@ -721,6 +727,46 @@ git -C "$T/work" checkout -q --detach origin/main
 ff 8 9 10
 check "an agentcore/ file is a model change"   'has "  + #8 (feat/ac1)" && has "  - #9 changes what the model sees, and so does #8"'
 check "a neighbouring shellcore file is not"  'has "  + #10 (feat/other)"'
+
+echo "== batch-ff.sh: a diff that cannot be read fails closed, as model input"
+setup
+touch "$T/prs/5/diff-fails"
+ff 5 3
+check "the unreadable PR is told, and goes in"  'has "  ! #5: its diff could not be read; treated as changing what the model sees" && has "  + #5 (feat/d)"'
+check "so the next model PR waits"              'has "  - #3 changes what the model sees, and so does #5"'
+check "and the fluency gate runs"               '[ "$(wc -l < "$T/fluency-dispatches" | tr -d " ")" = 1 ]'
+
+echo "== batch-auto.sh: unlabel that cannot remove the label, for a PR whose head is on main or that landed open"
+setup
+touch "$T/prs/5/stays-open"; for n in 1 2 3 4 7; do : > "$T/prs/$n/labels"; done
+: > "$T/edit-fails"
+auto_wait "removing batch-ready failed"
+check "no 'label removed' line is logged"      '! grep -q "label removed" "$L"'
+check "the PR is kept out for that head"        'grep -q "^5 [0-9a-f]\{40\}$" "$T/state/unlabel-failed"'
+rm -f "$T/edit-fails"
+setup; twin
+: > "$T/edit-fails"
+auto_wait "removing batch-ready failed"
+check "a no-op batch: no 'label removed' line"  '! grep -q "#8 left out: its batch adds nothing to main; label removed" "$L"'
+check "its PR is kept out for that head"        'grep -q "^8 [0-9a-f]\{40\}$" "$T/state/unlabel-failed"'
+rm -f "$T/edit-fails"
+
+echo "== batch-auto.sh: a PR whose label could not be removed is not batched again until pushed to"
+setup
+for n in 2 3 4 5 7; do : > "$T/prs/$n/labels"; done
+mkpr 8 feat/sig main kabi/src/call.rs
+git -C "$T/work" checkout -q --detach origin/main
+mkdir -p "$T/state"; echo "8 $(cat "$T/prs/8/sha")" > "$T/state/unlabel-failed"
+auto_until "#1 merged"
+check "the kept-out PR is in no batch"          '! grep -qE "batch: (.* )?8( |$)" "$L" && grep -q "#1 merged" "$L"'
+
+echo "== batch-auto.sh: the label goes but the comment fails: the log still says so"
+setup; carried
+for n in 2 3 4 5 7; do : > "$T/prs/$n/labels"; done
+: > "$T/comment-fails"
+auto_wait "label removed"
+check "label removed is logged, with the comment failure" 'grep -q "#8 left out: its head [0-9a-f]* is already on main; label removed" "$L" && grep -q "#8: batch-ready removed, but the comment could not be posted" "$L"'
+rm -f "$T/comment-fails"
 
 echo "== setup(): no stub hook is left behind for the next case"
 for f in ready-hook fluency-hook on-ready moved-head edit-fails; do : > "$T/$f"; done

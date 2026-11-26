@@ -18,12 +18,23 @@ LOG="$S/batch-auto.log"
 
 say() { echo "$(date -u '+%m-%d %H:%M') $*" >> "$LOG"; }
 
-unlabel() {  # $1 PR, $2 comment
+unlabel() {  # $1 PR, $2 comment; fails only when the label could not be removed
   # A label that stays on would be batched again, with a comment that says it
-  # was removed: no comment, and the log says so.
+  # was removed: no comment, and the log says so. Such a PR is also kept out of
+  # the batches (unlabel-failed: PR and head) until it is pushed to, or the
+  # loop would pick it again and fail the same way forever.
+  local h
   gh pr edit "$1" --repo "$R" --remove-label batch-ready >/dev/null 2>&1 \
-    || { say "#$1: removing batch-ready failed; no comment posted"; return 1; }
-  gh pr comment "$1" --repo "$R" --body "$2" >/dev/null 2>&1
+    || {
+      h=$(gh pr view "$1" --repo "$R" --json headRefOid --jq .headRefOid 2>/dev/null)
+      echo "$1 ${h:-unknown}" >> "$S/unlabel-failed"
+      say "#$1: removing batch-ready failed; no comment posted; left out until it is pushed to"
+      return 1
+    }
+  # The label is gone whatever the comment does: this status is the label's.
+  gh pr comment "$1" --repo "$R" --body "$2" >/dev/null 2>&1 \
+    || say "#$1: batch-ready removed, but the comment could not be posted"
+  return 0
 }
 
 # Whether PR $1's head is no longer the one the batch in batch-ff.sh output $2
@@ -119,6 +130,8 @@ eligible() {
       say "#$p left out: its head ${head:0:7} is already on main; label removed"
       continue
     fi
+    # Its label could not be removed for this head: not batched again.
+    grep -qxF "$p ${head:-unknown}" "$S/unlabel-failed" 2>/dev/null && continue
     ok=1
     while read -r o obr ohead olab; do
       [ "$o" = "$p" ] && continue

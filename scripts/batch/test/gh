@@ -6,7 +6,7 @@
 # $T/ffpid once, at `gh pr ready` (before the fast-forward) or at the first
 # MERGED answer (after it), as a PC stop would; $T/list-fails fails the
 # open-PR listing. $T/prs/<n>/lagging-head is what `gh pr view --json headRefOid`
-# answers while GitHub lags a push. $T/edit-fails fails `gh pr edit`.
+# answers while GitHub lags a push. $T/edit-fails fails `gh pr edit`, $T/comment-fails `gh pr comment`; $T/prs/<n>/diff-fails `gh pr diff`.
 # While the batch branch holds every head on a line of
 # $T/fail-with, CI fails and its log is $T/compile.log (a batch that does not
 # compile; two heads on a line are two PRs that clash only together). At the
@@ -55,7 +55,7 @@ case "$1 $2" in
       *"--json baseRefName"*) pr $n base;;
       *"--json headRefOid"*) if [ -f "$T/prs/$n/lagging-head" ]; then cat "$T/prs/$n/lagging-head"; else git -C "$T/origin.git" rev-parse --verify -q "refs/heads/$(pr $n branch)" || pr $n sha; fi;;
     esac;;
-  "pr diff") pr $3 files;;
+  "pr diff") [ -f "$T/prs/$3/diff-fails" ] && exit 1; pr $3 files;;
   "pr create") echo "https://github.com/x/y/pull/999";;
   "pr list")
     case "$a" in
@@ -74,7 +74,8 @@ case "$1 $2" in
         for d in "$T"/prs/*; do n=$(basename "$d"); [ "$(st $n)" = OPEN ] && { pr $n base; pr $n branch; }; done; true;;
     esac;;
   "pr edit") [ -f "$T/edit-fails" ] && exit 1; case "$a" in *"--remove-label batch-ready"*) : > "$T/prs/$3/labels";; esac;;
-  "pr ready"|"pr close"|"pr comment"|"run cancel"|"run rerun") :;;
+  "pr comment") [ -f "$T/comment-fails" ] && exit 1;;
+  "pr ready"|"pr close"|"run cancel"|"run rerun") :;;
   "run list")
     case "$a" in
       *ci.yml*)
