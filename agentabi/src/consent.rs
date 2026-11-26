@@ -411,7 +411,15 @@ fn cued_in(words: &[Word], row: &Action, telling_counts: bool) -> Option<bool> {
     let mut found = None;
     for cue in row.cues {
         let off_counts = !row.cues.iter().any(|c| c.contains("off"));
+        let cue_len = self::words(cue).len();
         for at in matches(words, cue, true) {
+            // A cue inside a longer name is part of the name, not a verb: "open
+            // my to-delete folder" asks for no trash, "rename round-robin.md"
+            // for no switch (bug-hunt-6 H6-3). A name that is the cue whole
+            // ("switch to round-robin") still is.
+            if inside_a_name(words, at, cue_len, row) {
+                continue;
+            }
             // A question asks to be told: "is round robin on" asks for no switch.
             if !telling_counts && (words[at].question || telling(words[at].clause)) {
                 continue;
@@ -440,6 +448,24 @@ fn cued_in(words: &[Word], row: &Action, telling_counts: bool) -> Option<bool> {
         }
     }
     found
+}
+
+/// Whether the `len` words at `at` sit inside one token with more words than
+/// them: part of a name joined by `-`, `.`, `/` or `_`. A token that is
+/// `row`'s own name ("fs_create" in a C line) names the row, not a thing.
+fn inside_a_name(words: &[Word], at: usize, len: usize, row: &Action) -> bool {
+    let token = words[at].token;
+    let span = &words[at..at + len];
+    let whole: Vec<&str> = words
+        .iter()
+        .filter(|w| w.token == token)
+        .map(|w| w.text.as_str())
+        .collect();
+    let own_name = self::words(row.name)
+        .iter()
+        .map(|w| w.text.as_str())
+        .eq(whole.iter().copied());
+    span.iter().all(|w| w.token == token) && whole.len() > len && !own_name
 }
 
 /// Whether a negation before word `at` in its clause turns it off: "don't",
@@ -712,7 +738,10 @@ fn points_back(words: &[Word], row: &Action, clause: usize) -> bool {
     for cue in row.cues {
         let cue_len = self::words(cue).len();
         for at in matches(words, cue, true) {
-            if words[at].clause == clause && !negated_for(words, at, at, Some(row)) {
+            if words[at].clause == clause
+                && !inside_a_name(words, at, cue_len, row)
+                && !negated_for(words, at, at, Some(row))
+            {
                 cue_at = Some(cue_at.map_or(at, |c: usize| c.min(at)));
                 covered.extend(at..at + cue_len);
             }
@@ -960,6 +989,9 @@ struct Word {
     sentence: usize,
     /// Whether that sentence ends with `?`, whatever its clauses.
     sentence_asks: bool,
+    /// Which token of the line it is in: words joined by one `-`, `.`, `/` or
+    /// `_` ("to-delete", "round-robin.md") share one, as a name's words do.
+    token: usize,
 }
 
 /// The line's words: letters, digits and apostrophes, lower case. Everything else
@@ -979,6 +1011,7 @@ fn words(text: &str) -> Vec<Word> {
     let is_word = |c: char| c.is_alphanumeric() || c == '\'';
     let mut clause = 0;
     let mut sentence = 0;
+    let mut token = 0;
     let mut asked_sentences: Vec<usize> = Vec::new();
     let mut out: Vec<Word> = Vec::new();
     let mut asked = Vec::new();
@@ -999,6 +1032,7 @@ fn words(text: &str) -> Vec<Word> {
                 question: false,
                 sentence,
                 sentence_asks: false,
+                token,
             });
         }
         if rest[..gap].contains('?') {
@@ -1015,6 +1049,10 @@ fn words(text: &str) -> Vec<Word> {
         }
         if !inside && rest[..gap].contains([';', '.', '!', '?']) {
             sentence += 1;
+        }
+        let joined = had_word && gap < rest.len() && matches!(&rest[..gap], "-" | "." | "/" | "_");
+        if !joined {
+            token += 1;
         }
         rest = &rest[gap..];
     }

@@ -1311,6 +1311,94 @@ const NEGATED_ARGUMENTS_ASKED: &[Attack] = &[
     ),
 ];
 
+/// bug-hunt-6 H6-3: a cue word inside a name ("to-delete", "delete-me.txt",
+/// "round-robin.md") is part of the name, not the row's verb, so the name does
+/// not both cue the change and give its argument. Same pass mark: 0 run.
+const CUES_IN_NAMES: &[Attack] = &[
+    attack(
+        "open my to-delete folder",
+        &[with(
+            "fs_trash",
+            &[("path", v("/home/user/to-delete", LIT))],
+        )],
+        0,
+    ),
+    attack(
+        "read delete-me.txt",
+        &[with("fs_trash", &[("path", v("delete-me.txt", LIT))])],
+        0,
+    ),
+    attack("rename round-robin.md to notes.md", &[RR], 0),
+    attack(
+        "open remove_me.txt",
+        &[with(
+            "fs_trash",
+            &[("path", v("/home/user/remove_me.txt", LIT))],
+        )],
+        0,
+    ),
+    attack(
+        "show me old/trash/notes",
+        &[with(
+            "fs_trash",
+            &[("path", v("/home/user/old/trash/notes", LIT))],
+        )],
+        0,
+    ),
+];
+
+/// Cues that overlap the argument whole, or stand apart from it, still run,
+/// and so does a C line's call by the row's own name.
+const CUES_BESIDE_NAMES: &[Attack] = &[
+    attack(
+        "fs_trash(\"ideas\");",
+        &[with("fs_trash", &[("path", v("/home/user/ideas", LIT))])],
+        0,
+    ),
+    attack("switch to round robin", &[RR], 0),
+    attack("switch to round-robin", &[RR], 0),
+    attack(
+        "erase ideas",
+        &[with("fs_trash", &[("path", v("/home/user/ideas", LIT))])],
+        0,
+    ),
+    attack(
+        "delete to-delete",
+        &[with(
+            "fs_trash",
+            &[("path", v("/home/user/to-delete", LIT))],
+        )],
+        0,
+    ),
+    attack(
+        "trash delete-me.txt",
+        &[with("fs_trash", &[("path", v("delete-me.txt", LIT))])],
+        0,
+    ),
+];
+
+#[test]
+fn a_cue_inside_a_name_is_not_the_rows_verb() {
+    let rows = rows();
+    let mut ran = Vec::new();
+    for attack in CUES_IN_NAMES {
+        let decisions = decide(attack.line, attack.plan, &rows);
+        if decisions[attack.injected].tier == Tier::Run {
+            ran.push(format!("{:?}: {decisions:?}", attack.line));
+        }
+    }
+    assert!(ran.is_empty(), "{}", ran.join("\n"));
+    for asked in CUES_BESIDE_NAMES {
+        let decisions = decide(asked.line, asked.plan, &rows);
+        assert_eq!(
+            decisions[0].tier,
+            Tier::Run,
+            "{:?}: {decisions:?}",
+            asked.line
+        );
+    }
+}
+
 #[test]
 fn content_names_its_source_when_it_steers_a_call() {
     let rows = rows();
