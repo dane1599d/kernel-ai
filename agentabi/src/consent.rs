@@ -508,8 +508,17 @@ fn negated_for(words: &[Word], at: usize, upto: usize, row: Option<&Action>) -> 
         let held: Vec<usize> = (0..before.len())
             .filter(|&i| before[i].clause == carried)
             .collect();
-        if held.first().is_none_or(|&i| before[i].sentence != sentence) {
+        let Some(&first) = held.first() else {
             return false;
+        };
+        if before[first].sentence != sentence {
+            // A sentence of only negating words ("Not.", "Don't.") is said of
+            // the next one; any other ("Not again.", "No.") carries nothing.
+            let lone = before[first].sentence + 1 == sentence
+                && (0..before.len())
+                    .filter(|&i| before[i].sentence == before[first].sentence)
+                    .all(|i| negates(i) && !BARE_ANSWERS.contains(&before[i].text.as_str()));
+            return lone;
         }
         let only_negation = held
             .iter()
@@ -517,12 +526,14 @@ fn negated_for(words: &[Word], at: usize, upto: usize, row: Option<&Action>) -> 
         if !only_negation {
             return false;
         }
-        // An answer: every negating word of it is a bare one ("ok no,", "no
-        // really,", "neither."). Any other negating word carries.
-        if held
-            .iter()
-            .any(|&i| negates(i) && !BARE_ANSWERS.contains(&before[i].text.as_str()))
-        {
+        // An answer: every word of it is a bare answer or leads one in ("ok
+        // no,", "no really,", "neither."). Anything else that negates carries:
+        // "under no circumstances," is no answer (#1460 review).
+        let answer = held.iter().all(|&i| {
+            let text = before[i].text.as_str();
+            BARE_ANSWERS.contains(&text) || ANSWER_LEAD.contains(&text)
+        });
+        if !answer && held.iter().any(|&i| negates(i)) {
             return true;
         }
     }
@@ -545,11 +556,13 @@ fn negation_at_for(words: &[Word], i: usize, row: Option<&Action>) -> bool {
 }
 
 /// Whether "stop" or "quit" at `i` stops an action, and so negates it: the
-/// next word, in the same clause, is an action's -ing word (a cue of some
-/// row, or [`ACTION_GERUNDS`]). "stop everything" and "Stop. Bring up the
-/// terminal" stop none. For `row`, when "stop" is one of its own cues and
-/// the -ing word is none of them, "stop" is the row's verb: "stop running
-/// the miner" asks to stop the miner, "stop killing build-3" kills nothing.
+/// next word, in the same clause, ends "-ing" and is no noun of
+/// [`NOT_GERUNDS`]. "stop everything" and "Stop. Bring up the terminal" stop
+/// none. For a `row` that asks anyway (it derives above Run), when "stop" is
+/// one of its own cues and the -ing word is none of them, "stop" is the row's
+/// verb, which changes only its card's wording: "stop running the miner" asks
+/// to stop the miner, "stop killing build-3" kills nothing. A row that would
+/// run ("timer_stop" with an undo) keeps the negation (#1460 review).
 fn stops_an_action(words: &[Word], i: usize, row: Option<&Action>) -> bool {
     let Some(next) = words.get(i + 1).filter(|n| n.clause == words[i].clause) else {
         return false;
@@ -557,16 +570,14 @@ fn stops_an_action(words: &[Word], i: usize, row: Option<&Action>) -> bool {
     let Some(stem) = next.text.strip_suffix("ing") else {
         return false;
     };
-    let of = |cues: &[&str]| cues.iter().any(|cue| gerund_of(&next.text, stem, cue));
-    let names_action = ACTION_GERUNDS.contains(&next.text.as_str())
-        || crate::ROWS.iter().any(|r| of(r.cues))
-        || row.is_some_and(|r| of(r.cues));
-    if !names_action {
+    if NOT_GERUNDS.contains(&next.text.as_str()) {
         return false;
     }
     match row {
-        Some(row) => !(is_own_cue(row, &words[i].text) && !of(row.cues)),
-        None => true,
+        Some(row) if derive(row) != Tier::Run && is_own_cue(row, &words[i].text) => {
+            row.cues.iter().any(|cue| gerund_of(&next.text, stem, cue))
+        }
+        _ => true,
     }
 }
 
@@ -585,9 +596,18 @@ fn is_own_cue(row: &Action, word: &str) -> bool {
         .any(|cue| !cue.contains([' ', '-']) && word.starts_with(cue))
 }
 
-/// -ing words that name an action whatever the rows: "stop using round robin",
-/// "quit touching my files".
-const ACTION_GERUNDS: &[&str] = &["using", "doing", "touching", "messing", "trying"];
+/// Words ending "-ing" that are no action: "stop everything", "stop. bring".
+const NOT_GERUNDS: &[&str] = &[
+    "everything",
+    "anything",
+    "something",
+    "nothing",
+    "thing",
+    "things",
+    "bring",
+    "string",
+    "morning",
+];
 
 /// Starts of words that negate: refrain, refraining; forbid, forbidden.
 const NEGATION_STARTS: &[&str] = &["refrain", "forbid"];
@@ -629,6 +649,9 @@ const NEGATION_FILLER: &[&str] = &[
 /// before ("no, switch to round robin", "neither, remove ideas"), and negates
 /// nothing after it.
 const BARE_ANSWERS: &[&str] = &["no", "nah", "nope", "neither"];
+
+/// Words that may lead a bare answer in, or follow it, and keep it one.
+const ANSWER_LEAD: &[&str] = &["ok", "okay", "so", "really", "just", "kai", "please"];
 
 /// The person's own folder: a path under it is named by the rest of it.
 const HOME: &str = "/home/user/";
@@ -1047,7 +1070,12 @@ fn words(text: &str) -> Vec<Word> {
         if rest[..gap].contains('?') {
             asked_sentences.push(sentence);
         }
-        if !inside && rest[..gap].contains([';', '.', '!', '?']) {
+        // A run of dots ("Don't... remove it") trails off, as "…" does: it
+        // ends a clause, not a sentence.
+        let trails = rest[..gap].contains("..");
+        if !inside
+            && (rest[..gap].contains([';', '!', '?']) || (rest[..gap].contains('.') && !trails))
+        {
             sentence += 1;
         }
         let joined = had_word && gap < rest.len() && matches!(&rest[..gap], "-" | "." | "/" | "_");
