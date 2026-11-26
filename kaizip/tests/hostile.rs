@@ -97,6 +97,36 @@ fn links_devices_and_encrypted_entries_are_refused_by_name() {
             "{method}"
         );
     }
+    // Named before its name is checked, a hostile name is shown escaped: no
+    // new line in the message, no bidi control turning it round (#1447's
+    // review).
+    let entry = Raw {
+        flags: 1,
+        ..Raw::stored("x", b"xxxxxxxxxxxx")
+    };
+    let entry = Raw {
+        name: "secret\n\u{202e}txt.exe\u{7}".as_bytes().to_vec(),
+        ..entry
+    };
+    let got = open(&kit::archive(&[entry]));
+    let shown = r"secret\n\u{202e}txt.exe\u{7}";
+    assert_eq!(got, Err(Error::Encrypted { name: shown.into() }));
+    let message = got.unwrap_err().to_string();
+    assert!(
+        !message.contains('\n') && !message.contains('\u{202e}'),
+        "{message}"
+    );
+    let link = Raw {
+        mode: Some(0o120_777),
+        name: b"a\x1b[2Jb".to_vec(),
+        ..Raw::stored("x", b"/etc/passwd")
+    };
+    assert_eq!(
+        open(&kit::archive(&[link])),
+        Err(Error::Special {
+            name: r"a\u{1b}[2Jb".into()
+        })
+    );
     // Methods other than stored and deflate: bzip2, LZMA, zstd, deflate64.
     for method in [12, 14, 93, 9] {
         let entry = Raw {
