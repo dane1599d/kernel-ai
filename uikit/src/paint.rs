@@ -66,6 +66,18 @@ fn frame(rect: Rect, token: Token) -> Op {
     }
 }
 
+/// A scroll bar's thumb in a view `view` px long (`0 < view < extent`) scrolled
+/// `off` px into `extent` px: its offset along the bar and its length, 16 px up
+/// to the whole view. In i64: an app can make `extent` millions of px, and
+/// `view * view` and `off * (view - len)` would leave i32.
+fn thumb_span(view: i32, extent: i32, off: i32) -> (i32, i32) {
+    let (view, extent, off) = (i64::from(view), i64::from(extent), i64::from(off));
+    let len = (view * view / extent).max(16).min(view);
+    let pos = off * (view - len) / (extent - view);
+    // Both lie in 0..=view, so they fit back in i32.
+    (pos as i32, len as i32)
+}
+
 /// The caret at byte `at` of the line `line`, starting at `x`, top `y`.
 fn caret(m: &dyn Measure, x: i32, y: i32, line: &str, at: usize) -> Op {
     let at = at.min(line.len());
@@ -170,8 +182,7 @@ fn ops_of(
                     .copied()
                     .unwrap_or(0)
                     .clamp(0, p.extent - view);
-                let len = (view * view / p.extent).max(16).min(view);
-                let pos = off * (view - len) / (p.extent - view);
+                let (pos, len) = thumb_span(view, p.extent, off);
                 let thumb = Rect::new(r.right() - 1 - SCROLLBAR_W, r.y + 1 + pos, SCROLLBAR_W, len);
                 ops.push(fill(thumb, Token::LineStrong, SCROLLBAR_W / 2));
             }
@@ -359,8 +370,7 @@ fn ops_of(
                     .copied()
                     .unwrap_or(0)
                     .clamp(0, p.extent - view);
-                let len = (view * view / p.extent).max(16);
-                let pos = off * (view - len) / (p.extent - view);
+                let (pos, len) = thumb_span(view, p.extent, off);
                 let thumb = match axis {
                     crate::widget::Axis::Row => {
                         Rect::new(r.x + pos, r.bottom() - SCROLLBAR_W, len, SCROLLBAR_W)

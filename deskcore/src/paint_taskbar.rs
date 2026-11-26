@@ -57,6 +57,7 @@ impl Painter {
             return;
         };
         fill(c, bar, clip, self.palette.shell);
+        self.cover(bar, 0, clip);
         fill(
             c,
             Rect::new(bar.x, bar.y, bar.w, 1),
@@ -180,6 +181,7 @@ impl Painter {
         let x = (item.x + item.w / 2 - w / 2).clamp(area.x, area.right() - w);
         let bubble = Rect::new(x, area.y, w, area.h);
         self.rounded(c, bubble, clip, self.palette.line_strong, TIP_RADIUS);
+        self.cover(bubble, TIP_RADIUS, clip);
         self.rounded(
             c,
             bubble.grow(-1),

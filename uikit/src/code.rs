@@ -8,7 +8,7 @@ use crate::input::Key;
 use crate::layout::Measure;
 use crate::list::Op;
 use crate::style::{Token, TypeStyle, metric::*};
-use crate::widget::{CodeRow, CodeView};
+use crate::widget::{CodeRow, CodeView, MAX_CODE_CELLS};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -216,7 +216,10 @@ pub fn ops(m: &dyn Measure, v: &CodeView, r: Rect, focused: bool) -> Vec<Op> {
             }
         }
         if focused && v.cursor.is_some_and(|(row, _)| row == i as u32) {
-            let cell = v.cursor.map_or(0, |(_, cell)| cell) as i32;
+            let cell = v.cursor.map_or(0, |(_, cell)| cell);
+            // No further than the widest row: the app's cell times the cell's
+            // width must stay in i32, and a u32 past i32::MAX must not wrap.
+            let cell = cell.min(MAX_CODE_CELLS as u32) as i32;
             ops.push(Op::Fill {
                 rect: Rect::new(text_x + cell * cw, y, 2, rh),
                 token: Token::Text,

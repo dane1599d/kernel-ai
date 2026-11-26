@@ -7,8 +7,11 @@
 //! The service answers one request at a time, and loading the engine is one
 //! long call, so while it loads or answers a request `health` waits: a caller
 //! whose `health` times out shows [`State::Busy`]. An `err` reply has no
-//! status: `no model` is [`State::NoModel`].
+//! status, but for one: a server whose health failed still ends with the
+//! local status, or the remote one with no local model ([`reply`]). The
+//! no-model error is [`State::NoModel`] ([`state_of`]).
 
+use crate::text::printable;
 use alloc::format;
 use alloc::string::String;
 
@@ -91,6 +94,57 @@ impl Status {
     }
 }
 
+/// How long the service waits for its LLM server's `GET /health`. A caller
+/// that must hear the local model's state waits longer than this.
+pub const SERVER_HEALTH_MS: u64 = 5_000;
+
+/// The longest part of a server's error a reply keeps when the local model's
+/// words and status follow it.
+const SERVER_ERROR_CHARS: usize = 64;
+
+/// `health`'s reply, before the `ok `/`err ` the service puts first: the LLM
+/// server's health when there is a server, then `local`, the model's and the
+/// engine's words, then `status`. With neither it is the error
+/// [`crate::chat::NO_MODEL`]. When the server's health failed, the reply is
+/// an error that still ends with the status, cut to `max_chars` (the
+/// service's cap on an error line) with the status and the model's words
+/// kept: the local model's state, or that there is none but the server
+/// ([`State::Remote`]), is what a caller reads. `updated` judges a model on
+/// trial by it, and a switch or a remove reads that there is no local model.
+pub fn reply(
+    server: Option<Result<String, String>>,
+    local: Option<String>,
+    status: Status,
+    max_chars: usize,
+) -> Result<String, String> {
+    let line = status.line();
+    let room = max_chars.saturating_sub(line.len() + 2);
+    match (server, local) {
+        (None, None) => Err(String::from(crate::chat::NO_MODEL)),
+        (None, Some(local)) => Ok(format!("{local}; {line}")),
+        (Some(Ok(server)), Some(local)) => Ok(format!("{server}; {local}; {line}")),
+        (Some(Ok(server)), None) => Ok(format!("{server}; {line}")),
+        (Some(Err(error)), None) => Err(format!("{}; {line}", printable(&error, room, 1))),
+        (Some(Err(error)), Some(local)) => {
+            let error = printable(&error, SERVER_ERROR_CHARS, 1);
+            let words = printable(&format!("{error}; {local}"), room, 1);
+            Err(format!("{words}; {line}"))
+        }
+    }
+}
+
+/// The model's state a `health` reply gives, `ok ` or `err ` first: its
+/// status's, or [`State::NoModel`] for the error the service gives with no
+/// model and no server; none for anything else.
+pub fn state_of(reply: &str) -> Option<State> {
+    if let Some(status) = Status::of(reply) {
+        return Some(status.state);
+    }
+    let why = reply.strip_prefix("err ")?;
+    why.starts_with(crate::chat::NO_MODEL)
+        .then_some(State::NoModel)
+}
+
 /// Tokens a second as [`Status::tps10`].
 pub fn tps10(tokens_per_s: Option<f64>) -> u32 {
     tokens_per_s.map_or(0, |rate| {
@@ -139,6 +193,85 @@ mod tests {
             "ok x status state=ready tps10=1",
         ] {
             assert_eq!(Status::of(text), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_reply_ends_with_the_status_and_a_failing_server_does_not_hide_it() {
+        let ready = Status {
+            state: State::Ready,
+            tps10: 85,
+        };
+        let local = || {
+            Some(String::from(
+                "model 12 bytes fnv1a64 00000000000000ff; local model x",
+            ))
+        };
+        let server = |r: Result<&str, &str>| Some(r.map(String::from).map_err(String::from));
+        let line = ready.line();
+        assert_eq!(
+            reply(server(Ok("HTTP 200 in 4 ms")), local(), ready, 160),
+            Ok(format!("HTTP 200 in 4 ms; {}; {line}", local().unwrap()))
+        );
+        assert_eq!(
+            reply(None, local(), ready, 160),
+            Ok(format!("{}; {line}", local().unwrap()))
+        );
+        let remote = Status {
+            state: State::Remote,
+            tps10: 0,
+        };
+        assert_eq!(
+            reply(server(Ok("HTTP 200 in 4 ms")), None, remote, 160),
+            Ok(format!("HTTP 200 in 4 ms; {}", remote.line()))
+        );
+        assert_eq!(
+            reply(None, None, ready, 160),
+            Err(String::from(crate::chat::NO_MODEL))
+        );
+        // A server alone whose health failed: an error that ends with the
+        // remote state, so a caller reads that there is no local model (the
+        // review of #1349: a switch or a remove then goes on, as on main).
+        for error in ["network: refused", &"y".repeat(400)] {
+            let Err(text) = reply(server(Err(error)), None, remote, 160) else {
+                panic!("an error, for {error}");
+            };
+            assert!(text.chars().count() <= 160, "{text}");
+            assert!(text.starts_with(&error[..10]), "{text}");
+            assert_eq!(Status::of(&text), Some(remote), "{text}");
+            assert_eq!(state_of(&format!("err {text}")), Some(State::Remote));
+        }
+        assert_eq!(
+            reply(server(Err("network: refused")), None, remote, 160),
+            Err(format!("network: refused; {}", remote.line()))
+        );
+        // The server's health failed and the local model is there: an error
+        // that still ends with the local state, within the error line's cap,
+        // with the model's words kept however long the error is.
+        for error in ["network: refused", &"x".repeat(400), "line one\nline two"] {
+            let Err(text) = reply(server(Err(error)), local(), ready, 160) else {
+                panic!("an error, for {error}");
+            };
+            assert!(text.chars().count() <= 160, "{text}");
+            assert_eq!(Status::of(&text), Some(ready), "{text}");
+            assert!(
+                text.contains("; model 12 bytes fnv1a64 00000000000000ff"),
+                "{text}"
+            );
+            assert_eq!(state_of(&format!("err {text}")), Some(State::Ready));
+        }
+    }
+
+    #[test]
+    fn the_no_model_error_is_no_model() {
+        let no_model = format!("err {}", crate::chat::NO_MODEL);
+        assert_eq!(state_of(&no_model), Some(State::NoModel));
+        assert_eq!(
+            state_of("ok x; status state=busy tps10=0"),
+            Some(State::Busy)
+        );
+        for other in ["err network: refused", "ok x", "err no"] {
+            assert_eq!(state_of(other), None, "{other}");
         }
     }
 

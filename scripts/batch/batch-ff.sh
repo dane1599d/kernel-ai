@@ -204,7 +204,8 @@ finish() {  # PR numbers, index-aligned with heads[]
     # Its tested head is on main, yet GitHub has not marked it merged (#1188:
     # its retarget to main failed): batch-auto.sh unlabels it on this line. A
     # PR pushed to since is left alone, as its new commits are still to land.
-    [ "$s" = OPEN ] && [ "$(field $p headRefOid)" = "${heads[$i]}" ] \
+    # The ref on origin, not headRefOid, which can lag a push by seconds.
+    [ "$s" = OPEN ] && [ "$(git -C "$G" ls-remote origin "refs/heads/$(field $p headRefName)" | cut -f1)" = "${heads[$i]}" ] \
       && echo "  #$p landed but GitHub still shows it open"
     i=$((i+1))
   done
@@ -232,15 +233,17 @@ compile_errors() {  # $1 run id
   # `cut` and a literal escape, not `\t` and `\x1b`, which only GNU sed reads:
   # macOS sed would print nothing and the batch would just be halved.
   # An error's `-->` comes within a few lines of it (after a wrapped message
-  # or a note); a blank line, a warning or the next error ends the wait, and
-  # "could not compile" starts none, so a stray `-->` is never paired with it.
+  # or a note); a blank line, a warning, the next error or a note, help or
+  # "Caused by" at column 0 ends the wait (an error with no span would be
+  # credited to a later note's file), and "could not compile" starts none, so
+  # a stray `-->` is never paired with it.
   local esc=$'\033'
   gh run view "$1" --repo "$R" --log-failed 2>/dev/null | cut -f3- \
     | sed -E "s/${esc}\[[0-9;]*m//g; s/^[0-9]{4}-[0-9-]+T[0-9:.]+Z //" \
     | awk '/^error: could not compile/ { want = 0; next }
            /^error(\[E[0-9]+\])?: / { msg = $0; want = 4; next }
            want && /^ *--> / { sub(/^ *--> /, ""); print $0 "  " msg; want = 0; next }
-           /^ *$/ || /^warning/ { want = 0; next }
+           /^ *$/ || /^warning/ || /^(note|help|Caused by):/ { want = 0; next }
            want { want-- }' \
     | sed -E 's#^/home/runner/work/[^/]+/[^/]+/##' \
     | sort -u | head -20 | sed 's/^/    compile error: /'

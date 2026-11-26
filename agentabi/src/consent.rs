@@ -125,7 +125,7 @@ pub const HOSTS: &[(&str, &str)] = nethosts::CURATED;
 
 /// Words that turn off every cue after them in their clause.
 const NEGATIONS: &[&str] = &[
-    "dont", "don't", "not", "never", "no", "without", "disable", "avoid",
+    "dont", "don't", "not", "never", "no", "without", "disable", "avoid", "neither", "nor",
 ];
 /// Words that turn a cue off wherever they stand in its clause: "turn round
 /// robin off" asks for no switch. A row whose own cues say "off" is not
@@ -443,17 +443,100 @@ fn cued_in(words: &[Word], row: &Action, telling_counts: bool) -> Option<bool> {
 }
 
 /// Whether a negation before word `at` in its clause turns it off: "don't",
-/// "never", "stop using" and the rest of [`NEGATIONS`].
+/// "never", "stop using" and the rest of [`NEGATIONS`], any word ending `n't`
+/// or an auxiliary's `nt` ("didn't", "shouldnt"), "cannot", and "stop" or
+/// "quit" before an -ing word ("stop switching"). A clause made only of
+/// negations and filler words carries its negation into the clause after it:
+/// "never, ever switch" and "don't, under any circumstances, trash it" negate
+/// (bug-hunt-6 H6-1). A bare answer ("no,", "nope.") still ends at its comma.
 fn negated(words: &[Word], at: usize) -> bool {
     let clause = words[at].clause;
     let before = &words[..at];
-    before.iter().enumerate().any(|(i, w)| {
-        w.clause == clause
-            && (NEGATIONS.contains(&w.text.as_str())
-                // "stop using round robin"
-                || (w.text == "stop" && before.get(i + 1).is_some_and(|n| n.text == "using")))
-    })
+    // All the words, not only those before: "stop" before the cue's own -ing
+    // word ("stop trashing it") is read with the word after it.
+    let negates = |i: usize| negation_at(words, i);
+    if before
+        .iter()
+        .enumerate()
+        .any(|(i, w)| w.clause == clause && negates(i))
+    {
+        return true;
+    }
+    // The clauses before this one that hold only negations and filler words,
+    // nearest first: one of them that negates reaches this clause.
+    let mut carried = clause;
+    while carried > 0 {
+        carried -= 1;
+        let held: Vec<usize> = (0..before.len())
+            .filter(|&i| before[i].clause == carried)
+            .collect();
+        let only_negation = !held.is_empty()
+            && held
+                .iter()
+                .all(|&i| negates(i) || NEGATION_FILLER.contains(&before[i].text.as_str()));
+        if !only_negation {
+            return false;
+        }
+        let answer = held
+            .iter()
+            .all(|&i| BARE_ANSWERS.contains(&before[i].text.as_str()));
+        if !answer && held.iter().any(|&i| negates(i)) {
+            return true;
+        }
+    }
+    false
 }
+
+/// Whether word `i` of `words` negates what follows it in its clause.
+fn negation_at(words: &[Word], i: usize) -> bool {
+    let text = words[i].text.as_str();
+    let gerund = || words.get(i + 1).is_some_and(|n| n.text.ends_with("ing"));
+    NEGATIONS.contains(&text)
+        || text == "cannot"
+        || text.ends_with("n't")
+        || text
+            .strip_suffix("nt")
+            .is_some_and(|stem| NT_AUXILIARIES.contains(&stem))
+        // "stop using round robin", "quit trashing my files"
+        || (matches!(text, "stop" | "quit") && gerund())
+}
+
+/// Auxiliaries that, with `nt` and no apostrophe, negate: "didnt", "shouldnt".
+const NT_AUXILIARIES: &[&str] = &[
+    "do", "does", "did", "is", "are", "was", "were", "has", "have", "had", "ca", "wo", "should",
+    "could", "would", "must", "need", "ai", "might", "dare",
+];
+
+/// Words a clause of only negation may hold and still carry it into the next
+/// clause: "never, ever", "don't, under any circumstances,".
+const NEGATION_FILLER: &[&str] = &[
+    "ever",
+    "under",
+    "any",
+    "circumstances",
+    "circumstance",
+    "at",
+    "all",
+    "whatsoever",
+    "please",
+    "really",
+    "absolutely",
+    "seriously",
+    "again",
+    "i",
+    "repeat",
+    "and",
+    "or",
+    "just",
+    "so",
+    "kai",
+    "ok",
+    "okay",
+];
+
+/// A clause of only these is an answer to something said before ("no, switch
+/// to round robin"), and negates nothing after its comma.
+const BARE_ANSWERS: &[&str] = &["no", "nah", "nope"];
 
 /// The person's own folder: a path under it is named by the rest of it.
 const HOME: &str = "/home/user/";
@@ -469,17 +552,29 @@ fn arguments_in_line(words: &[Word], row: &Action, call: &Call) -> bool {
         if matches!(value.label, Label::Content(_)) {
             return false;
         }
-        let named = |text: &str| names_a_thing(text) && !matches(words, text, false).is_empty();
+        // A value counts only where every word of it stands un-negated: in
+        // "remove calc, not notes" notes is not asked for (bug-hunt-6 H6-2).
+        let named = |text: &str| names_a_thing(text) && said_unnegated(words, text);
         named(value.text)
             // A file is named by its place under home: "a note called ideas"
             // names /home/user/ideas (files.rs's PATH).
             || value.text.strip_prefix(HOME).is_some_and(named)
             || arg.aliases.iter().any(|(written, means)| {
-                fold_eq(means, value.text) && !matches(words, written, false).is_empty()
+                fold_eq(means, value.text) && said_unnegated(words, written)
             })
             || (SYMBOLS.contains(&value.text)
-                && words.iter().any(|w| POINTERS.contains(&w.text.as_str())))
+                && (0..words.len()).any(|at| {
+                    POINTERS.contains(&words[at].text.as_str()) && !negated(words, at)
+                }))
     })
+}
+
+/// Whether `phrase` stands in `words` somewhere none of its words is negated.
+fn said_unnegated(words: &[Word], phrase: &str) -> bool {
+    let len = self::words(phrase).len();
+    matches(words, phrase, false)
+        .into_iter()
+        .any(|start| (start..start + len).all(|at| !negated(words, at)))
 }
 
 /// Every host argument is grounded (`nethosts::Grounding::decide`): typed in

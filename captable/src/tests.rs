@@ -127,6 +127,71 @@ fn replace_narrows_and_closes_the_old_handle_even_when_refused() {
     assert!(table.is_empty());
 }
 
+/// H2-17: HANDLE_REPLACE closes the old handle whatever it answers, so a
+/// refusal hands back what it closed (a `Stream`'s socket must go with it);
+/// a handle that named nothing closes nothing, and a swap that went through
+/// hands back nothing to let go of.
+#[test]
+fn a_refused_replace_hands_back_the_entry_it_closed() {
+    let mut tree = std::boxed::Box::new(crate::grant::Tree::new());
+    let request = tree
+        .create(
+            tree.root(crate::grant::SYSTEM),
+            0,
+            crate::grant::Life::Request,
+            b"request",
+            0,
+        )
+        .unwrap();
+    let stream = Entry::new(Kind::Stream, Rights::READ | Rights::WRITE, 7);
+    let mut table = Table::new().unwrap();
+    // A rights word with a bit no right has, a widening, and a revoked grant.
+    let refusals = [
+        (stream, None, Error::Invalid),
+        (
+            stream,
+            Some(Rights::READ | Rights::DUPLICATE),
+            Error::Invalid,
+        ),
+        (
+            Entry {
+                grant: Some(request),
+                ..stream
+            },
+            Some(Rights::READ),
+            Error::Revoked,
+        ),
+    ];
+    let handles: std::vec::Vec<Handle> = refusals
+        .iter()
+        .map(|(entry, _, _)| table.insert(*entry).unwrap())
+        .collect();
+    tree.revoke(request, &mut [0; crate::grant::NODES]).unwrap();
+    for (&handle, &(entry, rights, error)) in handles.iter().zip(&refusals) {
+        let refused = table.replace_raw(handle, rights, &*tree);
+        assert_eq!(
+            refused,
+            Err(Refused {
+                error,
+                closed: Some(entry)
+            })
+        );
+        assert_eq!(table.get(handle), Err(Error::BadHandle));
+    }
+    assert!(table.is_empty());
+    assert_eq!(
+        table.replace_raw(handles[0], Some(Rights::READ), &*tree),
+        Err(Refused {
+            error: Error::BadHandle,
+            closed: None
+        })
+    );
+    let open = table.insert(stream).unwrap();
+    let narrowed = table.replace_raw(open, Some(Rights::READ), &*tree).unwrap();
+    assert_eq!(table.get(narrowed).unwrap().rights, Rights::READ);
+    assert_eq!(table.len(), 1);
+}
+
 #[test]
 fn a_once_handle_is_closed_by_its_first_use_and_never_found() {
     let mut table = Table::new().unwrap();

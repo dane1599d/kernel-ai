@@ -121,14 +121,19 @@ impl<D: BlockDev> Io<D> {
     }
 
     /// A block of volume `vol` replaced in this transaction: freed if no snapshot
-    /// can hold it now; else it waits for the GC.
+    /// can hold it now; else it waits for the GC. A run past the data area (a
+    /// hostile disk's record) is no block the allocator has, and is never freed.
     pub(crate) fn replaced_volume_block(&mut self, ptr: BlockPtr, newest: u64, vol: u64) {
+        let (run, area) = (run_of(&ptr), format::data_area(self.dev.info().blocks));
+        if !in_area(area, run.addr, run.blocks()) {
+            return;
+        }
         if self.faults.reuse_now {
-            self.alloc.free_now(run_of(&ptr));
+            self.alloc.free_now(run);
         } else if self.faults.decide_at_commit {
             self.deferred.push((ptr, vol));
         } else if self.reusable(&ptr, newest) {
-            self.alloc.free_later(self.txn, run_of(&ptr));
+            self.alloc.free_later(self.txn, run);
         }
     }
 
@@ -176,8 +181,7 @@ impl<D: BlockDev> Io<D> {
             || blocks * BLOCK > max
             || len > blocks * BLOCK
             || len <= (blocks - 1) * BLOCK
-            || ptr.addr < start
-            || ptr.addr + blocks as u64 > end
+            || !in_area((start, end), ptr.addr, blocks as u64)
         {
             return Err(bad);
         }
@@ -288,13 +292,71 @@ pub fn value_len(raw: &[u8]) -> Option<usize> {
     }
 }
 
-/// The record a raw value names, if it names one: its pointer and length.
+/// Whether `blocks` blocks from `addr` lie in the data area `area`, worked out
+/// with no sum that can overflow, whatever a hostile pointer holds.
+pub(crate) fn in_area(area: (u64, u64), addr: u64, blocks: u64) -> bool {
+    addr >= area.0 && addr < area.1 && blocks <= area.1 - addr
+}
+
+/// The record a raw value names, if it names one: its pointer and length. A
+/// pointer whose run would end past the last address there is (a hostile
+/// disk's) names none, so no reader works out where it ends.
 pub fn record_of(raw: &[u8]) -> Option<(BlockPtr, usize)> {
     if raw.first() != Some(&TAG_RECORD) || raw.len() != RECORD_VALUE {
         return None;
     }
     let ptr = BlockPtr::decode_at(raw, 1).ok()?;
+    let run = run_of(&ptr);
+    run.addr.checked_add(run.blocks())?;
     let mut word = [0; 4];
     word.copy_from_slice(&raw[1 + PTR_BYTES..]);
     Some((ptr, u32::from_le_bytes(word) as usize))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::check::{Cache, check};
+    use crate::dev::MemDisk;
+    use crate::fs::Fs;
+    use crate::tree::Key;
+
+    /// Record pointers past the disk, at the last addresses there are, as a
+    /// hostile disk can hold under a re-signed leaf (bug hunt 2, H2-3): every
+    /// reader refuses them and none overflows, and dropping their items frees
+    /// nothing, so the disk still mounts.
+    #[test]
+    fn a_record_past_the_disk_is_refused_and_never_freed() {
+        for addr in [u64::MAX, u64::MAX - 1000] {
+            let mut fs = Fs::format(MemDisk::new(4096), [5; 16], "t").unwrap();
+            let bad = BlockPtr {
+                addr,
+                birth: 1,
+                blocks: 1,
+                kind: KIND_RECORD,
+                level: 0,
+                flags: 0,
+                csum: [0; 32],
+            };
+            let keys = [Key::new(70, 1, 0), Key::new(70, 1, 4096)];
+            for key in keys {
+                fs.set(key, record_raw(&bad, 100)).unwrap();
+            }
+            fs.commit().unwrap();
+            let mut fs = Fs::mount(fs.into_dev()).unwrap();
+            assert!(matches!(fs.get(&keys[0]), Err(Error::Corrupt(_))), "{addr}");
+            assert!(matches!(
+                fs.io.read_record(&bad, 100),
+                Err(Error::Corrupt(_))
+            ));
+            fs.gc(64).unwrap();
+            assert!(check(&mut fs, &mut Cache::default()).is_err());
+            for key in keys {
+                assert!(fs.delete(&key).unwrap());
+            }
+            fs.commit().unwrap();
+            let mut fs = Fs::mount(fs.into_dev()).unwrap();
+            check(&mut fs, &mut Cache::default()).unwrap();
+        }
+    }
 }

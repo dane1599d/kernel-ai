@@ -342,6 +342,7 @@ pub fn check(which: ActCase) -> Result<(), &'static str> {
         ActCase::NetPf => crate::net_pf_tests::check(),
         ActCase::NetPfPage => crate::net_pf_tests::page(),
         ActCase::NetPfQuery => crate::net_pf_tests::query(),
+        ActCase::NetHold => crate::net_hold_tests::check(),
         ActCase::FsAct => expect_lines(FS_ACT).map(|()| {
             log!("fs-act: a plain create and move ran at once on kai-data, and a read showed only to the user");
         }),
@@ -680,6 +681,15 @@ fn rule() -> Result<(), &'static str> {
             log!("act-rule: wanted {want:?}, got {got:?}");
             return Err("act-rule: a line got the wrong answer");
         }
+    }
+    // The removed rule's handle went with its node (bug hunt 3, H3-30).
+    let shell = ipc::server_of("shell")
+        .and_then(crate::process::slot_of_pid)
+        .ok_or("act-rule: the shell has no slot")?;
+    let rule = allowed.granted.rule.ok_or("act-rule: no rule handle")?;
+    let open = crate::handle::with(shell, |t| t.table.get(kabi::handle::Handle(rule)).is_ok());
+    if open.unwrap_or(false) {
+        return Err("act-rule: rules_remove left the rule's handle open");
     }
     if !reply_to("stop spin-c")?.starts_with("menu ") {
         return Err("act-rule: a stop asked nothing after its rule was removed");

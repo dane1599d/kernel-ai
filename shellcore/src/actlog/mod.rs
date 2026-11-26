@@ -102,6 +102,13 @@ pub struct Change {
 /// one app overlap, whichever rows made them.
 pub const APP_RES: &str = "app ";
 
+/// Whether `a` and `b` name one resource. The log on disk keeps a resource
+/// as one word, `_` for each space, so one read back after a restart is
+/// compared in that form (bug-hunt-3 H3-24).
+pub fn same_res(a: &str, b: &str) -> bool {
+    a == b || text::word(a) == text::word(b)
+}
+
 impl Change {
     /// `policy round-robin (was interactive)`, as the result line says it; with
     /// no value before, no "(was …)". An app's change says itself in `after`
@@ -115,6 +122,11 @@ impl Change {
             true => said,
             false => format!("{said} (was {})", self.before),
         }
+    }
+
+    /// Whether this change and `other` changed one resource ([`same_res`]).
+    pub fn overlaps(&self, other: &Change) -> bool {
+        same_res(&self.res, &other.res)
     }
 }
 
@@ -279,6 +291,19 @@ impl ActLog {
         self.entries().rev().find(|e| e.live()).map(|e| e.id)
     }
 
+    /// The entry a bare `undo` reverts: the newest live entry, unless that
+    /// is the undo of an entry an earlier `undo` stopped partway (still live,
+    /// with changes left). Then that entry, so `undo` goes on with it rather
+    /// than redoing what was just put back (bug-hunt-3 H3-22).
+    pub fn undo_target(&self) -> Option<u64> {
+        let newest = self.newest_live()?;
+        let partway = self
+            .get(newest)
+            .and_then(|e| e.of)
+            .filter(|&of| self.get(of).is_some_and(Entry::live));
+        Some(partway.unwrap_or(newest))
+    }
+
     /// The newest live entry of `form`.
     pub fn newest_live_of(&self, form: Form) -> Option<u64> {
         self.entries()
@@ -305,7 +330,7 @@ impl ActLog {
                 e.changes
                     .iter()
                     .filter(sent)
-                    .any(|c| entry.changes.iter().filter(sent).any(|d| d.res == c.res))
+                    .any(|c| entry.changes.iter().filter(sent).any(|d| d.overlaps(c)))
             })
             .map(|e| e.id)
             .collect()

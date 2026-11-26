@@ -56,6 +56,23 @@ pub fn blob_sha(name: &str) -> Option<[u8; 32]> {
     Some(sha)
 }
 
+/// What `fs` does with the caller's `Shm`: its size, and a copy of its first
+/// bytes. `[u8]` is the real one; a test's can count reads or change after one.
+pub(crate) trait ShmBytes {
+    fn size(&self) -> usize;
+    /// The first `len` bytes (`len <= size()`), copied out.
+    fn copy_out(&mut self, len: usize) -> alloc::vec::Vec<u8>;
+}
+
+impl ShmBytes for [u8] {
+    fn size(&self) -> usize {
+        self.len()
+    }
+    fn copy_out(&mut self, len: usize) -> alloc::vec::Vec<u8> {
+        self[..len].to_vec()
+    }
+}
+
 impl<D: BlockDev> Server<D> {
     /// Refuses a call not on the model store's `Dir` with WRITE.
     fn models_only(&self, call: &Call, target: &Target) -> Result<(), Error> {
@@ -108,25 +125,26 @@ impl<D: BlockDev> Server<D> {
     /// [`Request::SealedPushShm`]: the next `len` bytes from the start of
     /// `shm`, copied out once first. The client can write its `Shm` while
     /// `fs` reads it, and the bytes hashed must be the bytes kept.
-    pub(crate) fn sealed_push_shm(
+    pub(crate) fn sealed_push_shm<S: ShmBytes + ?Sized>(
         &mut self,
         call: &Call,
         target: &Target,
         len: u32,
-        shm: Option<&mut [u8]>,
+        shm: Option<&mut S>,
     ) -> Result<Reply, Error> {
         self.models_only(call, target)?;
         self.owned(call.caller)?;
         let shm = shm.ok_or(Error::Invalid)?;
         let len = len as usize;
-        if len > MAX_SHM_DATA || len > shm.len() {
+        if len > MAX_SHM_DATA || len > shm.size() {
             return Err(Error::Invalid);
         }
         // The one copy: `push` takes the bytes by slice and never sees `shm`
         // again, so the bytes hashed are the bytes kept. Reading `shm` a second
         // time (to hash, say, then to write) would let the client change them
-        // between. A test cannot catch that: it needs a writer racing `fs`.
-        let data = shm[..len].to_vec();
+        // between. `sealed_shm_tests` pins it with an `Shm` that changes after
+        // its first read.
+        let data = shm.copy_out(len);
         self.push(&data)
     }
 
@@ -200,12 +218,12 @@ impl<D: BlockDev> Server<D> {
             .map_err(error)?;
         // Committed here, not by `answer`, so the GC pass can start after it.
         self.commit()?;
+        // The blocks are free at the end of a pass begun after that commit. One
+        // already running began before it and still reaches them, and one may
+        // not start now: then idle starts the next one (H5-7).
         let fs = self.fs();
-        if !fs.gc_running() {
-            // The blocks are free at the pass's end; a pass that cannot start
-            // now leaves them to the next one.
-            let _ = fs.gc_start();
-        }
+        let started = !fs.gc_running() && fs.gc_start().is_ok();
+        self.gc_again = !started;
         Ok(Reply::Done)
     }
 
