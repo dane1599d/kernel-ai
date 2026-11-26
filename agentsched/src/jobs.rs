@@ -142,7 +142,8 @@ pub enum WhileJob {
 
 /// What a request `text` on the route with `badge` does to agent job `running`,
 /// which `owner`'s badge started (ADR 0013 section 2). Only the person's own
-/// requests, and `agent-stop` of the running job by its own agent, stop it.
+/// requests, and `agent-stop` of the running job by its own agent, stop it:
+/// no agent's request stops another agent's job.
 /// An agent's polls (`agent-take`, the 1 s planner turn), its other commands,
 /// `warm` and `health` (the Monitor's, every second) are answered without
 /// stopping it, as are requests an agent may not send: else each poll restarted
@@ -155,7 +156,11 @@ pub fn while_job(badge: u64, text: &str, running: u64, owner: u64) -> WhileJob {
     match parse(text) {
         Ok(Some(Command::Stop(ticket))) if ticket == running && badge == owner => WhileJob::Stop,
         Ok(Some(_)) | Err(_) => WhileJob::Answer,
-        Ok(None) => WhileJob::Stop,
+        // Not an agent command: the person's, or badge 0's. An agent's badge
+        // reaches here only with an unknown `agent-*` word, which is refused
+        // without stopping another agent's job.
+        Ok(None) if badge == NO_AGENT || badge == KAI => WhileJob::Stop,
+        Ok(None) => WhileJob::Answer,
     }
 }
 

@@ -140,6 +140,9 @@ struct Backends {
     /// Agents' requests (ADR 0013 section 2, F3 slice 2a): started by a route's
     /// badge, run in idle turns.
     jobs: Jobs,
+    /// The last `health` reply's words before its status, for a `health` that
+    /// comes while an agent's job runs (`health_while_job`).
+    health_said: Option<String>,
 }
 
 /// What a turn costs a server's history: about four bytes a token, as no
@@ -198,6 +201,7 @@ fn main() -> i32 {
         history: History::new(),
         warming: false,
         jobs: Jobs::new(agentsched::Config::default(), restart.parse().unwrap_or(0)),
+        health_said: None,
     };
     let mut request = vec![0u8; kabi::MAX_MESSAGE];
     let mut response = vec![0u8; http::MAX_RESPONSE];
@@ -352,6 +356,9 @@ fn main() -> i32 {
                 Err(error) => format!("err {}", script::error_line(&error, MAX_ERROR_CHARS)),
             },
         };
+        if command == Some("health") {
+            backends.health_said = Some(reply.clone());
+        }
         // The character cap can still exceed the kernel's message size in bytes.
         reply.truncate(reply.floor_char_boundary(kabi::MAX_MESSAGE));
         if let Err(error) = sys::svc_reply(reply.as_bytes()) {
@@ -489,16 +496,15 @@ fn run_agent_job(
     let text = format!("{} {}", kind.word(), job.request);
     let local = matches!(backends.local, Some(Ok(_)));
     let mut response = vec![0u8; http::MAX_RESPONSE];
-    // Only the local model polls. While it runs, `health` is answered from what
-    // it said as the job started, and agents' commands from the jobs, moved out
-    // of `backends` for the run.
-    let health_now = match local {
-        true => match health(backends, &mut response) {
-            Ok(text) => format!("ok {text}"),
-            Err(error) => format!("err {}", script::error_line(&error, MAX_ERROR_CHARS)),
-        },
-        false => String::new(),
+    // Only the local model polls. While it runs, a `health` is answered with the
+    // last one's words and the engine's status now, nothing computed unless one
+    // comes; agents' commands from the jobs, moved out of `backends` for the run.
+    let tps10 = match &backends.local {
+        Some(Ok(local)) => local.tps10(),
+        _ => 0,
     };
+    let said = backends.health_said.clone();
+    let health_now = move || health_while_job(said.as_deref(), tps10);
     let mut jobs = core::mem::replace(
         &mut backends.jobs,
         Jobs::new(agentsched::Config::default(), 0),
@@ -677,11 +683,32 @@ fn warm_act(local: &mut local::Local, request: &mut [u8], caller: &mut RecvInfo)
     came
 }
 
+/// A `health` reply while an agent's job runs on the local model: the last
+/// reply's words (`said`, `ok ...; status ...`), or a line of its own before
+/// any, then the status now (both slots are warm while a job runs). Nothing
+/// is asked of the engine, the model file or a server for it.
+fn health_while_job(said: Option<&str>, tps10: u32) -> String {
+    let words = said
+        .filter(|said| said.starts_with("ok "))
+        .and_then(|said| {
+            said.rfind("; status ")
+                .filter(|&at| at >= 3)
+                .map(|at| &said[3..at])
+        })
+        .unwrap_or("the local model is running an agent's job");
+    let status = Status {
+        state: State::Ready,
+        tps10,
+    };
+    format!("ok {words}; {}", status.line())
+}
+
 /// The agent job a request that came may stop, and what `health` says meanwhile.
 struct Running<'a> {
     ticket: u64,
     owner: u64,
-    health: &'a str,
+    /// The `health` reply, made only when one comes.
+    health: &'a dyn Fn() -> String,
 }
 
 /// One request, if any came, while agent job `running` runs: answered at once
@@ -709,7 +736,7 @@ fn job_poll(
     let mut reply = match text.split([' ', '\n']).next().unwrap_or("") {
         _ if !jobs::may_serve(caller.badge, text) => String::from(jobs::AGENTS_USE_JOBS),
         "warm" => String::from("ok no"),
-        "health" => String::from(running.health),
+        "health" => (running.health)(),
         _ => agent_command(jobs, from, text),
     };
     reply.truncate(reply.floor_char_boundary(kabi::MAX_MESSAGE));
