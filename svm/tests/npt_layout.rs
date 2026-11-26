@@ -101,6 +101,7 @@ fn guest_ram_maps_in_2_mib_leaves_with_the_tables_counted_at_create() {
         base: 0x2_0000_0000,
         bytes: 1536 * MIB,
     };
+    assert!(ram.tables() >= tables_for(1536 * MIB));
     let mut pool = Pool::new(tables_for(1536 * MIB) as usize);
     let root = pool.alloc().unwrap();
     ram.map(&shm, &mut pool, root).unwrap();
@@ -127,9 +128,11 @@ fn scattered_frames_map_page_by_page() {
         stride: 3 * 4096,
         bytes: 4 * MIB,
     };
-    let mut pool = Pool::new(64);
+    // Sized by the worst case: scattered frames take a PT a 2 MiB.
+    let mut pool = Pool::new(ram.tables() as usize);
     let root = pool.alloc().unwrap();
     ram.map(&shm, &mut pool, root).unwrap();
+    assert!(pool.tables.len() as u64 <= ram.tables());
     for page in 0..1024 {
         let gpa = 0x10_0000 + page * 4096 + 8;
         assert_eq!(
@@ -202,4 +205,33 @@ fn mapping_refuses_a_spent_pool_missing_frames_and_a_mapped_address() {
         install(&mut pool, root, 0x1000, small, Size::Page4K),
         Err(Refusal::Mapped(0x1000))
     );
+}
+
+#[test]
+fn ram_may_not_cover_an_apic() {
+    let mut layout = Layout::new(4 * GIB, 64 * MIB).unwrap();
+    for gpa in [0xFEC0_0000, 0xFEDF_F000, 0xFEE0_0000] {
+        let over = region(gpa, 2 * MIB, 0);
+        assert_eq!(layout.add(over), Err(Refusal::Apic(over)), "{gpa:#x}");
+    }
+    let under = region(0xFEC0_0000, 4096, 0);
+    assert_eq!(layout.add(under), Err(Refusal::Apic(under)));
+    // Up to the IOAPIC, and from past the LAPIC, is fine.
+    layout.add(region(0xFEA0_0000, 2 * MIB, 0)).unwrap();
+    layout.add(region(0xFEE0_1000, 4096, 2 * MIB)).unwrap();
+}
+
+#[test]
+fn the_worst_case_counts_every_level_a_region_touches() {
+    // One page: a root, a PDPT, a PD and a PT.
+    let mut one = Layout::new(4 * GIB, 4096).unwrap();
+    one.add(region(0x1000, 4096, 0)).unwrap();
+    assert_eq!(one.tables(), 4);
+    // 4 MiB across a 1 GiB line: 3 PTs, 2 PDs, 1 PDPT, and the root.
+    let mut across = Layout::new(4 * GIB, 4 * MIB).unwrap();
+    across
+        .add(region(GIB - 2 * MIB + 4096, 4 * MIB, 0))
+        .unwrap();
+    assert_eq!(across.tables(), 1 + 3 + 2 + 1);
+    assert_eq!(Layout::new(GIB, 0).unwrap().tables(), 1);
 }

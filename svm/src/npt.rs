@@ -231,6 +231,10 @@ pub enum Refusal {
     Overlap { region: Region, index: usize },
     /// [`REGIONS`] are already in use.
     Full,
+    /// The range covers the IOAPIC's or local APIC's registers
+    /// ([`crate::exit::IOAPIC`], [`crate::exit::LAPIC`]), which the kernel
+    /// emulates: RAM there would hide them.
+    Apic(Region),
     /// The `Shm` reports no host page at this offset ([`Frames::run`]).
     Backing(u64),
     /// The table pool is spent ([`Tables::alloc`]).
@@ -284,8 +288,9 @@ impl Layout {
     }
 
     /// Adds `region`: refused, with nothing changed, when it is misaligned
-    /// or empty, ends past the guest or the `Shm`, or overlaps a region
-    /// already added in guest addresses or in the `Shm`.
+    /// or empty, ends past the guest or the `Shm`, covers an APIC's
+    /// registers, or overlaps a region already added in guest addresses or
+    /// in the `Shm`.
     pub fn add(&mut self, region: Region) -> Result<(), Refusal> {
         let r = region;
         if !(r.gpa | r.bytes | r.offset).is_multiple_of(PAGE) {
@@ -305,6 +310,12 @@ impl Layout {
             .is_none_or(|end| end > self.shm)
         {
             return Err(Refusal::PastShm(r));
+        }
+        let overlaps_apic = [crate::exit::IOAPIC, crate::exit::LAPIC]
+            .iter()
+            .any(|&base| r.gpa < base + crate::exit::APIC_WINDOW && base < r.gpa + r.bytes);
+        if overlaps_apic {
+            return Err(Refusal::Apic(r));
         }
         let overlaps = |a: u64, b: u64, len_a: u64, len_b: u64| a < b + len_b && b < a + len_a;
         for (index, old) in self.regions() {
@@ -335,6 +346,23 @@ impl Layout {
     /// The guest's physical size.
     pub const fn guest(&self) -> u64 {
         self.guest
+    }
+
+    /// The most tables [`Layout::map`] can take, the root included: every
+    /// region in 4 KiB leaves, as scattered frames force, with each region's
+    /// PTs, PDs and PDPTs counted as if no other region shared them. A pool
+    /// of this many never runs out in `map`; [`tables_for`] is the count
+    /// when every leaf is 2 MiB.
+    pub fn tables(&self) -> u64 {
+        let spans = |r: &Region, size: u64| {
+            let first = r.gpa / size;
+            let last = (r.gpa + r.bytes - 1) / size;
+            last - first + 1
+        };
+        1 + self
+            .regions()
+            .map(|(_, r)| spans(&r, 1 << 21) + spans(&r, 1 << 30) + spans(&r, 1 << 39))
+            .sum::<u64>()
     }
 
     /// Maps every region into the nested table at `root` (from
