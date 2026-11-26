@@ -24,6 +24,12 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
         ..case("entropy-boots", "test=entropy-boots")
     },
     case("boot", "test"),
+    // Spike S06-1 (ADR 0006): the nesting census boot. The kernel logs the
+    // VMX, SVM, NPT and NRIPS bits it sees; spike-nesting-census.yml reads them.
+    TestCase {
+        expect: &["nesting: vendor="],
+        ..case("nesting-census", "test")
+    },
     case("page-fault", "test=page-fault"),
     case("double-fault", "test=double-fault"),
     case("write-protect", "test=write-protect"),

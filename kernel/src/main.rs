@@ -356,6 +356,12 @@ extern "C" fn boot_continue() -> ! {
         Err(message) => fail(message),
     }
     log!("{}", fpu::features_line());
+    // Spike S06-1 (ADR 0006): the nesting census's raw bits, one grep-able line.
+    log!(
+        "nesting: vendor={} {}",
+        core::str::from_utf8(&cpufeat::vendor()).unwrap_or("?"),
+        cpufeat::Nesting::detect()
+    );
     // Before the other CPUs start: SetVirtualAddressMap runs on a borrowed PML4.
     if let Err(message) = efi::init() {
         log!("{message}; no runtime services");
