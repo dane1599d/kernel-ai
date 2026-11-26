@@ -13,22 +13,29 @@
 //! 7. **History.** A snapshot whose blocks or namespace do not check is
 //!    dropped, with the UNDO records it backs, and so is an UNDO record that
 //!    does not decode or hold. Those actions lose their undo; nothing else
-//!    changes. The blocks wait for the GC.
+//!    changes. The blocks wait for the GC. A snapshot whose root is newer than
+//!    it, or that reaches a block an earlier snapshot of its volume reaches at
+//!    another birth, does not check: a writer trusts births to know what a
+//!    snapshot still reads.
 //!
+//! Before those, a volume table that does not check (its root newer than its
+//! commit, a pointer newer than the node holding it) is written again whole
+//! from its entries, its own commit; the old one's blocks wait for the GC.
 //! Then rules 1-6 run on each volume's live tree. It refuses what
 //! [`repair`] refuses.
 
 use crate::Error;
 use crate::allocator::{Allocator, run_of};
 use crate::buddy::Run;
-use crate::check::Cache;
+use crate::check::{Births, Cache, Leaves, summarise, tree_runs};
 use crate::csum::Csum;
 use crate::dev::BlockDev;
 use crate::format::{self, BlockPtr};
 use crate::fs::{Faults, Fs, Io, Snap, record_of};
+use crate::io::Meta;
 use crate::ns_check::{check_tree, undo_holds};
 use crate::repair::repair;
-use crate::tree::{Child, Node};
+use crate::tree::{Child, Key, Node, Tree};
 use crate::vol::decode_undo;
 use alloc::collections::BTreeSet;
 use alloc::format;
@@ -62,6 +69,10 @@ fn all<D: BlockDev>(fs: &mut Fs<D>) -> Result<Vec<String>, Error> {
         lines.push(format!(
             "{taken} blocks something reaches were free or pending: taken back"
         ));
+        fs.commit()?;
+    }
+    if let Some(line) = volume_table(fs)? {
+        lines.push(line);
         fs.commit()?;
     }
     for (id, name) in fs.volumes() {
@@ -141,6 +152,42 @@ pub fn mount_to_repair<D: BlockDev>(mut dev: D) -> Result<(Fs<D>, Vec<String>), 
     Ok((fs, alloc::vec![line]))
 }
 
+/// The volume table written again whole if it does not check; the line saying
+/// so. One whose entries do not read is left as it is.
+fn volume_table<D: BlockDev>(fs: &mut Fs<D>) -> Result<Option<String>, Error> {
+    let Some(root) = fs.volumes_root().filter(|r| !r.is_null()) else {
+        return Ok(None);
+    };
+    let why = match root.birth > fs.committed {
+        true => Some(String::from("its root is newer than its commit")),
+        false => summarise(&mut fs.io, &root, Leaves::Entries, &mut Cache::default()).err(),
+    };
+    let Some(why) = why else {
+        return Ok(None);
+    };
+    let mut items: Vec<(Key, Vec<u8>)> = Vec::new();
+    let from = Key::new(0, 0, 0);
+    let mut keep = |k: &Key, v: &[u8]| {
+        items.push((*k, v.to_vec()));
+        true
+    };
+    if fs
+        .volumes
+        .scan(&from, &mut Meta(&mut fs.io), &mut keep)
+        .is_err()
+    {
+        return Ok(None);
+    }
+    let mut table = Tree::default();
+    for (key, raw) in items {
+        table.insert(key, raw, &mut Meta(&mut fs.io))?;
+    }
+    fs.volumes = table;
+    Ok(Some(format!(
+        "the volume table does not check ({why}): written again"
+    )))
+}
+
 /// Rule 0. Returns the blocks taken back.
 fn space<D: BlockDev>(fs: &mut Fs<D>) -> u64 {
     let mut runs: Vec<Run> = Vec::new();
@@ -205,10 +252,24 @@ fn history<D: BlockDev>(fs: &mut Fs<D>) -> Result<Vec<String>, Error> {
     let (next_oid, committed) = (fs.next_oid(), fs.committed);
     let snaps: Vec<(u64, Snap)> = fs.snapshots().iter().map(|(id, s)| (*id, *s)).collect();
     let mut bad = BTreeSet::new();
+    let mut births = Births::default();
     for (sid, snap) in &snaps {
-        if let Err(why) = check_tree(fs, &snap.root, snap.next_oid, snap.generation, &mut cache) {
-            fixes.push(format!("snapshot {sid} does not check ({why}): dropped"));
-            bad.insert(*sid);
+        let root = snap.root;
+        let runs = match root.birth > snap.generation {
+            true => Err(String::from("its root is newer than it")),
+            false => check_tree(fs, &root, snap.next_oid, snap.generation, &mut cache)
+                .and_then(|_| tree_runs(&mut fs.io, &root, &mut cache)),
+        };
+        let runs = runs.and_then(|runs| match births.disagree(&runs) {
+            Some(why) => Err(format!("{why}, against an earlier snapshot")),
+            None => Ok(runs),
+        });
+        match runs {
+            Ok(runs) => births.add(&runs),
+            Err(why) => {
+                fixes.push(format!("snapshot {sid} does not check ({why}): dropped"));
+                bad.insert(*sid);
+            }
         }
     }
     let mut kept = fs.snapshots().clone();
@@ -241,7 +302,6 @@ mod tests {
     use super::*;
     use crate::check::check;
     use crate::fs::HOME;
-    use crate::io::Meta;
     use crate::items::{K_DATA, ROOT};
     use crate::ns_check::check_namespace;
     use crate::tree::{Key, Tree};

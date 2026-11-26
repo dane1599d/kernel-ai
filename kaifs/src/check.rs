@@ -57,6 +57,10 @@ pub struct Summary {
     /// by address, each with the birth its pointer gives it. The root's own
     /// is for its holder to add: one summary serves every pointer to the root.
     pub runs: Rc<Vec<Held>>,
+    /// The newest birth of a pointer in the root node, a child's or a
+    /// record's (0 for none). Its holder's birth is not in the memo's key, so
+    /// every pointer to the root is held to it, the memo's included.
+    pub newest: u64,
 }
 
 /// A run reached, with the birth the pointer to it gives. A writer frees a
@@ -308,6 +312,43 @@ fn merge(lists: &[&[Held]]) -> Result<Vec<Held>, String> {
     Ok(all)
 }
 
+/// Every run the tree `root` reaches, its root's own too, each with the birth
+/// its pointer gives; what [`summarise`] refuses, refused.
+pub fn tree_runs<D: BlockDev>(
+    io: &mut Io<D>,
+    root: &BlockPtr,
+    cache: &mut Cache,
+) -> Result<Vec<Held>, String> {
+    if root.is_null() {
+        return Ok(Vec::new());
+    }
+    let sub = summarise(io, root, Leaves::Values, cache)?;
+    merge(&[&sub.runs, &[held(root)]])
+}
+
+/// The births trees already taken give their runs, for `check --repair` to
+/// hold another tree to: [`check`] refuses one run reached with two births.
+#[derive(Default)]
+pub struct Births(BTreeMap<Run, u64>);
+
+impl Births {
+    /// Why `runs` cannot join: a run here at another birth.
+    pub fn disagree(&self, runs: &[Held]) -> Option<String> {
+        let other = |h: &&Held| self.0.get(&h.run).is_some_and(|&b| b != h.birth);
+        let h = runs.iter().find(other)?;
+        Some(format!("block {} reached with two births", h.run.addr))
+    }
+
+    pub fn add(&mut self, runs: &[Held]) {
+        self.0.extend(runs.iter().map(|h| (h.run, h.birth)));
+    }
+
+    /// The birth given to `run`, if a tree taken reaches it.
+    pub fn of(&self, run: &Run) -> Option<u64> {
+        self.0.get(run).copied()
+    }
+}
+
 /// Summarises the subtree `ptr` names.
 pub fn summarise<D: BlockDev>(
     io: &mut Io<D>,
@@ -316,9 +357,27 @@ pub fn summarise<D: BlockDev>(
     cache: &mut Cache,
 ) -> Result<Rc<Summary>, String> {
     let key = (ptr.addr, ptr.csum, leaves.tag());
-    if let Some(Memo::Tree(summary)) = cache.usable(&key) {
-        return Ok(summary.clone());
+    let summary = match cache.usable(&key) {
+        Some(Memo::Tree(summary)) => summary.clone(),
+        _ => read_summary(io, ptr, leaves, cache)?,
+    };
+    if summary.newest > ptr.birth {
+        return Err(match ptr.level {
+            0 => format!("leaf {}: a record newer than it", ptr.addr),
+            _ => format!("branch {}: a child newer than it", ptr.addr),
+        });
     }
+    Ok(summary)
+}
+
+/// [`summarise`] past the memo: reads the node and summarises it, remembered.
+fn read_summary<D: BlockDev>(
+    io: &mut Io<D>,
+    ptr: &BlockPtr,
+    leaves: Leaves,
+    cache: &mut Cache,
+) -> Result<Rc<Summary>, String> {
+    let key = (ptr.addr, ptr.csum, leaves.tag());
     let node = io
         .load_node(ptr)
         .map_err(|e| format!("node {}: {e:?}", ptr.addr))?;
@@ -327,7 +386,7 @@ pub fn summarise<D: BlockDev>(
     let mut lists: Vec<Rc<Vec<Held>>> = Vec::new();
     let mut runs: Vec<Held> = Vec::new();
     let mut children: Vec<MemoKey> = Vec::new();
-    let (mut count, mut digest) = (0u64, 0u64);
+    let (mut count, mut digest, mut newest) = (0u64, 0u64, 0u64);
     let (min, max) = match node {
         Node::Leaf(items) => {
             let (Some((min, _)), Some((max, _))) = (items.first(), items.last()) else {
@@ -342,9 +401,7 @@ pub fn summarise<D: BlockDev>(
                         let value = decode_value(raw, io)
                             .map_err(|e| format!("leaf {}: {e:?}", ptr.addr))?;
                         if let Some((record, _)) = record_of(raw) {
-                            if record.birth > ptr.birth {
-                                return Err(format!("leaf {}: a record newer than it", ptr.addr));
-                            }
+                            newest = newest.max(record.birth);
                             runs.push(held(&record));
                             own.extend(record.addr..record.addr + u64::from(record.blocks));
                         }
@@ -365,9 +422,7 @@ pub fn summarise<D: BlockDev>(
                 if child_ptr.level + 1 != level {
                     return Err(format!("branch {}: a child at the wrong level", ptr.addr));
                 }
-                if child_ptr.birth > ptr.birth {
-                    return Err(format!("branch {}: a child newer than it", ptr.addr));
-                }
+                newest = newest.max(child_ptr.birth);
                 let sub = summarise(io, child_ptr, leaves, cache)?;
                 let upper = entries.get(i + 1).map(|(k, _)| *k);
                 if sub.min < *lower || upper.is_some_and(|u| sub.max >= u) {
@@ -405,6 +460,7 @@ pub fn summarise<D: BlockDev>(
         max,
         spine_underfull,
         runs: Rc::new(merged),
+        newest,
     });
     cache.put(key, Memo::Tree(summary.clone()), &own, &children);
     Ok(summary)
