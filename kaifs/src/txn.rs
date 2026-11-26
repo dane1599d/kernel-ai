@@ -191,6 +191,9 @@ impl<D: BlockDev> Fs<D> {
                 continue;
             };
             let snap_id = vol.next_snap;
+            if snap_id == u64::MAX {
+                return Err(Error::NoSpace);
+            }
             let snap = Snap {
                 root: vol.base.0,
                 generation: action.base,
