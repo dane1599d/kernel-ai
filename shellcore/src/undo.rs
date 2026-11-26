@@ -8,6 +8,7 @@ use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
+use core::fmt::Write;
 use kabi::policy;
 
 /// How long to wait before trying a refused switch once more: the kernel takes a
@@ -180,6 +181,49 @@ impl Name {
 
     pub fn as_str(&self) -> &str {
         core::str::from_utf8(&self.bytes[..usize::from(self.len)]).unwrap_or("")
+    }
+
+    /// The name as one part of an inverse's word: `%`, `:`, `=`, spaces and
+    /// control characters as `%XX`, so a time zone's `+05:30`, or a name
+    /// with a space, reads back whole (bug-hunt-3 H3-24).
+    fn escaped(&self) -> String {
+        let mut out = String::new();
+        for c in self.as_str().chars() {
+            if matches!(c, '%' | ':' | '=') || c.is_whitespace() || c.is_control() {
+                let mut utf8 = [0u8; 4];
+                for b in c.encode_utf8(&mut utf8).bytes() {
+                    let _ = write!(out, "%{b:02X}");
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    /// [`Name::escaped`] read back. A `%` without two hex digits after it
+    /// stays as it is, as a shell before the escape wrote it.
+    fn from_word(word: &str) -> Option<Self> {
+        let bytes = word.as_bytes();
+        let mut out = Vec::with_capacity(bytes.len());
+        let mut at = 0;
+        while let Some(&b) = bytes.get(at) {
+            let hex = bytes
+                .get(at + 1..at + 3)
+                .filter(|h| b == b'%' && h.iter().all(u8::is_ascii_hexdigit))
+                .and_then(|h| u8::from_str_radix(core::str::from_utf8(h).ok()?, 16).ok());
+            match hex {
+                Some(byte) => {
+                    out.push(byte);
+                    at += 3;
+                }
+                None => {
+                    out.push(b);
+                    at += 1;
+                }
+            }
+        }
+        Self::new(core::str::from_utf8(&out).ok()?)
     }
 }
 
@@ -489,8 +533,8 @@ pub fn inverse_word(inverse: Option<Inverse>) -> String {
             preset,
             after,
         }) => format!("spec:{policy}:{preset}:{}:{}", after.0, after.1),
-        Some(Inverse::Started(name)) => format!("started:{}", name.as_str()),
-        Some(Inverse::Stopped(name)) => format!("stopped:{}", name.as_str()),
+        Some(Inverse::Started(name)) => format!("started:{}", name.escaped()),
+        Some(Inverse::Stopped(name)) => format!("stopped:{}", name.escaped()),
         Some(Inverse::Generation { from, to }) => format!("generation:{from}:{to}"),
         Some(Inverse::Local { from, to }) => format!("local:{from}:{to}"),
         Some(Inverse::Fs { txn }) => format!("fs:{txn}"),
@@ -501,36 +545,36 @@ pub fn inverse_word(inverse: Option<Inverse>) -> String {
             undo,
         }) => format!(
             "fired:{rule}:{}:{}:{}",
-            action.as_str(),
-            app.as_str(),
+            action.escaped(),
+            app.escaped(),
             u8::from(undo)
         ),
         Some(Inverse::Instruction { id, made }) => format!("instruction:{id}:{}", u8::from(made)),
         Some(Inverse::Profile { key }) => format!("profile:{key}"),
-        Some(Inverse::Keep { app, on }) => format!("keep:{}:{}", app.as_str(), u8::from(on)),
+        Some(Inverse::Keep { app, on }) => format!("keep:{}:{}", app.escaped(), u8::from(on)),
         Some(Inverse::Goal { id, paused }) => format!("goal:{id}:{}", u8::from(paused)),
-        Some(Inverse::App { app, id }) => format!("app:{}:{id}", app.as_str()),
+        Some(Inverse::App { app, id }) => format!("app:{}:{id}", app.escaped()),
         Some(Inverse::Appearance {
             setting,
             before,
             after,
         }) => format!(
             "appearance:{}:{}:{}",
-            setting.as_str(),
-            before.as_str(),
-            after.as_str()
+            setting.escaped(),
+            before.escaped(),
+            after.escaped()
         ),
         Some(Inverse::Refocus { to, from }) => {
-            format!("refocus:{}:{}", to.as_str(), from.as_str())
+            format!("refocus:{}:{}", to.escaped(), from.escaped())
         }
-        Some(Inverse::Reopen(app)) => format!("reopen:{}", app.as_str()),
+        Some(Inverse::Reopen(app)) => format!("reopen:{}", app.escaped()),
         Some(Inverse::Reclose { window, app }) => {
-            format!("reclose:{}:{}", window.as_str(), app.as_str())
+            format!("reclose:{}:{}", window.escaped(), app.escaped())
         }
         Some(Inverse::Grant { app, row, withheld }) => format!(
             "grant:{}:{}:{}",
-            app.as_str(),
-            row.as_str(),
+            app.escaped(),
+            row.escaped(),
             u8::from(withheld)
         ),
         Some(Inverse::NetGrant { id, held }) => format!("netgrant:{id}:{}", u8::from(held)),
@@ -547,15 +591,15 @@ pub fn inverse_word(inverse: Option<Inverse>) -> String {
 pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
     let mut parts = text.split(':');
     let number = |part: Option<&str>| part?.parse::<u64>().ok();
-    Some(Some(match parts.next()? {
+    let inverse = match parts.next()? {
         "none" => return Some(None),
         "spec" => Inverse::Spec {
             policy: number(parts.next())?,
             preset: number(parts.next())?,
             after: (number(parts.next())?, number(parts.next())?),
         },
-        "started" => Inverse::Started(Name::new(parts.next()?)?),
-        "stopped" => Inverse::Stopped(Name::new(parts.next()?)?),
+        "started" => Inverse::Started(Name::from_word(parts.next()?)?),
+        "stopped" => Inverse::Stopped(Name::from_word(parts.next()?)?),
         "generation" => Inverse::Generation {
             from: number(parts.next())?,
             to: number(parts.next())?,
@@ -569,15 +613,15 @@ pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
         },
         "fired" => Inverse::Fired {
             rule: number(parts.next())?,
-            action: Name::new(parts.next()?)?,
-            app: Name::new(parts.next()?)?,
+            action: Name::from_word(parts.next()?)?,
+            app: Name::from_word(parts.next()?)?,
             undo: flag(parts.next())?,
         },
         "profile" => Inverse::Profile {
             key: number(parts.next())?,
         },
         "keep" => Inverse::Keep {
-            app: Name::new(parts.next()?)?,
+            app: Name::from_word(parts.next()?)?,
             on: flag(parts.next())?,
         },
         "goal" => Inverse::Goal {
@@ -585,30 +629,30 @@ pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
             paused: flag(parts.next())?,
         },
         "app" => Inverse::App {
-            app: Name::new(parts.next()?)?,
+            app: Name::from_word(parts.next()?)?,
             id: number(parts.next())?,
         },
         "appearance" => Inverse::Appearance {
-            setting: Name::new(parts.next()?)?,
-            before: Name::new(parts.next()?)?,
-            after: Name::new(parts.next()?)?,
+            setting: Name::from_word(parts.next()?)?,
+            before: Name::from_word(parts.next()?)?,
+            after: Name::from_word(parts.next()?)?,
         },
         "instruction" => Inverse::Instruction {
             id: number(parts.next())?,
             made: flag(parts.next())?,
         },
         "refocus" => Inverse::Refocus {
-            to: Name::new(parts.next()?)?,
-            from: Name::new(parts.next()?)?,
+            to: Name::from_word(parts.next()?)?,
+            from: Name::from_word(parts.next()?)?,
         },
-        "reopen" => Inverse::Reopen(Name::new(parts.next()?)?),
+        "reopen" => Inverse::Reopen(Name::from_word(parts.next()?)?),
         "reclose" => Inverse::Reclose {
-            window: Name::new(parts.next()?)?,
-            app: Name::new(parts.next()?)?,
+            window: Name::from_word(parts.next()?)?,
+            app: Name::from_word(parts.next()?)?,
         },
         "grant" => Inverse::Grant {
-            app: Name::new(parts.next()?)?,
-            row: Name::new(parts.next()?)?,
+            app: Name::from_word(parts.next()?)?,
+            row: Name::from_word(parts.next()?)?,
             withheld: flag(parts.next())?,
         },
         "netgrant" => Inverse::NetGrant {
@@ -630,7 +674,11 @@ pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
             sha: modelchan::listing::sha256(parts.next()?).ok()?,
         },
         _ => return None,
-    }))
+    };
+    // A word with parts left over was not written by `inverse_word`: a name
+    // with a `:` from before names were escaped (bug-hunt-3 H3-24). It is not
+    // read as other values.
+    parts.next().is_none().then_some(Some(inverse))
 }
 
 /// `0` or `1`.
