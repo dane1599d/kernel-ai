@@ -42,6 +42,7 @@ impl Painter {
         self.near.draw(c, g(at), g(clip));
         let layer = self.pane_layer(at, scene);
         c.draw_window(&layer, (at.x, at.y), g(clip), RADIUS, true);
+        self.cover(at, RADIUS, clip);
     }
 
     /// The pane's pixels, in its own px.

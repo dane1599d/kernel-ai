@@ -32,6 +32,10 @@
 //! - `stream=replace`: 17 streams in turn, each refused a HANDLE_REPLACE (a
 //!   wider one, or a word with an undefined bit), which closes the handle
 //!   and so the stream: the 17th connect is not Busy (bug hunt 2's H2-17).
+//! - `stream=budget`: its `NetDest` is an agent's, with 8 KiB of the day
+//!   left. It sends those 8 KiB, and once the echo is back, a receive, a
+//!   further send and a new connect are each refused with Permission, the
+//!   echo left unread (bug hunt 5's H5-18).
 
 #![no_std]
 #![no_main]
@@ -162,6 +166,7 @@ fn main() -> i32 {
             "hold" => stream_hold(dest, port),
             "revoke" => stream_revoke(dest, port),
             "replace" => stream_replace(dest, port),
+            "budget" => stream_budget(dest, port),
             _ => Err(format!("no stream mode {mode}")),
         };
         return match result {
@@ -453,6 +458,41 @@ fn stream_replace(dest: Handle, port: u16) -> Result<(), String> {
     }
     println!(
         "17 streams were each refused a HANDLE_REPLACE, wider or with an undefined bit, which closed them: none was Busy"
+    );
+    Ok(())
+}
+
+/// `stream=budget`: see the module's comment. The kernel left `dest`'s day
+/// exactly [`kabi::net::STREAM_MAX_CALL`] bytes.
+fn stream_budget(dest: Handle, port: u16) -> Result<(), String> {
+    let stream = open(dest, port, 0)?;
+    let day = alloc::vec![b'k'; kabi::net::STREAM_MAX_CALL];
+    match sys::net_send(stream, &day) {
+        Ok(n) if n == day.len() => {}
+        other => return Err(format!("the day's last {} bytes gave {other:?}", day.len())),
+    }
+    let state = sys::net_poll(stream, kabi::net::STREAM_READABLE, WAIT_MS)
+        .map_err(|e| format!("poll: {e:?}"))?;
+    if state & kabi::net::STREAM_READABLE == 0 {
+        return Err(format!("the echo never came back (state {state:#x})"));
+    }
+    let mut buf = [0u8; 4096];
+    let uses = [
+        ("a receive", sys::net_recv(stream, &mut buf).map(drop)),
+        ("a send", sys::net_send(stream, b"one more").map(drop)),
+        (
+            "a connect",
+            sys::net_connect(dest, SERVER, port, 0).map(drop),
+        ),
+    ];
+    for (what, result) in uses {
+        if result != Err(Error::Permission) {
+            return Err(format!("{what} past the day's bytes gave {result:?}"));
+        }
+    }
+    sys::net_close(stream).map_err(|e| format!("close: {e:?}"))?;
+    println!(
+        "past its day's bytes, a receive, a send and a connect were each refused, the echo left unread"
     );
     Ok(())
 }

@@ -321,6 +321,64 @@ fn restore_never_overwrites_a_later_change() {
     checked(&mut fs);
 }
 
+/// bug-hunt-6 H6-23: one entry's changes in two actions, undone newest first.
+/// The restore of the second puts the file back as the first left it, so the
+/// first's restore finds no version it would lose and puts the file back too,
+/// with nothing written beside it. Before, the second's restore stamped the
+/// file later than the first, which then left it half undone.
+#[test]
+fn restoring_two_actions_of_one_change_newest_first_puts_the_file_back() {
+    let mut fs = fresh();
+    fs.set_volume(HOME).unwrap();
+    let todo = write(&mut fs, "/todo.txt", b"orig");
+    fs.commit().unwrap();
+    let t1 = action(&mut fs, 1, |fs| fs.write_file(todo, b"a").unwrap());
+    let t2 = action(&mut fs, 2, |fs| fs.write_file(todo, b"b").unwrap());
+    let (out, _) = undo(&mut fs, t2);
+    assert_eq!(out, [(todo, Outcome::Back)]);
+    assert_eq!(read(&mut fs, "/todo.txt").unwrap(), b"a");
+    let (out, _) = undo(&mut fs, t1);
+    assert!(out.contains(&(todo, Outcome::Back)), "{out:?}");
+    assert_eq!(read(&mut fs, "/todo.txt").unwrap(), b"orig");
+    assert_eq!(read(&mut fs, "/todo.txt (restored)"), None);
+    checked(&mut fs);
+}
+
+/// The same when the first action made the file: undone, it is gone again.
+#[test]
+fn a_file_one_action_made_and_the_next_wrote_is_removed_by_undoing_both() {
+    let mut fs = fresh();
+    fs.set_volume(HOME).unwrap();
+    let t1 = action(&mut fs, 1, |fs| {
+        write(fs, "/log.txt", b"one");
+    });
+    let log = fs.resolve("/log.txt").unwrap();
+    let t2 = action(&mut fs, 2, |fs| fs.write_file(log, b"two").unwrap());
+    undo(&mut fs, t2);
+    let (out, _) = undo(&mut fs, t1);
+    assert!(out.contains(&(log, Outcome::Removed)), "{out:?}");
+    assert_eq!(read(&mut fs, "/log.txt"), None);
+    checked(&mut fs);
+}
+
+/// A later change the person made is never lost: one that wrote other bytes,
+/// or only renamed the file, still keeps the file as it is now.
+#[test]
+fn a_file_changed_later_than_the_action_left_it_is_still_kept() {
+    let mut fs = fresh();
+    fs.set_volume(HOME).unwrap();
+    let todo = write(&mut fs, "/todo.txt", b"orig");
+    fs.commit().unwrap();
+    let t1 = action(&mut fs, 1, |fs| fs.write_file(todo, b"a").unwrap());
+    action(&mut fs, 2, |fs| {
+        fs.rename(ROOT, "todo.txt", ROOT, "done.txt").unwrap();
+    });
+    undo(&mut fs, t1);
+    assert_eq!(read(&mut fs, "/done.txt").unwrap(), b"a");
+    assert_eq!(read(&mut fs, "/todo.txt (restored)").unwrap(), b"orig");
+    checked(&mut fs);
+}
+
 #[test]
 fn a_restore_onto_a_taken_name_lands_beside_and_can_itself_be_undone() {
     let mut fs = fresh();
