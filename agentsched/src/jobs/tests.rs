@@ -386,6 +386,21 @@ fn a_running_job_stops_only_for_the_person_or_its_own_stop() {
     assert_eq!(answer(NO_AGENT, "health"), WhileJob::Answer);
     assert_eq!(answer(KAI, "warm"), WhileJob::Answer);
     assert_eq!(answer(GOALS, "act {}"), WhileJob::Answer);
+    // No other agent stops it, with any agent-* word, known or not.
+    for other in [INDEX, 4, 99] {
+        for text in [
+            std::format!("agent-stop {running}"),
+            std::format!("agent-take {running}"),
+            String::from("agent-bogus"),
+            String::from("agent-"),
+            String::from("agent-stop"),
+            String::from("health"),
+            String::from("act {}"),
+        ] {
+            assert_eq!(answer(other, &text), WhileJob::Answer, "{other}: {text}");
+        }
+    }
+    assert_eq!(answer(GOALS, "agent-bogus"), WhileJob::Answer);
     // Its own stop, and the person's requests, stop it.
     assert_eq!(
         answer(GOALS, &format!("agent-stop {running}")),
