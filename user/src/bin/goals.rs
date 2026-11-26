@@ -50,7 +50,7 @@ use alloc::vec::Vec;
 use goalcore::planner::{self, JobPlanner, Llm, Taken};
 use goalcore::reply::{self, Reply};
 use goalcore::report::Report;
-use goalcore::runner::{Event, Outcome, Parts, Plan, Planner, Runner, Steps};
+use goalcore::runner::{Event, Outcome, Parts, Plan, Runner, Steps};
 use goalcore::{Door, Goal, Goals, Presence, State, Step, Tier};
 use llmproto::act::ActRequest;
 use user::{arg, args, println, route, sys};
