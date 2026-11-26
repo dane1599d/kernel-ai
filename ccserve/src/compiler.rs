@@ -7,7 +7,7 @@ use crate::{Budget, Stopped, engine};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::{format, vec};
-use wasihost::{Limits, Stop, Tree, Wasi};
+use wasihost::{Limits, Stop, Tree, TreeLimits, Wasi};
 use wasmi::{
     Engine, Error, Extern, Func, FuncType, Linker, Module, ResumableCall, Store, StoreLimits,
     StoreLimitsBuilder, Val, ValType,
@@ -23,6 +23,15 @@ pub const MAX_FUEL: u64 = 1_000_000_000;
 /// Most linear memory one compile may use, within cc's [`crate::budget`]:
 /// S12-1's peak was 1,152 KiB with a 1,000-line prelude.
 pub const MAX_MEMORY: usize = 4 << 20;
+/// Most bytes a compile's scratch (`/w` and `/tmp` together) may hold:
+/// its sources (a build's at most `livecore::artifact::MAX_SOURCE`), the
+/// tmpfile wcc preprocesses into, and the object. The compiles in ccserve's
+/// tests peak under 80 KiB; wcc could not parse much more than its
+/// [`MAX_MEMORY`] holds anyway. The default 32 MiB let a 4 KiB macro entry
+/// fill `/tmp` far past cc's pages (bug-hunt-6 H6-8).
+pub const COMPILE_SCRATCH: usize = 1 << 20;
+/// Most bytes a link's scratch may hold: its objects' copies and the module.
+pub const LINK_SCRATCH: usize = crate::build::MAX_OBJECTS + kabi::live::MAX_ARTIFACT;
 
 /// A compile's Store data: the WASI host and its memory limit.
 struct Compiling {
@@ -92,6 +101,7 @@ impl Compiler {
             &[("entry.c", source.as_bytes())],
             &args,
             "/w/entry.o",
+            COMPILE_SCRATCH,
             budget,
         )
     }
@@ -114,7 +124,7 @@ impl Compiler {
             "/w/out.o",
             &input,
         ];
-        self.wcc(files, &args, "/w/out.o", budget)
+        self.wcc(files, &args, "/w/out.o", COMPILE_SCRATCH, budget)
     }
 
     /// Links `objects`, each put in `/w` by its name, into a module with no
@@ -141,7 +151,7 @@ impl Compiler {
             "/w/out.wasm",
         ];
         args.extend(paths.iter().map(String::as_str));
-        self.wcc(objects, &args, "/w/out.wasm", budget)
+        self.wcc(objects, &args, "/w/out.wasm", LINK_SCRATCH, budget)
     }
 
     /// Runs wcc with `args` over a tree holding `/kai` and `files` in `/w`;
@@ -151,10 +161,15 @@ impl Compiler {
         files: &[(&str, &[u8])],
         args: &[&str],
         output: &str,
+        scratch: usize,
         budget: &mut Budget,
     ) -> Result<Vec<u8>, CompileError> {
         let fail = |e: String| CompileError::Compiler(e);
         let mut tree = self.kai.clone();
+        tree.set_limits(TreeLimits {
+            scratch_bytes: scratch,
+            ..TreeLimits::default()
+        });
         for (name, data) in files {
             tree.put_scratch(name, data)
                 .map_err(|e| fail(format!("{name}: errno {}", e.0)))?;
