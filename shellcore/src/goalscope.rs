@@ -138,9 +138,17 @@ fn plain(text: &str) -> String {
     out
 }
 
+/// Parts of a joined word that only negate ("do-not", "don't", "never-ever"
+/// as [`plain`] splits them): such a word is no name, so it stays.
+const NEGATING_PARTS: &[&str] = &[
+    "do", "does", "did", "don", "doesn", "didn", "t", "nt", "not", "never", "ever", "no", "dont",
+    "cannot", "can", "won", "wo", "shouldn", "mustn",
+];
+
 /// `words` without the names joined by `-`, `.` or `_` that hold a word none
 /// of `row`'s cues has: "do-not-delete" goes for `fs_trash`, "re-sort" or a
-/// cue's own "round-robin" stays.
+/// cue's own "round-robin" stays, and so does a word made only of negation
+/// ("do-not move anything" still says not to; #1467's round 20).
 fn outside_names(words: &str, row: &Action) -> String {
     let own = |part: &str| {
         part == "re"
@@ -154,8 +162,11 @@ fn outside_names(words: &str, row: &Action) -> String {
         .split_whitespace()
         .filter(|word| {
             let word = word.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+            let plain = plain(word);
+            let parts: Vec<&str> = plain.split(' ').filter(|p| !p.is_empty()).collect();
             !word.contains(['-', '.', '_'])
-                || plain(word).split(' ').filter(|p| !p.is_empty()).all(own)
+                || parts.iter().all(|p| own(p))
+                || parts.iter().all(|p| NEGATING_PARTS.contains(p))
         })
         .collect();
     kept.join(" ")

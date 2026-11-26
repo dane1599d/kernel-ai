@@ -423,13 +423,6 @@ fn cued_in(words: &[Word], row: &Action, telling_counts: bool, skip_names: bool)
         let off_counts = !row.cues.iter().any(|c| c.contains("off"));
         let cue_len = self::words(cue).len();
         for at in matches(words, cue, true) {
-            // A cue inside a longer name is part of the name, not a verb: "open
-            // my to-delete folder" asks for no trash, "rename round-robin.md"
-            // for no switch (bug-hunt-6 H6-3). A name that is the cue whole
-            // ("switch to round-robin") still is.
-            if skip_names && inside_a_name(words, at, cue_len, row) {
-                continue;
-            }
             // A question asks to be told: "is round robin on" asks for no switch.
             if !telling_counts && (words[at].question || telling(words[at].clause)) {
                 continue;
@@ -453,6 +446,16 @@ fn cued_in(words: &[Word], row: &Action, telling_counts: bool, skip_names: bool)
                     .any(|w| w.clause == clause && OFF_WORDS.contains(&w.text.as_str()));
             if negated || off {
                 return Some(true);
+            }
+            // A cue inside a longer name is part of the name, not a verb: "open
+            // my to-delete folder" asks for no trash, "rename round-robin.md"
+            // for no switch (bug-hunt-6 H6-3). A name that is the cue whole
+            // ("switch to round-robin") still is. Only after the negation and
+            // off checks: a negated cue in a name ("it's marked "do not
+            // delete"", "my not-to-delete folder") still says not to (#1467's
+            // round 20).
+            if skip_names && inside_a_name(words, at, cue_len, row) {
+                continue;
             }
             found = Some(false);
         }
@@ -1068,7 +1071,8 @@ struct Word {
     /// Whether that sentence ends with `?`, whatever its clauses.
     sentence_asks: bool,
     /// Which token of the line it is in: words joined by one `-`, `.`, `/` or
-    /// `_` ("to-delete", "round-robin.md") share one, as a name's words do.
+    /// `_` ("to-delete", "round-robin.md") share one, as a name's words do,
+    /// and so do all the words of a quoted span ("to delete" in quotes).
     token: usize,
 }
 

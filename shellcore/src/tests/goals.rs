@@ -553,6 +553,15 @@ fn a_cue_inside_a_folder_name_adds_no_row() {
     // A delete said outside a name is still read, and its negation too.
     let scope = crate::goalscope::scope("sort notes/q3 and never delete anything", |_| Ok(()));
     assert!(scope.is_err(), "{scope:?}");
+    // A joined word of only negation is no name: it still says not to
+    // (#1467's round 20).
+    for line in [
+        "sort notes/q3 and do-not move anything",
+        "sort notes/q3 and don't-ever move anything",
+    ] {
+        let scope = crate::goalscope::scope(line, |_| Ok(()));
+        assert!(scope.is_err(), "{line}: {scope:?}");
+    }
 }
 
 /// A quoted negation still refuses the goal (#1467 review): its cue is read
