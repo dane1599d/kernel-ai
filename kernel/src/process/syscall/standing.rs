@@ -138,6 +138,16 @@ pub(crate) fn ctl_error(error: ipc::CallError) -> Error {
     }
 }
 
+/// APP_CTL's cancel for a ctl to app `name`: true once the process serving it
+/// now has ended, so a queued ctl does not wait for its next instance, which only
+/// the supervisor waiting in APP_CTL can start. None when nothing serves `name`.
+/// Lock-free, as a call's cancel must be (`ipc::call_with_stop`): looking `name`
+/// up again there took the IPC lock.
+pub(crate) fn ctl_cancel(name: &str) -> Option<impl Fn() -> bool + use<>> {
+    let served = ipc::served(name)?;
+    Some(move || served.gone())
+}
+
 /// APP_CTL: `ctl suspend`, `ctl resume` or `ctl keep-running on|off` to app
 /// `name`, as the kernel.
 fn app_ctl(slot: usize, ptr: u64, len: u64, verb: u64, buf: u64, cap: u64) -> Result<u64, Error> {
@@ -155,10 +165,7 @@ fn app_ctl(slot: usize, ptr: u64, len: u64, verb: u64, buf: u64, cap: u64) -> Re
     if !kabi::event::valid_name(name) {
         return Err(Error::Invalid);
     }
-    let server = ipc::server_of(name).ok_or(Error::NotFound)?;
-    // Ends when the app's process does: a queued ctl would otherwise wait for
-    // its next instance, which only the supervisor waiting here can start.
-    let gone = || ipc::server_of(name) != Some(server);
+    let gone = ctl_cancel(name).ok_or(Error::NotFound)?;
     let reply = ipc::call_from_unless(name, request, CTL_MS, gone)
         .map(|(reply, _)| reply)
         .map_err(ctl_error)?;

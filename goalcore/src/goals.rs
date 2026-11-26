@@ -1,7 +1,8 @@
 //! The goals the `goals` agent keeps, with the storm rules: at most
 //! [`MAX_ACTIVE`] active at once and [`MAX_GOALS`] kept. What changes how many are
 //! active (approving, resuming, a raise, a later deadline) goes through here, so
-//! the limit holds whoever calls.
+//! the limit holds whoever calls. A finished goal keeps its place only until a
+//! new one needs it.
 
 use crate::checkin::CheckIn;
 use crate::goal::{Budget, Goal, Pause, Spec, State};
@@ -64,10 +65,29 @@ impl Goals {
         }
     }
 
+    /// Room for one more goal. With all [`MAX_GOALS`] places taken, the oldest
+    /// finished goal (done, failed or cancelled) is forgotten, its end already
+    /// told and its steps still in the `actlog`; refused only when every kept
+    /// goal is unfinished (bug-hunt-6 H6-25).
+    fn make_room(&mut self) -> Result<(), Refusal> {
+        if self.list.len() < MAX_GOALS {
+            return Ok(());
+        }
+        // The list is in id order, so the first finished goal is the oldest.
+        match self.list.iter().position(|goal| goal.state.is_final()) {
+            Some(at) => {
+                self.list.remove(at);
+                Ok(())
+            }
+            None => Err(Refusal::TooManyGoals),
+        }
+    }
+
     /// A goal the shell made and the person approved, kept under the shell's own
     /// id (the `goals` agent's `goal-add`): the id its grant ceiling and its steps
-    /// name. Refused if the id is kept already, the set is full, or it would be one
-    /// active goal too many. The goal comes from a `kai-goals 1` record, which
+    /// name. Refused if the id is kept already, every place holds an unfinished
+    /// goal, or it would be one active goal too many; nothing is forgotten for a
+    /// refused goal. The goal comes from a `kai-goals 1` record, which
     /// [`Goals::parse`] checked.
     pub fn adopt(&mut self, goal: Goal) -> Result<(), Refusal> {
         if self.get(goal.id).is_some() {
@@ -76,12 +96,10 @@ impl Goals {
                 goal.id
             )));
         }
-        if self.list.len() >= MAX_GOALS {
-            return Err(Refusal::TooManyGoals);
-        }
         if goal.state.is_live() {
             self.room(goal.id)?;
         }
+        self.make_room()?;
         self.next_id = self.next_id.max(goal.id.saturating_add(1));
         let at = self.list.partition_point(|kept| kept.id < goal.id);
         self.list.insert(at, goal);
@@ -92,9 +110,7 @@ impl Goals {
     /// [`Spec::approval`] shows. It takes no step until [`Goals::approve`].
     pub fn set(&mut self, spec: Spec, now: u64) -> Result<u64, Refusal> {
         spec.check(now).map_err(Refusal::BadSpec)?;
-        if self.list.len() >= MAX_GOALS {
-            return Err(Refusal::TooManyGoals);
-        }
+        self.make_room()?;
         let id = self.next_id;
         self.next_id += 1;
         self.list.push(Goal::from_spec(id, spec, now));

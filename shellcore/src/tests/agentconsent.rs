@@ -54,6 +54,27 @@ fn an_agents_card_names_it_offers_no_always_and_its_allow_runs_once() {
     );
 }
 
+/// bug-hunt-5 H5-8: while the console is at c>, the person's Allow on an
+/// agent's card runs its call as at kai>, never goes to cc as C, and the
+/// agent's wait hears that it ran.
+#[test]
+fn an_agents_card_allowed_at_c_runs_its_call() {
+    let (host, mut shell, badge) = with_agent();
+    super::cmode::start_cc(&host);
+    assert!(shell.eval(":c").ok && shell.at_c());
+    let asked = step(&mut shell, badge, RR);
+    assert!(asked.starts_with("ok asked "), "{asked}");
+    let menu = take_agents_card(&mut shell);
+    let once = host.mint(menu.id, menu.call());
+    let ran = shell.eval_console(&format!("answer {} allow once={once}", menu.id));
+    assert!(ran.ok, "{ran:?}");
+    assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
+    assert!(host.cc_sent.borrow().is_empty(), "{:?}", host.cc_sent);
+    let told = step(&mut shell, badge, &format!("wait {}", menu.id));
+    assert!(told.starts_with(&format!("ok ran #{}", menu.id)), "{told}");
+    assert!(shell.at_c());
+}
+
 #[test]
 fn an_agents_question_runs_on_no_answer_but_the_persons_allow_at_its_card() {
     let (host, mut shell, badge) = with_agent();

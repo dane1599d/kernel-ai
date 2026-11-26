@@ -136,3 +136,42 @@ fn a_finished_job_stopped_before_its_take_is_dropped() {
     assert_eq!(jobs.stop(&ticket.to_string()), "ok");
     assert_eq!(jobs.take(&ticket.to_string()), "ended unknown ticket");
 }
+
+/// bug-hunt-4 H4-12: what changes only llm's state waits for the round's end,
+/// in order, instead of being refused: the build's own turn, a `new` typed
+/// during it, and `:c`.
+#[test]
+fn state_only_requests_wait_for_the_rounds_end() {
+    let mut jobs = Jobs::new(0);
+    let ticket = started(&mut jobs, "timer");
+    let kept = ["remember 1 2 3\nabcdef", "new", "warm-lang c"];
+    for text in kept {
+        assert_eq!(
+            jobs.while_running(text),
+            (String::from("ok"), false),
+            "{text}"
+        );
+    }
+    for text in ["warm-lang x", "new now"] {
+        assert!(jobs.while_running(text).0.starts_with("err "), "{text}");
+    }
+    jobs.finish(ticket, String::from("ok x"));
+    assert_eq!(jobs.deferred(), kept);
+    assert!(jobs.deferred().is_empty());
+}
+
+/// A round keeps at most [`MAX_DEFERRED`]; past it they are refused as before.
+#[test]
+fn a_round_keeps_at_most_so_many_for_after_it() {
+    let mut jobs = Jobs::new(0);
+    let _ = started(&mut jobs, "timer");
+    for _ in 0..MAX_DEFERRED {
+        assert_eq!(jobs.while_running("new").0, "ok");
+    }
+    assert!(
+        jobs.while_running("new")
+            .0
+            .starts_with("err Kai is writing timer")
+    );
+    assert_eq!(jobs.deferred().len(), MAX_DEFERRED);
+}

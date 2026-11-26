@@ -1234,6 +1234,15 @@ impl Record {
         let backoff = (policy.first_backoff_ms << shift).min(policy.max_backoff_ms);
         Decision::RestartAfterMs(if self.quick_failures == 0 { 0 } else { backoff })
     }
+
+    /// A restart the user asked for (`restart <name>`): counted in
+    /// [`Self::restarts`], which every start passes on as `restart=N`, so the
+    /// program sees it is not this boot's first start (`updated` judges a
+    /// model trial by that); not in `recent` or `quick_failures`, so it counts
+    /// neither against the cap nor towards the backoff.
+    pub fn restarted_on_request(&mut self) {
+        self.restarts += 1;
+    }
 }
 
 const STATE_MAGIC: &str = "supervisor-state 5";

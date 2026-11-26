@@ -224,6 +224,63 @@ fn undo_asks_before_overwriting_a_later_change() {
     assert_eq!(shell.eval("undo"), ok("Undone: policy back to round-robin"));
 }
 
+/// One entry of two changes, the policy and then a file, as a `c>` entry
+/// logs them: its id.
+fn policy_then_file(shell: &mut Shell) -> u64 {
+    let rr = r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#;
+    let create = r#"{"name":"fs_create","arguments":{"path":"a.txt","text":"one"}}"#;
+    shell.entry_begin("set_policy(\"round-robin\"); fs_create(\"a.txt\", \"one\");");
+    for json in [rr, create] {
+        shell.entry_call(&llmproto::act::parse(json).unwrap());
+    }
+    shell.entry_end(true).expect("an entry that changed things")
+}
+
+/// bug-hunt-3 H3-22: an undo the kernel stops partway leaves the rest for
+/// the next `undo`, which goes on with it rather than redoing what it put
+/// back; once done, one `undo` redoes the whole entry.
+#[test]
+fn an_undo_stopped_partway_goes_on_at_the_next_undo() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let id = policy_then_file(&mut shell);
+    host.policy_busy.set(true);
+    let first = shell.eval("undo");
+    assert!(
+        !first.ok && first.text.starts_with("Undone: ") && first.text.ends_with("try undo again"),
+        "{first:?}"
+    );
+    assert!(host.files.borrow().is_empty());
+    host.policy_busy.set(false);
+    assert_eq!(shell.eval("undo"), ok("Undone: policy back to interactive"));
+    assert_eq!(host.policy.get(), Some(policy::INTERACTIVE));
+    assert!(host.files.borrow().is_empty(), "the file stays gone");
+    assert_eq!(shell.log.entries().filter(|e| e.of == Some(id)).count(), 1);
+    assert!(shell.eval("undo").ok);
+    assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
+    assert!(!host.files.borrow().is_empty());
+}
+
+/// bug-hunt-3 H3-22: an undo left at its question about a value that moved
+/// asks it again at the next `undo`, as its `n` reply says, and never redoes
+/// the half it put back.
+#[test]
+fn an_undo_left_at_its_question_asks_again_at_the_next_undo() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    policy_then_file(&mut shell);
+    host.policy.set(Some(policy::INTERACTIVE));
+    let asked = "The policy changed since (now interactive); put interactive back anyway? y/n";
+    let first = shell.eval("undo");
+    assert!(
+        first.text.starts_with("Undone: ") && first.text.ends_with(asked),
+        "{first:?}"
+    );
+    assert_eq!(shell.eval("n"), ok("Not undone; `undo` asks again"));
+    assert_eq!(shell.eval("undo"), ok(asked));
+    assert!(host.files.borrow().is_empty(), "the file stays gone");
+}
+
 #[test]
 fn a_resource_changed_again_keeps_its_first_value() {
     // The snapshot is taken at the first change, so undo goes straight back to it.

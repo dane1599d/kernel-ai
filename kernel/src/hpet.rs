@@ -24,7 +24,7 @@
 
 use crate::percpu::{self, MAX_CPUS};
 use crate::{log, memory};
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use x86_64::structures::paging::PageTableFlags;
 
 const CAPABILITIES: u64 = 0x000;
@@ -64,6 +64,9 @@ static LAST_TICKS: AtomicU64 = AtomicU64::new(0);
 /// read instead: torn reads, which QEMU before 10.0 gives at each 43 s wrap of
 /// the low half.
 static SPLIT_READS: AtomicU64 = AtomicU64::new(0);
+/// Whether the main counter is 64 bits wide (CAPABILITIES bit 13); a 32-bit one
+/// is carried into 64 bits ([`acpitables::hpet_counter::extend32`]).
+static WIDE: AtomicBool = AtomicBool::new(true);
 
 fn read(offset: u64) -> u64 {
     // SAFETY: BASE maps the HPET register block uncached.
@@ -94,12 +97,18 @@ pub fn tsc_clock() -> bool {
 fn main_counter() -> u64 {
     READS.fetch_add(1, Ordering::Relaxed);
     let last = LAST_TICKS.load(Ordering::Relaxed);
-    let (ticks, split) = acpitables::hpet_counter::read(
-        || read(MAIN_COUNTER),
-        || read32(MAIN_COUNTER),
-        || read32(MAIN_COUNTER + 4),
-        last,
-    );
+    let (ticks, split) = if WIDE.load(Ordering::Relaxed) {
+        acpitables::hpet_counter::read(
+            || read(MAIN_COUNTER),
+            || read32(MAIN_COUNTER),
+            || read32(MAIN_COUNTER + 4),
+            last,
+        )
+    } else {
+        // A 32-bit read cannot tear: only the carry is needed.
+        let carried = acpitables::hpet_counter::extend32(read32(MAIN_COUNTER), last);
+        (carried, false)
+    };
     if split {
         SPLIT_READS.fetch_add(1, Ordering::Relaxed);
     }
@@ -110,6 +119,16 @@ fn main_counter() -> u64 {
 /// Main-counter reads so far that had to fall back to reading the halves.
 pub fn split_reads() -> u64 {
     SPLIT_READS.load(Ordering::Relaxed)
+}
+
+/// From CPU 0's tick: with a 32-bit counter and the TSC as the clock, reads the
+/// HPET once a second so the carry never misses a wrap. The HPET clock reads it
+/// every tick anyway; a 64-bit counter needs nothing.
+pub fn on_tick(tick: u64) {
+    if !WIDE.load(Ordering::Relaxed) && tsc_clock() && tick.is_multiple_of(crate::timer::rate_hz())
+    {
+        main_counter();
+    }
 }
 
 fn write(offset: u64, value: u64) {
@@ -124,12 +143,19 @@ pub fn init(phys: u64) -> Result<(), &'static str> {
         | PageTableFlags::WRITE_THROUGH
         | PageTableFlags::NO_EXECUTE;
     BASE.store(memory::map_physical(phys, 0x400, flags)?, Ordering::Relaxed);
-    let period = read(CAPABILITIES) >> 32;
+    let capabilities = read(CAPABILITIES);
+    let period = capabilities >> 32;
     if period == 0 || period > MAX_PERIOD_FS {
         return Err("HPET: invalid counter period");
     }
     PERIOD_FS.store(period, Ordering::Relaxed);
     write(CONFIGURATION, read(CONFIGURATION) | ENABLE);
+    if !acpitables::hpet_counter::counter_is_64bit(capabilities) {
+        WIDE.store(false, Ordering::Relaxed);
+        // The carry starts from where the counter is now, not from 0.
+        LAST_TICKS.store(u64::from(read32(MAIN_COUNTER)), Ordering::Relaxed);
+        log!("hpet: a 32-bit main counter; carried into 64 bits in software");
+    }
     Ok(())
 }
 

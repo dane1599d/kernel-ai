@@ -233,8 +233,10 @@ pub(crate) fn own_memory_as_import(wasm: &[u8]) -> Option<(Vec<u8>, Limits)> {
     match sections.iter().find(|(id, _)| *id == IMPORT) {
         Some((_, old)) => {
             let mut q = 0;
-            let count = leb(old, &mut q)?;
-            put_leb(&mut imports, count + 1);
+            // A count no module can hold (each import takes bytes) moves
+            // nothing: wasmi refuses the module as it is.
+            let count = leb(old, &mut q)?.checked_add(1)?;
+            put_leb(&mut imports, count);
             imports.extend_from_slice(&old[q..]);
         }
         None => put_leb(&mut imports, 1),
@@ -323,5 +325,17 @@ mod tests {
         assert!(r.grow(2 * PAGE) && r.grow(4 * PAGE));
         assert!(!r.grow(5 * PAGE));
         assert!(Region::new(PAGE, 2 * PAGE).is_none());
+    }
+
+    /// An import count no module can hold (2^32 - 1: each import takes bytes)
+    /// moves nothing, and the module goes to wasmi as it is, which refuses it
+    /// (bug-hunt-4 H4-3). The count plus the memory overflowed: an abort in a
+    /// dev build, where overflow checks are on.
+    #[test]
+    fn an_impossible_import_count_moves_nothing() {
+        let mut wasm = b"\0asm\x01\0\0\0".to_vec();
+        wasm.extend_from_slice(&[IMPORT, 5, 0xFF, 0xFF, 0xFF, 0xFF, 0x0F]);
+        wasm.extend_from_slice(&[MEMORY, 3, 1, 0, 1]);
+        assert!(own_memory_as_import(&wasm).is_none());
     }
 }

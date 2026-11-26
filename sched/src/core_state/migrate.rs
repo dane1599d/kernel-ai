@@ -1,7 +1,9 @@
 //! Migration that keeps a thread's accounting: the wait it spent here and whether
 //! it woke go with it, so the destination records the whole wake-to-run time. The
 //! destination's watchdog still counts only the wait on its own CPU, since the
-//! source's wait is not its policy's doing.
+//! source's wait is not its policy's doing. A thread that woke also keeps its
+//! boost there and may take that CPU as a wake there would; its wake is counted
+//! once, where it woke.
 
 use super::{Core, EnqueueReason, State, Tid};
 
@@ -42,10 +44,24 @@ impl Core {
         Some(self.names[tid])
     }
 
-    /// Adopts a thread from [`Core::detach_waiting`].
-    pub fn adopt_detached(&mut self, thread: Detached, now: u64) {
-        self.adopt(thread.tid, thread.name, EnqueueReason::Preempted, now);
-        self.stats
-            .arrived(thread.tid, thread.woken, thread.waited_ns);
+    /// Adopts a thread from [`Core::detach_waiting`]: queued as woken if it
+    /// woke, so it keeps the boost it is owed (as a policy switch hands it
+    /// over), without counting its wake again. Returns true, as [`Core::wake`]
+    /// does, if it should preempt the running thread; the caller then calls
+    /// [`Core::preempt_if_pending`], which also runs it on an idle CPU.
+    pub fn adopt_detached(&mut self, thread: Detached, now: u64) -> bool {
+        let tid = thread.tid;
+        let reason = match thread.woken {
+            true => EnqueueReason::Woken,
+            false => EnqueueReason::Preempted,
+        };
+        self.names[tid] = thread.name;
+        self.set_state(tid, State::Runnable { since: now });
+        self.woke[tid] = thread.woken;
+        self.stats.arrived(tid, thread.woken, thread.waited_ns);
+        self.active().enqueue(tid, reason);
+        let wants = thread.woken && self.should_preempt_for(tid);
+        self.resched_pending |= wants;
+        wants
     }
 }
