@@ -398,10 +398,9 @@ impl Shell {
                 self.card_came_to(&app, id, &told);
             }
             Asker::Agent(agent) => {
-                // Only a run the person allowed and that then failed is the
-                // agent's failed step; every other "not run" (the agent's
-                // grants changed, a question answered elsewhere) stays one.
-                let failed = failed && line == crate::panel::FAILED;
+                // `failed` is a run the person allowed that then failed (its
+                // file changes not landing too); a question let go of unrun
+                // is told with `failed` false, whatever its words.
                 self.agent_told(agent, id, (ran, failed), line);
             }
         }

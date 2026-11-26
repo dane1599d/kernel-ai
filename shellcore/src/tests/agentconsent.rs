@@ -85,6 +85,23 @@ fn a_step_that_failed_after_allow_is_told_as_failed_not_as_a_no() {
     ));
 }
 
+/// An allowed run whose file changes did not land is the agent's failed step
+/// too: the "not landed" line is no no, so it is not logged as the person's.
+#[test]
+fn a_run_whose_changes_did_not_land_is_told_as_failed_not_as_a_no() {
+    let (_host, mut shell, badge) = with_agent();
+    assert!(step(&mut shell, badge, RR).starts_with("ok asked "));
+    let menu = take_agents_card(&mut shell);
+    shell.pending = None;
+    shell.landing.line = Some(String::from("its file changes did not land"));
+    shell.desk_answered(Some((menu.id, "allow")), &crate::Reply::err("x"), false);
+    let told = step(&mut shell, badge, &format!("wait {}", menu.id));
+    assert!(
+        told.starts_with(&format!("err failed #{}:", menu.id)),
+        "{told}"
+    );
+}
+
 /// bug-hunt-5 H5-8: while the console is at c>, the person's Allow on an
 /// agent's card runs its call as at kai>, never goes to cc as C, and the
 /// agent's wait hears that it ran.
