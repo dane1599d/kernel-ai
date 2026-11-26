@@ -97,7 +97,7 @@ fn main() -> i32 {
         println!("dlcheck: FAIL no Dir handle at startup");
         idle();
     };
-    match store::bulk::reserve(fsproto::MAX_SHM_DATA) {
+    match store::bulk::reserve(BULK_BYTES) {
         Ok(()) => println!("dlcheck: the partial moves over a 1 MiB bulk Shm"),
         Err(e) => println!("dlcheck: no bulk Shm ({e:?}); the partial moves in 7 KiB messages"),
     }
@@ -121,6 +121,14 @@ fn main() -> i32 {
     }
     idle();
 }
+
+/// The bulk `Shm` this run reserves: 1 MiB, 256 pages, counted against the
+/// process's quota for its life. The plan line (`net_download_tests::plan`)
+/// gives `dlcheck` 4,096 pages, so the reserve is a sixteenth of them and the
+/// heap keeps the other 3,840. Pinned so a change to either number is seen here.
+const BULK_BYTES: usize = fsproto::MAX_SHM_DATA;
+const _: () = assert!(BULK_BYTES / 4096 == 256);
+const _: () = assert!(BULK_BYTES / 4096 * 16 == 4096);
 
 fn idle() -> ! {
     loop {
