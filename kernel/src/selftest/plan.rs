@@ -20,6 +20,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::Shell
             | SelfTest::CPrompt
             | SelfTest::CBuild
+            | SelfTest::AppBuild { .. }
             | SelfTest::Scripts
             | SelfTest::Act(_)
             | SelfTest::Live
@@ -169,6 +170,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
         SelfTest::NetDownload { again, small } => crate::net_download_tests::plan(again, small),
         SelfTest::DeskCatalog => crate::catalog_tests::plan(),
         SelfTest::CBuild => crate::cc_build_tests::plan(),
+        SelfTest::AppBuild { .. } => crate::app_build_tests::plan(),
         SelfTest::AppEditorBuild => crate::app_editor_build_tests::plan(),
         SelfTest::Edit | SelfTest::Manifest | SelfTest::ManifestGood => {
             let mut plan = match test {
@@ -209,6 +211,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::NetDownload { .. }
             | SelfTest::DeskCatalog
             | SelfTest::CBuild
+            | SelfTest::AppBuild { .. }
             | SelfTest::AppEditorBuild
     ) {
         // The file system service starts before the shell, once there is a

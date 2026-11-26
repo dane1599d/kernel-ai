@@ -30,7 +30,7 @@ const CALL_MS: u64 = 60_000;
 /// Time for comphost to start the app, paint its first frame and give it a few
 /// samples under TCG.
 const OPEN_MS: u64 = 12_000;
-/// The requests the mock model answers (`xtask/src/mock_llm.rs`).
+/// The requests the mock model answers (`xtask/src/mock_llm/acts.rs`).
 const SORT: &str = "sort the monitor by memory";
 const SELECT: &str = "select spin-a in the monitor";
 const STOP: &str = "stop spin-a";

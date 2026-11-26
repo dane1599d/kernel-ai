@@ -17,7 +17,7 @@ use crate::{ask_box, desk_tests, ipc, log, sched_control, terminal, threads};
 
 const CASE: &str = "pane-states";
 /// A line the mock model answers with a run-tier script, no card
-/// (`xtask/src/mock_llm.rs`).
+/// (`xtask/src/mock_llm/`).
 const RUN_LINE: &str = "turn on round robin scheduling";
 /// A line code refuses before any model: a script that names no variable.
 const REFUSED_LINE: &str = "c";
