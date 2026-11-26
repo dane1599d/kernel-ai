@@ -143,8 +143,9 @@ const LOG_LINES: usize = 30;
 
 /// What the next line is for, when it is not a new line at the prompt.
 enum Waiting {
-    /// A script or a tune trial the shell proposed.
-    Confirm(Confirm),
+    /// A script or a tune trial the shell proposed, and its rows: printed when
+    /// it is asked, once nothing else can land among them.
+    Confirm(Confirm, Vec<String>),
     /// An upload `:apply` showed.
     Apply(edit_mode::Proposal),
     /// The shell replied `more`: the entry has a bracket open, and the next line
@@ -275,7 +276,7 @@ pub fn run(_: usize) {
             continue;
         }
         let prompt = match &waiting {
-            Some(Waiting::Confirm(confirm)) => confirm.prompt(),
+            Some(Waiting::Confirm(confirm, _)) => confirm.prompt(),
             Some(Waiting::Apply(p)) => format!("apply {} to {}? yes/no> ", p.label, p.component),
             Some(Waiting::More) => CONTINUE_PROMPT.into(),
             Some(Waiting::Menu(_) | Waiting::Shown(..)) | None => edit_mode::prompt()
@@ -284,13 +285,22 @@ pub fn run(_: usize) {
                     false => PROMPT.into(),
                 }),
         };
-        let asks = matches!(waiting, Some(Waiting::Confirm(_) | Waiting::Apply(_)));
+        let asks = matches!(waiting, Some(Waiting::Confirm(..) | Waiting::Apply(_)));
         // The question is answered on the console, and only by keys typed once
-        // it is on screen: the flag first, then the screen, then the drop.
+        // it is on screen: the flag and the hold first, then the screen, then
+        // the question, then the drop. Nothing another program or thread prints
+        // lands among its rows or scrolls its top away (bug hunt 6, H6-10), and
+        // a question asked again after Ctrl-C is printed again.
         if asks {
             AWAITING_ANSWER.store(true, Ordering::Release);
+            console::hold_others();
         }
         let took = asks && claim::take_for_answer();
+        match &waiting {
+            Some(Waiting::Confirm(_, rows)) => rows.iter().for_each(|row| log!("{row}")),
+            Some(Waiting::Apply(proposal)) => proposal.lines.iter().for_each(|l| log!("? {l}")),
+            _ => {}
+        }
         console::show_input(&prompt, "", 0);
         if asks {
             decoder.discard_pending();
@@ -299,6 +309,9 @@ pub fn run(_: usize) {
         // way to a card.
         let card = waiting.is_none() && edit_mode::editing().is_none();
         let line = read_line(&mut decoder, &prompt, card);
+        if asks {
+            console::release_held();
+        }
         AWAITING_ANSWER.store(false, Ordering::Release);
         claim::give_back(took);
         let line = match line {
@@ -319,7 +332,7 @@ pub fn run(_: usize) {
         };
         let line = line.trim();
         match waiting.take() {
-            Some(Waiting::Confirm(confirm)) => {
+            Some(Waiting::Confirm(confirm, _)) => {
                 waiting = shell_line(&format!("answer {} {line}", confirm.id));
                 continue;
             }
@@ -495,6 +508,7 @@ pub(crate) fn answer_on_console(decoder: &mut Decoder, menu: &mut Menu) -> Answe
 /// screen: a send's text, above its card.
 fn answer_on_console_after(decoder: &mut Decoder, menu: &mut Menu, shown: &[String]) -> Answer {
     AWAITING_ANSWER.store(true, Ordering::Release);
+    console::hold_others();
     let took = claim::take_for_answer();
     for row in shown {
         log!("{row}");
@@ -519,6 +533,7 @@ fn answer_on_console_after(decoder: &mut Decoder, menu: &mut Menu, shown: &[Stri
         }
     };
     MENU_OPEN_MS.store(0, Ordering::Release);
+    console::release_held();
     AWAITING_ANSWER.store(false, Ordering::Release);
     claim::give_back(took);
     answer
@@ -620,9 +635,10 @@ fn shell_reply(line: &str) -> Option<Vec<u8>> {
     }
 }
 
-/// Prints `ok <text>`, `err <text>` or `confirm <id> <text>` with its lead, one
-/// complete line per piece, and returns a confirmation shown in full. `more` prints
-/// nothing and asks for the entry's next line.
+/// Prints `ok <text>` or `err <text>` with its lead, one complete line per
+/// piece. A `confirm <id> <text>` that can be shown in full comes back with its
+/// rows, which [`run`] prints once it asks; one that cannot is printed and
+/// declined. `more` prints nothing and asks for the entry's next line.
 fn show_shell_reply(reply: &[u8]) -> Option<Waiting> {
     if reply == b"more" {
         return Some(Waiting::More);
@@ -645,7 +661,10 @@ fn show_shell_reply(reply: &[u8]) -> Option<Waiting> {
         },
         _ => ("!", "the shell sent a malformed reply", None),
     };
-    show_lines(lead, body);
+    let rows = rows_of(lead, body);
+    if confirm.is_none() {
+        rows.iter().for_each(|row| log!("{row}"));
+    }
     REPLIED_NS.store(hpet::nanos(), Ordering::Relaxed);
     REPLIES_SHOWN.fetch_add(1, Ordering::Relaxed);
     // A script runs only on a yes to all of it, so a confirmation asks nothing if
@@ -653,15 +672,14 @@ fn show_shell_reply(reply: &[u8]) -> Option<Waiting> {
     if let Some(id) = confirm
         && (clean != text || !fits_on_screen(body))
     {
+        rows.iter().for_each(|row| log!("{row}"));
         log!("! the confirmation could not be shown in full, so it will not run");
         // Decline it, so no later line can answer it.
         return shell_line(&format!("answer {id} no"));
     }
     confirm.map(|id| {
-        Waiting::Confirm(Confirm {
-            id,
-            tune: body.starts_with("Tune \""),
-        })
+        let tune = body.starts_with("Tune \"");
+        Waiting::Confirm(Confirm { id, tune }, rows)
     })
 }
 
@@ -745,13 +763,17 @@ fn fits_on_screen(body: &str) -> bool {
 /// Prints each line of `body` after `lead`, wrapped at spaces to the screen's
 /// width so no word is split across rows.
 fn show_lines(lead: &str, body: &str) {
+    rows_of(lead, body).iter().for_each(|row| log!("{row}"));
+}
+
+/// The rows [`show_lines`] prints.
+fn rows_of(lead: &str, body: &str) -> Vec<String> {
     let (cols, _) = crate::console::size().unwrap_or((usize::MAX, usize::MAX));
     let width = PIECE_CHARS.min(cols.saturating_sub(2));
-    for line in body.lines() {
-        for row in wrap(line, width) {
-            log!("{lead} {row}");
-        }
-    }
+    body.lines()
+        .flat_map(|line| wrap(line, width))
+        .map(|row| format!("{lead} {row}"))
+        .collect()
 }
 
 /// The shell's action log (`log`) after the log book: what each request did, so
