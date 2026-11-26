@@ -154,11 +154,29 @@ pub fn note_cr3(cr3: u64) {
     LOADED_CR3[percpu::index()].store(cr3, Ordering::SeqCst);
 }
 
+/// For the tests (`test=shm`): the range start whose shootdowns are counted.
+static WATCHED: AtomicU64 = AtomicU64::new(0);
+static WATCHED_ROUNDS: AtomicU64 = AtomicU64::new(0);
+
+/// Counts from now on the range shootdowns that start at `address` (0: none).
+pub fn watch_shootdowns(address: u64) {
+    WATCHED_ROUNDS.store(0, Ordering::Relaxed);
+    WATCHED.store(address, Ordering::Relaxed);
+}
+
+/// Range shootdowns at the watched address since [`watch_shootdowns`].
+pub fn watched_shootdowns() -> u64 {
+    WATCHED_ROUNDS.load(Ordering::Relaxed)
+}
+
 /// Invalidates `pages` pages from `address` in this CPU's TLB and in every other
 /// CPU that has one of the address spaces `cr3s` loaded, in one round of
 /// interrupts, and waits until they all have. The caller has changed the page
 /// tables already.
 pub fn tlb_shootdown_range(cr3s: &[u64], address: u64, pages: u64) {
+    if address != 0 && address == WATCHED.load(Ordering::Relaxed) {
+        WATCHED_ROUNDS.fetch_add(1, Ordering::Relaxed);
+    }
     flush_range(address, pages);
     core::sync::atomic::fence(Ordering::SeqCst);
     let me = percpu::index();
@@ -234,6 +252,12 @@ pub fn on_tlb_ipi() {
 static REPORTER: AtomicUsize = AtomicUsize::new(0);
 /// How many times the reporting CPU re-entered the fatal path.
 static REPORT_DEPTH: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether a CPU is reporting a fatal error: the console then shows every
+/// line at once, a question's hold or not.
+pub fn reporting() -> bool {
+    REPORTER.load(Ordering::Acquire) != 0
+}
 
 /// Prepares this CPU to report a fatal error. Interrupts go off, so a halt request
 /// or a context switch cannot interrupt the report.

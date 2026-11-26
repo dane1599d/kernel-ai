@@ -10,6 +10,7 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
             "desktop: key 0x4 1",
             "desktop: lost the screen to the console",
             "desktop: the screen is back",
+            "desktop: the Kai pane came back with a 3-character line",
             "display-claim: desktop claimed the screen, Ctrl+Alt+F12 gave it to the console and back, and only desktop could hold it",
         ],
         ..case("display-claim", "test=display-claim")

@@ -20,6 +20,13 @@ const SURFACE: u32 = 2;
 const SEAT: u32 = 3;
 /// Buffers a window draws in turn.
 const BUFFERS: u32 = 2;
+/// The most px a buffer has on a side that `desktop` takes: deskcore's
+/// `server::MAX_BUFFER_PX`, which `desk_tests` checks this against.
+pub(crate) const MAX_BUFFER_PX: u32 = 16_384;
+/// The widest or tallest window an app may have, in logical px: at the
+/// largest scale its buffers are still within [`MAX_BUFFER_PX`] a side, and
+/// its pool's size within a u32 (bug hunt 2, H2-11).
+pub const MAX_WINDOW_PX: u16 = (MAX_BUFFER_PX * SCALE_ONE / SCALE_MAX) as u16;
 
 /// Where to draw a window's next picture: an offset into its pool, in bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -202,7 +209,11 @@ impl Desk {
 
     /// The first picture of the app's window `app`, or a new picture of it.
     pub fn frame(&mut self, app: u32, frame: &Frame) -> Result<Show, Open> {
-        let (w, h) = (frame.size.0.max(1) as u32, frame.size.1.max(1) as u32);
+        // Bounded as `view.open` bounds it: a size past it (a resize, or a
+        // window opened before the bound) is drawn cut to it, never
+        // overflowing the buffers' arithmetic.
+        let side = |px: i32| px.clamp(1, i32::from(MAX_WINDOW_PX)) as u32;
+        let (w, h) = (side(frame.size.0), side(frame.size.1));
         let scale = self.scale;
         let damage = surface::damage(frame, self.scale);
         let tree = surface::tree_update(frame).encode();

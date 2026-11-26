@@ -346,7 +346,9 @@ impl World {
 
     fn set(&mut self, rng: &mut Rng) {
         let (spec, breaks_a_rule) = spec(rng, self.now);
-        let full = self.goals.list().len() >= MAX_GOALS;
+        // A finished goal gives its place up to a new one.
+        let list = self.goals.list();
+        let full = list.len() >= MAX_GOALS && !list.iter().any(|g| g.state.is_final());
         match (self.goals.set(spec, self.now), breaks_a_rule) {
             (Err(Refusal::BadSpec(_)), true) => {}
             (Err(Refusal::TooManyGoals), false) => assert!(full),

@@ -755,3 +755,14 @@ mod pools;
 mod scale;
 /// What a client's sizes may be.
 mod sizes;
+
+/// A pool stated as 16 MiB needs 4096 pages mapped, so a one-page `Shm` under
+/// it is refused, never read past its end (#22 of the bug hunt).
+#[test]
+fn a_pools_stated_size_is_the_pages_its_shm_must_hold() {
+    use crate::server::pool_pages;
+    assert_eq!(pool_pages(0x0100_0000), 4096);
+    assert_eq!(pool_pages(4096), 1);
+    assert_eq!(pool_pages(4097), 2);
+    assert_eq!(pool_pages(u32::MAX), 1 << 20);
+}

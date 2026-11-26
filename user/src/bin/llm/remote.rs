@@ -18,7 +18,8 @@ use user::{arg, sys};
 
 const DEFAULT_MODEL: &str = "qwen3-8b";
 const CHAT_TIMEOUT_MS: u64 = 120_000;
-const HEALTH_TIMEOUT_MS: u64 = 5_000;
+/// `updated` waits longer than this for `health` (`modelchan::trial`).
+const HEALTH_TIMEOUT_MS: u64 = llmproto::health::SERVER_HEALTH_MS;
 const MAX_ERROR_CHARS: usize = 160;
 
 pub struct Server {

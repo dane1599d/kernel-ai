@@ -875,6 +875,65 @@ fn at_most_sixteen_goals_are_kept_and_only_a_finished_one_is_forgotten() {
     assert!(next > ids[MAX_GOALS - 1]);
 }
 
+/// Goal `id` as the shell's `goal-add` carries it: a one-goal `kai-goals 1`
+/// file, approved, parsed back.
+fn added(id: u64) -> Goal {
+    let mut file = Goals::parse(&format!("{MAGIC}\nids\t{id}\n")).unwrap();
+    let made = file.set(spec(), T0).unwrap();
+    file.approve(made, T0).unwrap();
+    let back = Goals::parse(&file.to_text()).unwrap();
+    back.list()[0].clone()
+}
+
+/// bug-hunt-6 H6-25: sixteen goals done, failed or cancelled leave room for a
+/// seventeenth, and the oldest finished one gives up its place.
+#[test]
+fn a_seventeenth_goal_is_adopted_after_sixteen_finished() {
+    let mut kept = Goals::new();
+    for id in 1..=MAX_GOALS as u64 {
+        kept.adopt(added(id)).unwrap();
+        let goal = kept.get_mut(id).unwrap();
+        match id % 3 {
+            0 => goal.state = State::Done,
+            1 => goal.state = State::Failed,
+            _ => goal.cancel(T0).unwrap(),
+        }
+    }
+    let next = MAX_GOALS as u64 + 1;
+    assert_eq!(kept.adopt(added(next)), Ok(()));
+    assert!(kept.get(1).is_none(), "the oldest finished goal made room");
+    assert!(kept.get(2).is_some() && kept.get(next).is_some());
+    assert_eq!(kept.list().len(), MAX_GOALS);
+    // `goal_set` makes room the same way.
+    assert!(kept.set(spec(), T0).is_ok());
+    assert!(kept.get(2).is_none());
+}
+
+/// Only a finished goal gives up its place: with sixteen unfinished, the
+/// seventeenth is refused and nothing is forgotten, and a refusal for another
+/// reason forgets nothing either.
+#[test]
+fn sixteen_unfinished_goals_still_refuse_a_seventeenth() {
+    let mut kept = Goals::new();
+    for id in 1..=MAX_GOALS as u64 {
+        // At most four active: the rest come paused, unfinished.
+        let mut goal = added(id);
+        if id > MAX_ACTIVE as u64 {
+            goal.pause().unwrap();
+        }
+        kept.adopt(goal).unwrap();
+    }
+    let next = MAX_GOALS as u64 + 1;
+    let mut paused = added(next);
+    paused.pause().unwrap();
+    assert_eq!(kept.adopt(paused), Err(Refusal::TooManyGoals));
+    assert_eq!(kept.list().len(), MAX_GOALS);
+    // One finished goal, but a fifth active one: refused, the finished one kept.
+    kept.get_mut(16).unwrap().cancel(T0).unwrap();
+    assert_eq!(kept.adopt(added(next)), Err(Refusal::TooManyActive));
+    assert!(kept.get(16).is_some());
+}
+
 #[test]
 fn a_tick_pauses_a_goal_past_its_deadline_unless_a_step_runs_and_posts_check_ins() {
     let mut goals = Goals::new();

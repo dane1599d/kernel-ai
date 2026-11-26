@@ -82,18 +82,28 @@ fn stale(committed: &str, generated: &str) -> Option<Vec<String>> {
     Some(lines)
 }
 
+/// The OS's version: `version` under `[workspace.package]` in `root`'s
+/// `Cargo.toml`, the one every crate inherits (ADR 0009 D7).
+pub fn workspace_version(root: &Path) -> Result<String, String> {
+    let path = root.join("Cargo.toml");
+    let toml =
+        fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    toml.lines()
+        .skip_while(|line| line.trim() != "[workspace.package]")
+        .skip(1)
+        .take_while(|line| !line.trim_start().starts_with('['))
+        .find_map(|line| {
+            let (key, value) = line.split_once('=')?;
+            (key.trim() == "version").then(|| value.trim().trim_matches('"').to_owned())
+        })
+        .filter(|version| !version.is_empty())
+        .ok_or_else(|| format!("{} has no [workspace.package] version", path.display()))
+}
+
 /// The line `make_esp` puts above the notices on the boot drive. The version is
 /// the workspace's one (`[workspace.package]`, ADR 0009 D7).
 pub fn image_line(root: &Path) -> String {
-    let version = fs::read_to_string(root.join("Cargo.toml"))
-        .ok()
-        .and_then(|toml| {
-            toml.lines().find_map(|l| {
-                l.strip_prefix("version = ")
-                    .map(|v| v.trim_matches('"').to_owned())
-            })
-        })
-        .unwrap_or_else(|| "unknown".into());
+    let version = workspace_version(root).unwrap_or_else(|_| "unknown".into());
     let commit = crate::esp::commit_id(root);
     format!(
         "Kernel AI {version} (commit {commit}). Licence MPL-2.0. \

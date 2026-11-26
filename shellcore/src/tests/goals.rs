@@ -499,3 +499,106 @@ fn a_goal_the_shell_sets_runs_its_first_step_on_the_agents_clock() {
         "{events:?}"
     );
 }
+
+/// bug-hunt-3 H3-24: a shell started again reads its goals from the log on
+/// disk, `goal_1` for `goal 1`, and never gives goal id 1 again.
+#[test]
+fn goal_ids_are_never_used_twice_after_a_shell_restart() {
+    let (host, _first) = with_goal();
+    let mut shell = shell(&host);
+    host.calls.borrow_mut().push_back(call(SET));
+    let asked = shell.eval("keep tidying the files in notes/q3");
+    let id = asked.confirm.expect("asked");
+    let once = host.mint(id, &format!("goal_set({id})"));
+    let set = shell.eval(&format!("answer {id} allow once={once}"));
+    assert!(set.text.starts_with("Goal 2 set"), "{set:?}");
+}
+
+/// #16: a `by` that fits a u64 but not one added to now is refused, never
+/// an overflow (an abort in a debug build).
+#[test]
+fn a_deadline_too_far_off_to_add_to_now_is_refused() {
+    let host = FakeHost::new();
+    host.clock.set(60_000_000_000);
+    let mut shell = shell(&host);
+    host.calls.borrow_mut().push_back(call(
+        r#"{"name":"goal_set","arguments":{"text":"tidy notes/q3","steps":3,"tokens":100,"wall":"1h","by":"307445734561825m"}}"#,
+    ));
+    let reply = shell.eval("keep tidying the files in notes/q3 until much later");
+    assert!(
+        !reply.ok && reply.text.contains("90m, 2h or 1d"),
+        "{reply:?}"
+    );
+    assert!(shell.pending.is_none());
+}
+
+/// #18: a goal step's path the folder check calls inside is inside where
+/// the fs rows act too: `~/` is home for both.
+#[test]
+fn a_path_inside_a_goals_folders_is_inside_them_where_the_files_are() {
+    let folders = [String::from("notes")];
+    for path in ["~/notes/x", "~/notes", "/home/user/notes/x", "notes/x", "~"] {
+        if !crate::goalscope::path_inside(&folders, path) {
+            continue;
+        }
+        let at = crate::script::home_path(path);
+        assert!(
+            at.is_some_and(|at| at == "notes" || at.starts_with("notes/")),
+            "{path} passes the check but is {at:?} to the fs rows"
+        );
+    }
+    assert_eq!(crate::script::home_path("~"), Some(""));
+}
+
+/// Sets one more goal on the person's allow and has `goals` take it: the
+/// reply to the line, and to the allow when there was a card.
+fn set_another(host: &FakeHost, shell: &mut Shell) -> (Reply, Option<Reply>) {
+    host.calls.borrow_mut().push_back(call(SET));
+    let asked = shell.eval("keep tidying the files in notes/q3 for the next two hours");
+    let Some(menu) = asked
+        .text
+        .strip_prefix("menu ")
+        .and_then(|rest| rest.split_once(' '))
+        .and_then(|(n, _)| n.parse::<u64>().ok())
+    else {
+        return (asked, None);
+    };
+    let short = asked.text.lines().last().unwrap().to_string();
+    let once = host.mint(menu, &short);
+    let set = shell.eval(&format!("answer {menu} allow once={once}"));
+    let next = goals_step(shell, "next");
+    let n = next
+        .strip_prefix("ok #")
+        .unwrap()
+        .split_once(' ')
+        .unwrap()
+        .0;
+    goals_step(shell, &format!("report {n} ok"));
+    (asked, Some(set))
+}
+
+/// bug-hunt-6 H6-25: with sixteen goals running, a seventeenth is refused
+/// before the card, never after the person's yes; once one ends, the next is
+/// asked and set.
+#[test]
+fn a_seventeenth_goal_is_refused_before_the_ask_and_set_once_one_ends() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    for n in 1..=goalcore::MAX_GOALS {
+        let (_, set) = set_another(&host, &mut shell);
+        let set = set.expect("a card");
+        assert!(set.text.starts_with(&format!("Goal {n} set")), "{set:?}");
+    }
+    let (asked, set) = set_another(&host, &mut shell);
+    assert!(set.is_none(), "no card for the seventeenth: {asked:?}");
+    assert!(
+        !asked.ok && asked.text.contains("16 goals are running or paused"),
+        "{asked:?}"
+    );
+    assert!(shell.roster.goal_rows(17).is_none());
+    // `goals` ends goal 1: its place comes back.
+    goals_step(&mut shell, "goal=1 end");
+    let (_, set) = set_another(&host, &mut shell);
+    let set = set.expect("a card once a goal ended");
+    assert!(set.text.starts_with("Goal 17 set"), "{set:?}");
+}

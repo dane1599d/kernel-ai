@@ -85,7 +85,8 @@ pub enum Refusal {
     NotDone(State),
     /// [`crate::MAX_ACTIVE`] goals are active: pause or finish one first.
     TooManyActive,
-    /// [`crate::MAX_GOALS`] are kept: forget a finished one first.
+    /// [`crate::MAX_GOALS`] unfinished goals are kept: a finished one would
+    /// have made room.
     TooManyGoals,
     NoSuchGoal(u64),
     /// The request is not one a goal can be made from.
@@ -122,7 +123,7 @@ impl Refusal {
                 crate::MAX_ACTIVE
             ),
             Self::TooManyGoals => format!(
-                "{} goals are kept; forget a finished one first",
+                "{} goals are unfinished; cancel one first",
                 crate::MAX_GOALS
             ),
             Self::NotAStep => String::from("the goal asks a question; answer it"),
