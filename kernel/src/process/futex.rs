@@ -44,6 +44,25 @@ fn with_waiting<R>(f: impl FnOnce(&mut [Option<(u64, u64)>; MAX_THREADS]) -> R) 
     result
 }
 
+/// Spike S07-4 (spike/netd-ring3 only): a word in a mapped `Shm` object is keyed
+/// by its frame, under this pid, so a wake from the other process that maps it
+/// finds its waiter: KRNG's doorbells between `netd` and its client.
+const SHARED: u64 = u64::MAX;
+
+fn shared(addr: u64) -> bool {
+    let base = kabi::layout::SHM_BASE;
+    (base..base + crate::shm::MAX_OBJECTS as u64 * kabi::layout::SHM_SLOT).contains(&addr)
+}
+
+/// The key a word is registered under: (pid, address), or for a word in an
+/// `Shm` object (SHARED, its physical address).
+fn key(pid: u64, addr: u64, phys: u64) -> (u64, u64) {
+    match shared(addr) {
+        true => (SHARED, phys),
+        false => (pid, addr),
+    }
+}
+
 /// A futex word must be 4-byte aligned and inside user memory.
 fn check(addr: u64) -> Result<(), Error> {
     if !addr.is_multiple_of(4) {
@@ -73,7 +92,7 @@ pub fn wait(slot: usize, addr: u64, expected: u64, timeout_ms: u64) -> Result<u6
                 return false;
             }
             WOKEN[tid].store(false, Ordering::SeqCst);
-            waiting[tid] = Some((pid, addr));
+            waiting[tid] = Some(key(pid, addr, phys));
             true
         })
     })?;
@@ -107,6 +126,10 @@ pub fn wait(slot: usize, addr: u64, expected: u64, timeout_ms: u64) -> Result<u6
 pub fn wake(slot: usize, addr: u64, count: u64) -> Result<u64, Error> {
     check(addr)?;
     let pid = identity(slot).pid;
+    let wanted = match shared(addr) {
+        true => key(pid, addr, uaccess::with_phys(slot, addr, |phys| phys)?),
+        false => (pid, addr),
+    };
     let mut woken: [Option<Tid>; MAX_THREADS] = [None; MAX_THREADS];
     let mut n = 0;
     with_waiting(|waiting| {
@@ -114,7 +137,7 @@ pub fn wake(slot: usize, addr: u64, count: u64) -> Result<u64, Error> {
             if n as u64 >= count {
                 break;
             }
-            if *entry == Some((pid, addr)) {
+            if *entry == Some(wanted) {
                 *entry = None;
                 WOKEN[tid].store(true, Ordering::SeqCst);
                 woken[n] = Some(tid);
