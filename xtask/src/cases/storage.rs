@@ -162,6 +162,7 @@ pub(super) const CASES: &[TestCase] = &[
     TestCase {
         expect: &[
             "filecheck: the File handle opened before fs restarted reads what was committed",
+            "filecheck: its first change after fs restarted was told its action is gone",
             "files: fs restarted mid-action: nothing half-done is on disk, and an open File handle works again",
         ],
         server: false,

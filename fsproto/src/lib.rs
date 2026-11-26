@@ -471,7 +471,9 @@ pub enum Error {
     /// On another caller's, which the owner never hears, every change of the
     /// owner's after it is refused this way until it sends Abort (answered
     /// Done) or Begin, so a change it meant for the action never lands
-    /// outside it.
+    /// outside it. A restarted `fs` answers it, with [`DropCause::Io`], to the
+    /// first change of each caller that ran before it started (unless that
+    /// change is a Begin or an Abort): the restart dropped any action it had.
     #[n(12)]
     Dropped(#[n(0)] DropCause),
 }

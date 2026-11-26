@@ -109,6 +109,11 @@ fn main() -> i32 {
     server.set_alive(alive);
     server.set_name_of(name_of);
     server.set_caps_of(caps_of);
+    // A caller that ran before this fs may think an action the last one had
+    // open is still open: its first change is told it is gone (H3-11).
+    if let Ok(pid) = sys::part_self(part) {
+        server.set_own_pid(pid);
+    }
     // Retention counts real time when the firmware gave a date; without one,
     // kaifs's clock counts only the time `fs` has run.
     if let Ok(seconds) = sys::clock_now() {
