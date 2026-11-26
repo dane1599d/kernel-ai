@@ -354,7 +354,15 @@ fn rules(s: &Settings, shown: &mut Shown, tree: &mut Vec<Entry>) {
             NO_RULES,
             PAGE,
             wide(),
-            label("None: every ask still asks.", TypeStyle::Body, Tone::Muted),
+            label(
+                if s.rules_unread {
+                    "The rules could not be read: try again in a moment."
+                } else {
+                    "None: every ask still asks."
+                },
+                TypeStyle::Body,
+                Tone::Muted,
+            ),
         ));
     }
     let ids: Vec<RuleRef> = s.rules.iter().map(|r| r.id).collect();
@@ -499,7 +507,11 @@ fn network(s: &Settings, shown: &mut Shown, tree: &mut Vec<Entry>) {
             PAGE,
             wide(),
             label(
-                "No app may reach a host yet: each asks the first time.",
+                if s.net_unread {
+                    "The network grants could not be read: try again in a moment."
+                } else {
+                    "No app may reach a host yet: each asks the first time."
+                },
                 TypeStyle::Body,
                 Tone::Muted,
             ),
