@@ -74,6 +74,11 @@ pub mod budget {
     pub const STACK: u64 = 2 << 20;
     /// cc.wasm translated, eagerly: about 1.4 MiB in S12-1.
     pub const COMPILER: u64 = 3 << 19;
+    /// A compile's scratch tree on the host at its height: a file grows by
+    /// doubling, so it may have room for twice what it holds, with the old
+    /// block still held while it grows (bug-hunt-6 H6-8). A link's copies
+    /// are in [`BUILD`].
+    pub const COMPILE_TREE: u64 = 3 * compiler::COMPILE_SCRATCH as u64;
     /// One kept entry's module and instance, estimated.
     pub const ENTRY: u64 = 16 << 10;
     /// A `cc build` at its height, beside the session: its objects, their
@@ -99,6 +104,7 @@ pub mod budget {
             + STACK
             + COMPILER
             + compiler::MAX_MEMORY as u64
+            + COMPILE_TREE
             + 2 * (session::SESSION_MEMORY as u64 + ENTRY * session::MAX_ENTRIES as u64)
             + last
     }

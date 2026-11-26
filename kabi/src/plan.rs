@@ -98,10 +98,10 @@ pub const SHELL_NET: &str = "proto:tcp,ports:443,hosts:any";
 /// sessions, on wasmi, holding no authority. Planned before the shell, which
 /// calls it, and started on demand: the first `c>` entry's call starts it, so
 /// it holds no memory before then. Its pages cover `ccserve::budget`: the
-/// program, its stack, the compiler and one compile, two sessions (the user's,
+/// program, its stack, the compiler and one compile with its scratch tree, two sessions (the user's,
 /// set aside while a model's program runs: P4 task 14) and the modules they
 /// keep, and a `cc build` (P4 plan's 3,680 counted the heap alone).
-pub const CC: &str = "cc start=demand caps=serve pages=10240 stack_pages=512 burst_ms=5000";
+pub const CC: &str = "cc start=demand caps=serve pages=11008 stack_pages=512 burst_ms=5000";
 /// The `fetch` service (P5 task 12): apps' and the agent's HTTPS requests, each
 /// on the caller's own `NetDest` moved in with the call. NET so the kernel lets
 /// it receive one (it closes NET's own handle at once); room for a TLS client

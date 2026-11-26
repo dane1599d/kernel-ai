@@ -32,6 +32,9 @@ pub const MAX_CALL: usize = 1024;
 /// Room kept for the record that ends a reply: a `need` with its call, or a
 /// shorter one. Output (at most 6 KiB) and the rest fit in what is left.
 const END_ROOM: usize = MAX_CALL + 64;
+/// Room kept for a committed entry's `done`, its longest form with three
+/// 20-digit numbers: a reply that ends in `done` never needs [`END_ROOM`].
+const DONE_ROOM: usize = 96;
 /// The status an effect gets when its call is too long to ask about.
 pub const E2BIG: i64 = -7;
 /// Longest error text sent back.
@@ -544,8 +547,17 @@ fn committed(open: &mut Open, done: Done, prepared: Prepared, compile_us: u64, r
             let _ = reply.push_leaving(&Record::Retyped(name), END_ROOM);
         }
     }
-    if let Some((ty, text)) = &done.value {
-        let _ = reply.push_leaving(&Record::Value { ty: *ty, text }, END_ROOM);
+    // The value goes after the output and definitions, and its reply ends in
+    // `done`: only that record's room is kept (bug-hunt-6 H6-9), so the room
+    // the definitions left holds any value up to `MAX_SHOWN`. One that still
+    // does not fit is said to be missing, never left out unseen.
+    if let Some((ty, text)) = &done.value
+        && reply
+            .push_leaving(&Record::Value { ty: *ty, text }, DONE_ROOM)
+            .is_err()
+    {
+        let note: &[u8] = b"\n[value not shown: the reply is full]\n";
+        let _ = reply.push_leaving(&Record::Out(note), DONE_ROOM);
     }
     open.defs
         .commit(prepared.seq, prepared.defs, &prepared.drops);
