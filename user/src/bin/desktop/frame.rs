@@ -108,16 +108,15 @@ pub(super) fn refresh_bar(state: &mut State) {
 /// Repaints the damage into the frame, copies it to the screen and flushes it.
 pub(super) fn draw(state: &mut State, screen: &Screen) {
     taskbar::damage(state);
-    let mut damage = state.desk.take_damage();
-    damage.append(&mut state.extra);
+    let damage = deskcore::damage::for_frame(
+        state.desk.take_damage(),
+        &mut state.extra,
+        state.width,
+        state.height,
+    );
     if damage.is_empty() {
         return;
     }
-    let bounds = Rect::new(0, 0, state.width, state.height);
-    let damage: Vec<Rect> = damage
-        .iter()
-        .filter_map(|r| paint::reach(*r).intersect(&bounds))
-        .collect();
     // Timed only for `desk-perf`: no TIME calls on the normal path.
     let timed = state.perf.is_some();
     let started = if timed { sys::time_ns() } else { 0 };
@@ -346,6 +345,7 @@ fn present(state: &State, screen: &Screen, damage: &[Rect]) -> Vec<Rect> {
                     mask: &state.mask,
                     id: window.id.0,
                     content,
+                    shade: state.painter.shade(),
                 };
                 let at = deskcore::overlay::Place {
                     scale: state.scale,

@@ -12,8 +12,8 @@
 //!    verdict card, in code's words; if the shell dies, the kernel reverts.
 //!
 //! `tune undo` puts back the policy a kept trial replaced. Labels never name
-//! the shell, supervisor or llm (the summary offers none of them; the kernel
-//! checks again).
+//! the shell, supervisor, llm or desktop (the summary offers none of them; the
+//! kernel checks again, and also refuses any holder of a system capability).
 
 use crate::{Host, Reply};
 use alloc::boxed::Box;
@@ -35,8 +35,10 @@ const CONFIRM_NS: u64 = 120_000_000_000;
 const BAN_NS: u64 = 600_000_000_000;
 /// How often the shell looks at a running trial.
 const POLL_MS: u64 = 250;
-/// Services no label may name.
-pub const PROTECTED: [&str; 3] = ["shell", "supervisor", "llm"];
+/// Services no label may name: the kernel's profile floors (`desktop` holds
+/// the trusted layer). The kernel also refuses services holding a system
+/// capability, which the shell cannot see.
+pub const PROTECTED: [&str; 4] = ["shell", "supervisor", "llm", "desktop"];
 
 /// A proposal waiting for its yes.
 struct Proposal {

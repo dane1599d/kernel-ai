@@ -1,0 +1,25 @@
+[package]
+name = "kaimedia"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Plan M-1's host half (P6 groundwork G8): one decode API over PNG, JPEG, GIF
+# and WebP, to RGBA8, with ceilings on dimensions, pixels, frames and the bytes
+# decoded, each checked before the memory is asked for. Host-tested only; no
+# app or service uses it yet.
+[lib]
+doctest = false
+
+[dependencies]
+png = { version = "0.18", default-features = false }
+zune-jpeg = { version = "0.5", default-features = false, features = ["std"] }
+gif = { version = "0.14", default-features = false, features = ["std"] }
+image-webp = { version = "0.2", default-features = false }
+
+# The tests' samples are made with each format's own encoder (tests/samples).
+[dev-dependencies]
+png = { version = "0.18", default-features = false }
+gif = { version = "0.14", default-features = false, features = ["std"] }
+image-webp = { version = "0.2", default-features = false }

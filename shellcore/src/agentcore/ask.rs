@@ -149,8 +149,13 @@ pub(crate) fn hold_reason(row: &Action) -> Option<String> {
 /// own ask (no undo) takes a rule for the action or for its target; a host nobody
 /// named takes one for that host only. Asks from consent take none, and a held
 /// send never takes one: a send always asks (ADR 0002 question 3).
+///
+/// An app's row takes none: its rule could not be read back at boot, before
+/// apps load, and a reinstalled app's row of the same name need not mean the
+/// same (#10). A target a rules file cannot hold (`rules::keepable_target`:
+/// a space, an `=`, `-`) takes no rule of its own (#9, #15).
 pub(super) fn offer(row: &'static Action, args: &Arguments, why: Why) -> Option<Offer> {
-    if held(row) {
+    if held(row) || matches!(row.owner, agentabi::Owner::App(_)) {
         return None;
     }
     let target = row
@@ -158,7 +163,8 @@ pub(super) fn offer(row: &'static Action, args: &Arguments, why: Why) -> Option<
         .iter()
         .find(|arg| arg.role == Role::Target)
         .and_then(|arg| args.values.iter().find(|(name, _)| *name == arg.name))
-        .map(|(_, text)| text.clone());
+        .map(|(_, text)| text.clone())
+        .filter(|text| crate::rules::keepable_target(text));
     match why {
         Why::NoUndo => Some(Offer {
             action: row.name,

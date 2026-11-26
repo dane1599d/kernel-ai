@@ -186,12 +186,6 @@ impl Desk {
         self.scale
     }
 
-    /// Whether `desktop`'s greeting has come: until it has, the scale is not
-    /// known.
-    pub fn greeted(&self) -> bool {
-        self.greeted
-    }
-
     fn id(&mut self) -> u32 {
         let id = self.next_id;
         self.next_id += 1;

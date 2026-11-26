@@ -468,3 +468,46 @@ fn a_window_too_big_for_a_buffer_is_cut_to_the_largest() {
         assert!(open.pool_bytes > 2 * open.target.stride * open.target.height);
     }
 }
+
+/// H3-26 (review follow-up): a poll's reply, not an open's, carries a new
+/// desktop's greeting while every window is hidden (a pending effect keeps
+/// comphost polling). comphost's `reopen` resets the desk then, though it has
+/// no frames to show, so the next open binds the seat on the new desktop and
+/// the window hears its focus there.
+#[test]
+fn a_restart_heard_with_every_window_hidden_binds_the_seat_again() {
+    let mut screen = Screen::new(1280, 800);
+    let mut client = Client::new(7, "notes-window");
+    let mut d = Desk::new();
+    assert!(d.told(&client.take_events(8192)).is_empty());
+    let Err(open) = d.frame(1, &frame("Notes", 320, 200, "Go")) else {
+        panic!("a first frame opens a window");
+    };
+    let needs = serve(&mut client, &mut screen, &open.calls, true);
+    let Some(Need::MapPool { pool, .. }) = needs.first().copied() else {
+        panic!("{needs:?}");
+    };
+    client.pool_mapped(pool);
+    serve(&mut client, &mut screen, &[d.closed(1)], false);
+    assert!(d.windows().is_empty());
+    // A new desktop; the poll's empty call is answered with its greeting.
+    let mut screen = Screen::new(1280, 800);
+    let mut client = Client::new(7, "notes-window");
+    serve(&mut client, &mut screen, &[Vec::new()], false);
+    assert!(d.told(&client.take_events(8192)).contains(&Told::Restarted));
+    // What comphost's `reopen` does before its empty-frames return.
+    d.reset();
+    let Err(open) = d.frame(1, &frame("Notes", 320, 200, "Go")) else {
+        panic!("the show opens the window again");
+    };
+    let needs = serve(&mut client, &mut screen, &open.calls, true);
+    let [Need::MapPool { pool, .. }, Need::Show { window, .. }] = needs[..] else {
+        panic!("{needs:?}");
+    };
+    client.pool_mapped(pool);
+    client.take_events(8192);
+    client.apply(&[Effect::Focus(Focus::Panel)]);
+    client.take_events(8192);
+    client.apply(&[Effect::Focus(Focus::Window(window))]);
+    assert_eq!(d.told(&client.take_events(8192)), [Told::Focus(1)]);
+}
