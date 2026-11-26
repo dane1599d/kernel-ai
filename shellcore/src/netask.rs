@@ -494,7 +494,13 @@ impl Shell {
         let (app, name) = (&asking.ask.app, &asking.ask.host);
         let existed = grants.of(app).iter().any(|g| &g.object == name);
         let made = grants
-            .answer(&asking.ask, &asking.ceiling, answer, id, self.host.now_ns())
+            .answer(
+                &asking.ask,
+                &asking.ceiling,
+                answer,
+                id,
+                self.host.wall_ns(),
+            )
             .map_err(String::from)?
             .ok_or_else(|| String::from("declined"))?;
         self.net_write(&grants)?;

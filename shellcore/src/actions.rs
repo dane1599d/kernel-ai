@@ -783,7 +783,7 @@ impl Shell {
             _ => return Ok(String::from("yes")),
         };
         let offer = pending.offer.as_ref().ok_or(": no rule can cover it")?;
-        let made = (pending.id, self.host.now_ns());
+        let made = (pending.id, self.host.wall_ns());
         match self.rules.add(offer, always, granted.rule, made) {
             Ok(rule) => {
                 self.host
