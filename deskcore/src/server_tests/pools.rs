@@ -99,3 +99,70 @@ fn a_windows_surface_and_a11y_end_after_its_toplevel() {
     let late = client.handle(&mut desk, &bytes(&[(6, Request::A11yCommit)]), false);
     assert!(matches!(late, Err(Error::UnknownObject)), "{late:?}");
 }
+
+/// H3-27 (review follow-up): a surface destroyed takes its record and its
+/// tree with it. A window opened again on the same surface id starts with an
+/// empty tree; were the old record kept, `surface(3)` would find it first and
+/// the new window would show the old window's tree.
+#[test]
+fn a_surface_opened_again_on_its_old_id_starts_with_no_tree() {
+    let (mut desk, mut client, window) = tree_window();
+    let tree = bytes(&[
+        (8, Request::TreeUpdate(&tree_bytes("Old note"))),
+        (8, Request::A11yCommit),
+    ]);
+    client.handle(&mut desk, &tree, false).unwrap();
+    assert_eq!(client.tree(window).unwrap().nodes.len(), 3);
+    let gone = bytes(&[
+        (5, Request::ToplevelDestroy),
+        (4, Request::BufferDestroy),
+        (8, Request::A11yDestroy),
+        (3, Request::SurfaceDestroy),
+        (2, Request::PoolDestroy),
+    ]);
+    let needs = client.handle(&mut desk, &gone, false).unwrap();
+    assert!(matches!(needs[..], [Need::Closed { .. }]), "{needs:?}");
+    client.pool_gone(2);
+    let again = bytes(&[
+        (
+            REGISTRY,
+            Request::Bind {
+                name: 1,
+                interface: "pool",
+                version: 1,
+                id: 2,
+            },
+        ),
+        (
+            REGISTRY,
+            Request::Bind {
+                name: 2,
+                interface: "surface",
+                version: 1,
+                id: 3,
+            },
+        ),
+        (2, Request::PoolCreate { size: POOL }),
+        (
+            2,
+            Request::PoolBuffer {
+                id: 4,
+                offset: 4096,
+                width: 64,
+                height: 32,
+                stride: 256,
+                format: Format::Xrgb8888,
+            },
+        ),
+        (3, Request::GetToplevel { id: 5 }),
+        (5, Request::SetTitle("Demo")),
+    ]);
+    client.handle(&mut desk, &again, true).unwrap();
+    client.pool_mapped(2);
+    let needs = client.handle(&mut desk, &show(), false).unwrap();
+    let [Need::Show { window: anew, .. }] = needs[..] else {
+        panic!("{needs:?}");
+    };
+    assert_ne!(anew, window);
+    assert_eq!(client.tree(anew).unwrap().nodes.len(), 0);
+}

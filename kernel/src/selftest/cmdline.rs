@@ -144,6 +144,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=keep-running" => Some(SelfTest::KeepRunning {
                 reread: cmdline.split_whitespace().any(|w| w == "reread"),
             }),
+            "test=desk-many" => Some(SelfTest::DeskMany),
             "test=desk-card" => Some(SelfTest::DeskCard),
             "test=desk-standing" => Some(SelfTest::DeskStanding),
             "test=desk-standing-refused" => Some(SelfTest::DeskStandingRefused),
