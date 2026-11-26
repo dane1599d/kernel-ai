@@ -247,4 +247,16 @@ pub(super) const CASES: &[TestCase] = &[
         then: Some(&KEEP_RUNNING_2),
         ..case("keep-running", "test=keep-running")
     },
+    // H3-8's review follow-up: `desktop` names an app past the 16 processes
+    // METRICS lists, with PROC_NAME, and serves its `settings put`.
+    TestCase {
+        expect: &[
+            "desk-many: the Settings stand-in runs after 16 other processes",
+            "desk-many: user=0: err a change needs a key or a click",
+            "desk-many: desktop named an app past METRICS' processes and served it",
+        ],
+        data: Some(DATA),
+        memory_mib: Some(KEEP_RUNNING_MIB),
+        ..case("desk-many", "test=desk-many")
+    },
 ];

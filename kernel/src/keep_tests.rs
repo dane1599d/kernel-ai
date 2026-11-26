@@ -98,7 +98,7 @@ fn naps_when_left() -> Result<bool, &'static str> {
 
 /// Sends `request` as the Settings app, with `user` as comphost would set it,
 /// and waits for the shell's answer: `ok` or `err`, then its text.
-fn settings(ticket: u32, user: bool, request: &str) -> Result<String, &'static str> {
+pub(crate) fn settings(ticket: u32, user: bool, request: &str) -> Result<String, &'static str> {
     let pid = pid_of(SETTINGS)?;
     let put = format!("settings put\n{ticket}\t{}\t{request}", u8::from(user));
     if call_as("desktop", pid, &put)? != "ok" {
