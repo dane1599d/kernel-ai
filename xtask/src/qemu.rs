@@ -259,6 +259,25 @@ fn power_off_verdict(reason: Option<&str>) -> Result<(), String> {
     }
 }
 
+/// How long a reset case waits, once QEMU has exited with status 0, for the
+/// QMP listener to hand on the SHUTDOWN event QEMU sent before it went.
+const RESET_WAIT: Duration = Duration::from_secs(10);
+
+/// A reset case that ends QEMU with status 0 passes only on `guest-reset`:
+/// under `-no-reboot` a power-off ends it with status 0 as well (bug hunt 5
+/// H5-4).
+fn reset_verdict(reason: Option<&str>) -> Result<(), String> {
+    match reason {
+        Some(shutdown::GUEST_RESET) => Ok(()),
+        Some(other) => Err(format!(
+            "FAIL: QEMU stopped the guest for {other}, not a reset"
+        )),
+        None => Err(String::from(
+            "FAIL: QEMU exited with status 0, but QMP reported no reset",
+        )),
+    }
+}
+
 pub struct TestRun<'a> {
     pub case: &'a TestCase,
     pub accel: Accel,
@@ -288,8 +307,8 @@ pub fn run_test(
 ) -> Result<(), String> {
     let (accel, timeout, monitor, qmp) = (run.accel, run.timeout, run.monitor, run.qmp);
     let (stages, keys_on, stops) = (run.case.keys, run.case.keys_on, run.case.stops);
-    let powers_off = run.case.powers_off;
-    let forbid = run.case.forbid;
+    let (powers_off, resets) = (run.case.powers_off, run.case.resets);
+    let forbid = run.case.forbidden();
     let expect: Vec<String> = run
         .case
         .expect
@@ -312,9 +331,11 @@ pub fn run_test(
         .map_err(|e| format!("cannot start QEMU: {e}"))?;
     let stdout = child.stdout.take().ok_or("QEMU stdout was not captured")?;
     // Heard from the start: the event comes once, maybe before the last line.
-    let shutdown = match (powers_off, qmp) {
+    let shutdown = match (powers_off || resets, qmp) {
         (true, Some(port)) => Some(shutdown::listen(port)),
-        (true, None) => return Err(String::from("a power-off case needs a QMP socket")),
+        (true, None) => {
+            return Err(String::from("a power-off or reset case needs a QMP socket"));
+        }
         (false, _) => None,
     };
     let (ready_tx, ready_rx) = mpsc::channel();
@@ -419,7 +440,7 @@ pub fn run_test(
         if seen_rx.try_recv().is_ok() {
             // A power-off case: the guest must have turned the machine off,
             // not reset it (both pause QEMU under -no-shutdown).
-            if let Some(events) = &shutdown {
+            if let Some(events) = shutdown.as_ref().filter(|_| powers_off) {
                 shutdown_reason = events.recv_timeout(POWER_OFF_WAIT).ok();
             }
             // Every expected line is in: nothing more is waited for.
@@ -476,9 +497,14 @@ pub fn run_test(
     }
     // Before QEMU's own verdict: a forbidden line is said however the run ended.
     forbidden_verdict(forbidden)?;
-    let reset = run.case.resets && status.code() == Some(0);
+    let reset = resets && !stopped && status.code() == Some(0);
     if powers_off {
         power_off_verdict(shutdown_reason.as_deref())?;
+    }
+    // Status 0 under -no-reboot is a reset or a power-off: only QMP's reason
+    // tells them apart. QEMU sent the event before it exited.
+    if let Some(events) = shutdown.as_ref().filter(|_| reset) {
+        reset_verdict(events.recv_timeout(RESET_WAIT).ok().as_deref())?;
     }
     if stopped {
         println!("xtask: every expected line seen; QEMU stopped");
@@ -499,7 +525,7 @@ pub fn run_test(
 mod tests {
     use super::{
         Typist, ci_warning, command_word, forward_https, from_programs, input_args, model_sizing,
-        power_off_verdict, without_stamp,
+        power_off_verdict, reset_verdict, without_stamp,
     };
     use crate::cases::{TestCase, case};
 
@@ -517,25 +543,41 @@ mod tests {
         assert!(none.contains("QMP reported no shutdown"), "{none}");
     }
 
-    /// A power-off case gets a QMP socket for its verdict, and may not share it
-    /// with `@` lines.
+    /// A reset case's status 0 passes only on a `guest-reset`: a power-off,
+    /// which also ends QEMU with status 0 under -no-reboot, is a FAIL, and so
+    /// is no event at all.
     #[test]
-    fn a_power_off_case_gets_qmp_and_sends_no_at_lines() {
-        let off = TestCase {
-            powers_off: true,
-            ..case("off", "test=power-off")
-        };
-        let (args, port) = input_args(&off).unwrap();
-        assert!(port.is_some());
-        assert!(args.iter().any(|arg| arg == "-qmp"));
+    fn a_reset_passes_only_on_a_guest_reset() {
+        assert_eq!(reset_verdict(Some("guest-reset")), Ok(()));
+        let off = reset_verdict(Some("guest-shutdown")).unwrap_err();
+        assert!(off.contains("for guest-shutdown, not a reset"), "{off}");
+        let none = reset_verdict(None).unwrap_err();
+        assert!(none.contains("QMP reported no reset"), "{none}");
+    }
+
+    /// A power-off or reset case gets a QMP socket for its verdict, and may not
+    /// share it with `@` lines.
+    #[test]
+    fn a_power_off_or_reset_case_gets_qmp_and_sends_no_at_lines() {
+        for (powers_off, resets) in [(true, false), (false, true)] {
+            let judged = TestCase {
+                powers_off,
+                resets,
+                ..case("judged", "test=power-off")
+            };
+            let (args, port) = input_args(&judged).unwrap();
+            assert!(port.is_some());
+            assert!(args.iter().any(|arg| arg == "-qmp"));
+            let typed = TestCase {
+                powers_off,
+                resets,
+                keys: &[&["@{\"execute\":\"stop\"}"]],
+                ..case("typed", "test=power-off")
+            };
+            let refused = input_args(&typed).unwrap_err();
+            assert!(refused.contains("cannot send @ lines"), "{refused}");
+        }
         assert_eq!(input_args(&case("plain", "test=x")).unwrap().1, None);
-        let typed = TestCase {
-            powers_off: true,
-            keys: &[&["@{\"execute\":\"stop\"}"]],
-            ..case("typed", "test=power-off")
-        };
-        let refused = input_args(&typed).unwrap_err();
-        assert!(refused.contains("cannot send @ lines"), "{refused}");
     }
 
     /// A stamped line matches as the same line without its stamp; a program's

@@ -6,6 +6,8 @@
 //!   claim it, and no process but `desktop` holds a `Display` handle: the plan's
 //!   `fakedesk`, which asks for the screen under another name, never starts.
 //! - A second Ctrl+Alt+F12 gives the screen back, and `desktop` claims it again.
+//! - A line typed in the Kai pane before the first press is there again once
+//!   the screen is back (H3-25): `desktop` says so.
 
 use crate::display::claim;
 use crate::{console, input, ipc, log, process, threads};
@@ -105,6 +107,10 @@ pub fn check() -> Result<(), &'static str> {
     // Ctrl+Alt+F12 clears the queue, so the key must be read first: desktop may
     // still be painting its first frame, slowly under TCG.
     wait("desktop to read the key", || !input::pending())?;
+    // "abc" typed in the Kai pane, not sent: it must outlive the console.
+    type_keys(&crate::catalog_tests::CTRL_SPACE);
+    type_text("abc");
+    wait("desktop to read the pane's keys", || !input::pending())?;
     // Ctrl+Alt+F12: back to the console.
     type_keys(&CTRL_ALT_F12);
     wait("the console to take the screen back", || {

@@ -50,9 +50,8 @@ pub const fn holder_pages() -> u64 {
 // What the plan line grants llm must fit what its holder may hold.
 const _: () = assert!(holder_pages() <= kabi::model::MAX_PAGES_HOLDER);
 
-/// Pages the default plan's other services ask for, with room to spare: the
-/// supervisor, the shell, notes and edit take 16,384 together.
-const OTHER_SERVICES_PAGES: u64 = 20 * 1024;
+/// Pages the default plan's other services ask for, with room to spare.
+const OTHER_SERVICES_PAGES: u64 = kabi::plan::system::OTHER_SERVICES_PAGES;
 
 /// Frames that must stay free after copying the model. Processes may hold half of
 /// what is free, so twice what llm and the other services ask for.

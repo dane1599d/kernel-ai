@@ -12,8 +12,10 @@
 //!    an item that does not decode. A name or attribute filed under another hash is filed
 //!    again under its own. Data is made inline exactly when it fits. A sealed
 //!    file keeps the run of SEALED records from 0, each on its 2 MiB boundary,
-//!    and drops the rest; a SEALED record in another file is dropped. The object
-//!    id counter is raised past every object found.
+//!    and drops the rest; a SEALED record in another file is dropped. Two items
+//!    never name one block: a later one gets a copy of its bytes in a record of
+//!    its own, or is dropped if the copy would take the reserve. The object id
+//!    counter is raised past every object found.
 //! 3. **The root.** If inode 1 is missing or not a folder, it becomes an empty
 //!    folder again.
 //! 4. **Names.** A name of an inode that is missing or of another type is
@@ -32,12 +34,14 @@
 //! transaction. Blocks held by nothing are the GC's (task 6).
 
 use crate::Error;
+use crate::allocator::{Spend, run_of};
 use crate::check::{Cache, Leaves, summarise};
 use crate::dev::BlockDev;
-use crate::format::BlockPtr;
+use crate::format::{BlockPtr, FLAG_SEALED};
 use crate::fs::{
     Fs, MAX_INLINE, decode_value, inline_of, inline_raw, record_of, sealed_of, value_len,
 };
+use crate::io::record_raw;
 use crate::items::{
     CHUNK, Entry, FileType, Inode, K_DATA, K_DIRENT, K_INODE, K_XATTR, MAX_FILE, ROOT,
     SEALED_CHUNK, decode_attrs, decode_names, encode_attrs, encode_names, hash_name,
@@ -74,6 +78,14 @@ struct Repair<'a, D> {
     mask: u64,
     /// `/lost+found`, once found or made.
     lost: Option<u64>,
+    /// The runs of the data records kept so far, first block to end: two items
+    /// of one tree never name one block.
+    kept: BTreeMap<u64, u64>,
+    /// Whether an item named a record another item keeps, and was given a copy
+    /// or dropped.
+    shared: bool,
+    /// Why a copy failed other than for room: the repair fails with it.
+    failed: Option<Error>,
 }
 
 /// Every item under `ptr` that still verifies; notes each node that does not.
@@ -233,8 +245,11 @@ impl<D: BlockDev> Repair<'_, D> {
             Ok(value) => value.into_bytes(),
             Err(e) => return self.fix(dropped(&format!("data that does not verify ({e:?})"))),
         };
-        if let Some(next) = self.state.sealed.get_mut(&oid) {
-            *next = at + len as u64;
+        if self.state.sealed.contains_key(&oid) {
+            let Some(raw) = self.own(oid, at, raw, &bytes) else {
+                return;
+            };
+            self.state.sealed.insert(oid, at + len as u64);
             self.state.data.entry(oid).or_default().insert(at, raw);
             return;
         }
@@ -246,7 +261,60 @@ impl<D: BlockDev> Repair<'_, D> {
             (false, false) => return self.fix(dropped("inline data over what an item holds")),
             _ => raw,
         };
-        self.state.data.entry(oid).or_default().insert(at, raw);
+        if let Some(raw) = self.own(oid, at, raw, &bytes) {
+            self.state.data.entry(oid).or_default().insert(at, raw);
+        }
+    }
+
+    /// `raw`, if no item kept so far names a block of its record (inline data
+    /// is always its own). Else a copy of its verified `bytes` in a record of
+    /// its own, so the rebuilt tree names each block once (bug hunt 5, H5-14).
+    /// The copy may not take the reserve, which the rebuild and its commit
+    /// need: with no room for it, nothing, and the item is dropped.
+    fn own(&mut self, oid: u64, at: u64, raw: Vec<u8>, bytes: &[u8]) -> Option<Vec<u8>> {
+        let Some((ptr, _)) = record_of(&raw) else {
+            return Some(raw);
+        };
+        if !self.shares(&ptr) {
+            self.keep(&ptr);
+            return Some(raw);
+        }
+        // Copied or dropped, the value that named the shared record goes.
+        self.shared = true;
+        let was = self.fs.io.alloc.spend_reserve(Spend::Keep);
+        let copy = self.fs.io.write_record_as(bytes, ptr.flags & FLAG_SEALED);
+        self.fs.io.alloc.spend_reserve(was);
+        match copy {
+            Ok(copy) => {
+                self.keep(&copy);
+                self.fix(format!(
+                    "file {oid}: data at {at} given a record of its own"
+                ));
+                Some(record_raw(&copy, bytes.len()))
+            }
+            Err(Error::NoSpace) => {
+                let what = "data in a record another item names (no room for a copy)";
+                self.fix(format!("file {oid}: dropped {what} at {at}"));
+                None
+            }
+            Err(e) => {
+                self.failed.get_or_insert(e);
+                None
+            }
+        }
+    }
+
+    /// Whether a block of the record `ptr` names is in one kept so far.
+    fn shares(&self, ptr: &BlockPtr) -> bool {
+        let run = run_of(ptr);
+        let below = self.kept.range(..run.end()).next_back();
+        below.is_some_and(|(_, &end)| end > run.addr)
+    }
+
+    /// Notes the record `ptr` names as kept.
+    fn keep(&mut self, ptr: &BlockPtr) {
+        let run = run_of(ptr);
+        self.kept.insert(run.addr, run.end());
     }
 
     /// Rule 3.
@@ -544,9 +612,15 @@ fn repair_with_reserve<D: BlockDev>(fs: &mut Fs<D>) -> Result<Vec<String>, Error
         uuid,
         mask,
         lost: None,
+        kept: BTreeMap::new(),
+        shared: false,
+        failed: None,
     };
     for (key, raw) in found.iter().cloned() {
         repair.item(key, raw);
+    }
+    if let Some(e) = repair.failed {
+        return Err(e);
     }
     if let Some(&max) = repair.state.inodes.keys().next_back() {
         repair.fs.bump_oid(max);
@@ -559,6 +633,9 @@ fn repair_with_reserve<D: BlockDev>(fs: &mut Fs<D>) -> Result<Vec<String>, Error
     let named = repair.walk()?;
     repair.counts(&named);
     let want = repair.items();
+    // A record two items named stays with the one that keeps it: only a
+    // rebuild, which releases nothing, may replace or drop the other's value.
+    let rebuild = rebuild || repair.shared;
     let Repair { fs, fixes, .. } = repair;
     if want == found && !rebuild && fs.next_oid() == next_oid {
         return Ok(Vec::new());

@@ -3,7 +3,8 @@
 //! firmware set. BARs stay as firmware assigned them; nothing here writes
 //! configuration space. The kernel supplies the configuration access (ECAM,
 //! mapping each bus as the walk first reads it); host tests use a fake one.
-//! [`msix`] reads capabilities and sets up MSI-X.
+//! [`msix`] reads capabilities and sets up MSI-X, and [`bar_range`] keeps an
+//! offset the device gives inside its BAR.
 
 #![no_std]
 
@@ -82,6 +83,18 @@ pub fn walk(
 fn sorted(mut found: Vec<Function>) -> Vec<Function> {
     found.sort_by_key(|f| (f.address.bus(), f.address.device(), f.address.function()));
     found
+}
+
+/// The physical address of `len` bytes at `offset` into a memory BAR at `base`,
+/// `size` bytes long; `None` when they run past the BAR's end, or the BAR runs
+/// past 2^64. The device chooses the offset (and firmware the BAR), so a
+/// garbage one is refused here and nothing overflows.
+pub fn bar_range(base: u64, size: u64, offset: u64, len: u64) -> Option<u64> {
+    let end = offset.checked_add(len)?;
+    if end > size || base.checked_add(size).is_none() {
+        return None;
+    }
+    Some(base + offset)
 }
 
 /// The function at `address`, if one answers there.
@@ -247,5 +260,55 @@ mod tests {
             unsafe fn write(&self, _: PciAddress, _: u16, _: u32) {}
         }
         assert_eq!(walk(&Everywhere, 0, 0, 255).len(), MAX_FUNCTIONS);
+    }
+
+    #[test]
+    fn a_range_must_lie_inside_its_bar() {
+        const BAR: u64 = 0xFEBF_0000;
+        assert_eq!(bar_range(BAR, 0x4000, 0x3000, 16), Some(BAR + 0x3000));
+        assert_eq!(
+            bar_range(BAR, 0x4000, 0x3FF0, 16),
+            Some(BAR + 0x3FF0),
+            "ends at the end"
+        );
+        assert_eq!(
+            bar_range(BAR, 0x4000, 0, 0x4000),
+            Some(BAR),
+            "the whole BAR"
+        );
+        assert_eq!(
+            bar_range(BAR, 0x4000, 0x3FF1, 16),
+            None,
+            "runs past the end"
+        );
+        assert_eq!(
+            bar_range(BAR, 0x4000, 0x4000, 0),
+            Some(BAR + 0x4000),
+            "empty, at the end"
+        );
+        assert_eq!(
+            bar_range(BAR, 0x4000, 0x4001, 0),
+            None,
+            "empty, past the end"
+        );
+        assert_eq!(
+            bar_range(BAR, 0x4000, u64::MAX, 16),
+            None,
+            "an offset that wraps"
+        );
+        assert_eq!(
+            bar_range(BAR, 0x4000, 16, u64::MAX),
+            None,
+            "a length that wraps"
+        );
+    }
+
+    #[test]
+    fn a_bar_past_2_64_is_refused() {
+        // A 64-bit BAR near the top: base plus offset would wrap.
+        let base = u64::MAX - 0xFFF;
+        assert_eq!(bar_range(base, 0x4000, 0x3000, 16), None);
+        assert_eq!(bar_range(base, 0x1000, 0, 16), None, "ends exactly at 2^64");
+        assert_eq!(bar_range(base, 0xFFF, 0, 16), Some(base), "ends just below");
     }
 }

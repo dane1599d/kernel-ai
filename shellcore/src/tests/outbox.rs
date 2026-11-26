@@ -666,8 +666,13 @@ fn a_send_left_unchecked_for_a_minute_is_ended_unsent() {
     assert_eq!(sent(&host), 0);
 }
 
-/// Every inverse this shell writes fits [`crate::undo::MAX_RAW`], so an older
-/// shell keeps each one word for word.
+/// Every inverse this shell writes with plain names fits
+/// [`crate::undo::MAX_RAW`], so an older shell keeps each one word for word.
+/// A name with a `%`, `:`, `=`, space or control character is written
+/// escaped, three bytes for each such byte (bug-hunt-3 H3-24), and the word
+/// can then pass `MAX_RAW`: an older shell after a rollback keeps no undo for
+/// it (`none`). Before the escape such a word was already read back as other
+/// values or made the log unreadable, so nothing that worked is lost.
 #[test]
 fn the_longest_inverse_fits_the_raw_word() {
     use crate::undo::{Inverse, MAX_RAW, Name, inverse_word};

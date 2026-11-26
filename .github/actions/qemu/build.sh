@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Builds QEMU $QEMU_VERSION into ~/qemu from its pinned source tarball, checked
 # against $QEMU_SHA256, on an Ubuntu 24.04 runner. ci.yml's `qemu` job runs it
-# to fill the cache; release.yml's QEMU jobs run it when the cache misses
-# (GitHub evicts caches, and ci.yml may be rebuilding it at the same time).
+# to fill the cache; release.yml's QEMU jobs run it on a tag, and when the
+# cache misses (GitHub evicts caches, and ci.yml may be rebuilding it at the
+# same time).
 # Bump QEMU_VERSION and QEMU_SHA256 in ci.yml and release.yml, and `version` and
 # `sha256` in action.yml, together. The action runs it too when its restore misses.
 set -euo pipefail

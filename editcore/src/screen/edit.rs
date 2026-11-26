@@ -175,6 +175,14 @@ impl Screen {
             return;
         }
         if let Some(dirty) = self.dirty.as_mut() {
+            // Nothing is there past the end: the cursor kept a column from a
+            // longer line. It goes to the end, and nothing is removed.
+            let len = chars(&dirty.text);
+            if col >= len {
+                self.col = len;
+                self.goal = len;
+                return;
+            }
             let at = byte_at(&dirty.text, col);
             dirty.text.remove(at);
         }

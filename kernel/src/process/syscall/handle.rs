@@ -63,27 +63,28 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
             Ok(u64::from(new.map_err(Error::from)?.0))
         }
         call::HANDLE_REPLACE => {
-            let (handle, rights) = (handle_arg(a[0])?, rights_arg(a[1]));
-            let new = handle::with(slot, |handles| match rights {
-                Ok(rights) => handles.table.replace(handle, rights, &Kernel),
-                // Closed either way, as a refused narrowing would close it.
-                Err(_) => handles
-                    .table
-                    .close(handle)
-                    .and(Err(captable::Error::Invalid)),
-            })?;
-            Ok(u64::from(new.map_err(Error::from)?.0))
+            // A rights word with a bit no right has is refused as a widening
+            // is: the old handle is closed either way.
+            let (handle, rights) = (handle_arg(a[0])?, rights_arg(a[1]).ok());
+            let new = handle::with(slot, |h| h.table.replace_raw(handle, rights, &Kernel))?;
+            match new {
+                Ok(new) => Ok(u64::from(new.0)),
+                Err(refused) => {
+                    // What the refusal closed goes as HANDLE_CLOSE lets it go,
+                    // or a stream's socket stays with no handle to reach it
+                    // (bug hunt 2's H2-17).
+                    if let Some(entry) = refused.closed {
+                        let_go(slot, &entry);
+                    }
+                    Err(Error::from(refused.error))
+                }
+            }
         }
         call::HANDLE_CLOSE => {
             let handle = handle_arg(a[0])?;
             let entry =
                 handle::with(slot, |handles| handles.table.close(handle))?.map_err(Error::from)?;
-            // A stream's handle is the stream: closing it closes the socket, so
-            // it neither stays open nor counts against the limits (lane C).
-            if entry.kind == kabi::handle::Kind::Stream {
-                let pid = crate::process::identity(slot).pid;
-                let _ = crate::net::stream::close(pid, entry.object);
-            }
+            let_go(slot, &entry);
             Ok(0)
         }
         call::GRANT_NEW => grant_new(slot, a[0], a[1], a[2], a[3]),
@@ -94,6 +95,14 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
         call::GRANT_DUP => {
             let (handle, rights) = (handle_arg(a[0])?, rights_arg(a[1])?);
             let node = grant_arg(slot, a[2], Rights::MINT)?;
+            // A handle given under a node goes again only under that node or
+            // below it, so revoking its node still revokes the copy (bug hunt
+            // 2's H2-18). Asked with no table locked: the tree has its own
+            // lock. A handle's entry never changes, so it is the one copied.
+            let source = handle::live_entry(slot, handle)?;
+            if !grants::may_give_under(source.grant, node) {
+                return Err(Error::Permission);
+            }
             let new = handle::with(slot, |h| h.table.dup_under(handle, rights, node, &Kernel))?;
             Ok(u64::from(new.map_err(Error::from)?.0))
         }
@@ -110,6 +119,16 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
             grants::spend_once_for(a[0], a[1], &digest).map(|()| 0)
         }
         _ => Err(Error::NotFound),
+    }
+}
+
+/// Lets go of what a closed handle `entry` of `slot`'s named. A stream's
+/// handle is the stream: closing it closes the socket, so it neither stays
+/// open nor counts against the limits (lane C).
+fn let_go(slot: usize, entry: &captable::Entry) {
+    if entry.kind == Kind::Stream {
+        let pid = crate::process::identity(slot).pid;
+        let _ = crate::net::stream::close(pid, entry.object);
     }
 }
 

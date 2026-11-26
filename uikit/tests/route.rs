@@ -311,6 +311,88 @@ fn the_wheel_scrolls_and_focus_scrolls_into_view() {
     assert!(b.y >= 0 && b.bottom() <= 100, "{b:?}");
 }
 
+/// The first scroll bar thumb in node `id`'s ops: its first fill.
+fn thumb_of(f: &uikit::Frame, id: u32) -> Rect {
+    f.list
+        .groups
+        .iter()
+        .filter(|g| g.node == id)
+        .flat_map(|g| &g.ops)
+        .find_map(|op| match op {
+            uikit::list::Op::Fill { rect, .. } => Some(*rect),
+            _ => None,
+        })
+        .unwrap()
+}
+
+/// A scroll view millions of px long (rows an app padded to the u16 limit),
+/// scrolled to its end by focus, draws its thumb at the end of its bar: the
+/// thumb's maths does not leave i32.
+#[test]
+fn a_scroll_view_millions_of_px_long_draws_its_thumb_at_the_end() {
+    let mut w = Window::new("s", 400, 700);
+    w.put(1, ROOT, Layout::FILL, Widget::Scroll { axis: Axis::Column })
+        .unwrap();
+    w.put(2, 1, Layout::FIT, Widget::Stack { axis: Axis::Column })
+        .unwrap();
+    let tall = Layout {
+        padding: uikit::widget::Insets {
+            top: u16::MAX,
+            bottom: u16::MAX,
+            ..Default::default()
+        },
+        ..Layout::FIT
+    };
+    for i in 0..40 {
+        w.put(10 + i, 2, tall, Widget::Stack { axis: Axis::Column })
+            .unwrap();
+    }
+    let end = Widget::Button {
+        text: s("end"),
+        action: None,
+    };
+    w.put(100, 2, Layout::FIT, end).unwrap();
+    w.commit(&M);
+    w.act(100, Action::Focus, None, &M).unwrap();
+    let f = w.commit(&M);
+    let thumb = thumb_of(&f, 1);
+    let inside = Rect::new(0, 0, 400, 700).intersect(&thumb) == thumb;
+    assert!(inside && thumb.h >= 16, "{thumb:?}");
+    assert!(thumb.y > 600, "not at the end of the bar: {thumb:?}");
+}
+
+/// A list 65,535 px tall whose rows are longer still draws its thumb inside its
+/// frame: `view * view` does not leave i32.
+#[test]
+fn a_list_65535_px_tall_draws_its_thumb_inside_its_frame() {
+    let mut w = Window::new("s", 400, 700);
+    let fixed = Layout {
+        width: uikit::widget::Size::Fill(1),
+        height: uikit::widget::Size::Fixed(u16::MAX),
+        ..Layout::FIT
+    };
+    let list = Widget::ItemList {
+        label: s("rows"),
+        selected: None,
+    };
+    w.put(1, ROOT, fixed, list).unwrap();
+    let row = Layout {
+        padding: uikit::widget::Insets {
+            top: u16::MAX,
+            ..Default::default()
+        },
+        ..Layout::FIT
+    };
+    for i in 0..2 {
+        w.put(10 + i, 1, row, Widget::Stack { axis: Axis::Column })
+            .unwrap();
+    }
+    let f = w.commit(&M);
+    let thumb = thumb_of(&f, 1);
+    let inside = Rect::new(0, 0, 400, i32::from(u16::MAX)).intersect(&thumb) == thumb;
+    assert!(inside && thumb.h > 16, "{thumb:?}");
+}
+
 #[test]
 fn damage_covers_only_what_changed() {
     let mut w = common::notes();
