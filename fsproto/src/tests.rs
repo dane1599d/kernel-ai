@@ -110,7 +110,7 @@ fn every_reply_round_trips_and_the_largest_fit_one_message() {
                     },
                 ),
                 (5, Outcome::Removed),
-                (6, Outcome::Left),
+                (6, Outcome::Left { folder: true }),
             ],
             generation: 3,
         },
@@ -223,4 +223,40 @@ fn only_a_dropped_action_ends_one_and_a_refusal_or_failure_does_not() {
     ] {
         assert!(!e.ends_action(), "{e:?}");
     }
+}
+
+/// H3-7, H3-10: [`restored`] keeps a Restored reply within one message
+/// whatever the names: one row that is not Left, then the Left rows.
+#[test]
+fn a_restored_reply_fits_one_message_whatever_the_names() {
+    let beside = |i: u64| {
+        (
+            i,
+            Outcome::Beside {
+                object: u64::MAX,
+                name: long_name('n'),
+            },
+        )
+    };
+    let mut rows: Vec<(u64, Outcome)> = (0..u64::from(MAX_ROWS)).map(beside).collect();
+    rows.push((u64::MAX, Outcome::Left { folder: true }));
+    let bytes = encode_reply(&restored(rows, u64::MAX));
+    assert!(bytes.len() <= MAX_MESSAGE, "{} bytes", bytes.len());
+    let Ok(Reply::Restored { rows, generation }) = decode_reply(&bytes) else {
+        panic!("not a Restored reply");
+    };
+    assert_eq!(generation, u64::MAX);
+    assert_eq!(rows[0], beside(0));
+    assert_eq!(rows[1], (u64::MAX, Outcome::Left { folder: true }));
+    assert!(
+        rows.len() > 20 && rows.len() < MAX_ROWS as usize,
+        "{}",
+        rows.len()
+    );
+    // Short rows stop only at MAX_ROWS.
+    let short = (0..100).map(|i| (i, Outcome::Removed)).collect();
+    let Reply::Restored { rows, .. } = restored(short, 1) else {
+        panic!("not a Restored reply");
+    };
+    assert_eq!(rows.len(), MAX_ROWS as usize);
 }

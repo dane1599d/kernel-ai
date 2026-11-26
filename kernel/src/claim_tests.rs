@@ -93,6 +93,10 @@ fn desktop_slot() -> Option<usize> {
 }
 
 pub fn check() -> Result<(), &'static str> {
+    // The queue's overflow tells `desktop` input was lost (checked on a
+    // queue of its own: a boot cannot make desktop fall behind on purpose).
+    input::lost_check()?;
+    log!("display-claim: a full input queue starts the next read with INPUT_LOST");
     wait("desktop to claim the screen", || {
         desktop_slot().is_some_and(claim::shows) && ipc::server_of("shell").is_some()
     })?;

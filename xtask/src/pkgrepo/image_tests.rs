@@ -29,6 +29,24 @@ fn the_image_check_keeps_every_package_the_packer_signed() {
     assert_eq!(notes_entry.depends, notes.header.depends);
 }
 
+/// The names a local build may not take hold the image's refused packages too
+/// (`pkg`'s fast path used the kept ones only).
+#[test]
+fn the_image_names_a_local_build_may_not_take_include_the_refused() {
+    let (notes, hello) = (notes(), hello());
+    let repo = tuf::build(&[notes.clone(), hello], &keys(1), NOW).unwrap();
+    let target = format!(
+        "targets/{}.notes-1.0.0.kpkg",
+        crate::sha256_hex(&notes.bytes)
+    );
+    let mut files = image_layout(tampered(&repo, &target, |b| b[40] ^= 1)).unwrap();
+    let checked = kaipkg::image::check(&mut files, kaipkg::PROVIDED).unwrap();
+    assert_eq!(checked.indexes.len(), 1, "notes is refused");
+    let mut names = kaipkg::image::names(&checked);
+    names.sort();
+    assert_eq!(names, ["hello", "notes"]);
+}
+
 #[test]
 fn an_image_booted_long_after_it_was_built_keeps_its_packages() {
     // Every role, the root's 365 days among them, ran out a month ago: the

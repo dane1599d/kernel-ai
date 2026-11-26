@@ -18,7 +18,7 @@
 //! ([`take_not_landed`]): nothing of them is undone later, whatever the
 //! number has come to mean by then.
 
-use crate::actlog::{ActLog, Change};
+use crate::actlog::{self, ActLog, Change, MAX_TEXT};
 use crate::undo::Inverse;
 use alloc::format;
 use alloc::string::String;
@@ -192,10 +192,22 @@ pub fn take_not_landed(log: &mut ActLog, txn: u64, why: &str) -> Vec<(u64, Vec<S
         let whats = entry.changes.iter().filter(|c| lost(c)).map(Change::what);
         let whats = whats.collect();
         entry.changes.retain(|c| !lost(c));
-        entry.outcome = format!("{}; its file changes did not land: {why}", entry.outcome);
+        let note = format!("; its file changes did not land: {why}");
+        entry.outcome = noted(&entry.outcome, &note);
         taken.push((entry.id, whats));
     }
     taken
+}
+
+/// `outcome`, then `note`, as one log record carries them: the outcome gives
+/// way, so the note is kept whole and an outcome already clipped (a long `c>`
+/// entry's) never goes past [`MAX_TEXT`], which would set the whole log aside
+/// at the next start.
+fn noted(outcome: &str, note: &str) -> String {
+    let marked = " ...".len();
+    let room = (MAX_TEXT - marked).saturating_sub(note.len() + marked);
+    let kept = crate::show::truncate(outcome, room);
+    actlog::clip(&format!("{kept}{note}"))
 }
 
 #[cfg(test)]

@@ -117,17 +117,10 @@ impl Desk {
                 }
                 return;
             }
-            if let Some(window) = self.over
-                && let Hit::Window(id, Part::Content(at)) = self.hit(self.pointer)
-                && id == window
-            {
-                effects.push(Effect::Button {
-                    window,
-                    at,
-                    button,
-                    down,
-                });
-            }
+            // No press is held: this release is no window's. Its press went
+            // to the chrome, the taskbar, Start or a card, or was ended
+            // (`cancel_press`), or it is the stale release the kernel sends
+            // when the screen comes back with a button held.
             return;
         }
         // A press of a button already held: its release was lost (to a card,
@@ -232,6 +225,32 @@ impl Desk {
             Part::Minimize => self.minimize(id, effects),
             Part::Maximize => self.toggle_maximize(id, effects),
         }
+    }
+
+    /// Input was lost (the kernel's queue overflowed): a release may never
+    /// come, so what a button held ends now. A window holding a press hears
+    /// it let go, as for a card, and a move or resize stops where it is.
+    /// Without this a lost Right or Middle release left the press held, and
+    /// every Left click went to that window until the button was pressed
+    /// again.
+    pub fn input_lost(&mut self) -> Vec<Effect> {
+        let mut effects = Vec::new();
+        // A window let go mid-move gets its shadow back, so its place is
+        // drawn again, as on a release.
+        if let Some(id) = self.dragged()
+            && let Some(frame) = self.window(id).map(|w| w.frame)
+        {
+            self.damage.add(frame);
+        }
+        self.grab = None;
+        let held = self.pressed.is_some();
+        self.cancel_press(&mut effects);
+        // With nothing held, the pointer is over what it is over again.
+        if held {
+            self.hover_content(self.pointer, &mut effects);
+        }
+        self.rehover();
+        effects
     }
 
     /// Ends a press held in a window: it hears each held button let go

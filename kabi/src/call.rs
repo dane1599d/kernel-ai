@@ -26,7 +26,7 @@
 //! | 180-189 | G-core (P3), second block | ASK_READ, ASK_ANSWER, EVENT_POST, EVENT_READ, APP_CTL, APP_CALL |
 //! | 190-191 | S-io (P2), second block | PART_PEER_ALIVE, PART_PEER_NAME |
 //! | 192-199 | N, network (P5) | NET_CONNECT, NET_SEND, NET_RECV, NET_POLL, NET_CLOSE (task 2) |
-//! | 200-209 | K, second block | SHM_INFO; ENDPOINT_BADGE 201, PART_PEER_CAPS 202 (S-io) |
+//! | 200-209 | K, second block | SHM_INFO; ENDPOINT_BADGE 201, PART_PEER_CAPS 202, PART_SELF 203 (S-io) |
 
 /// `exit(code: i32) -> !`
 pub const EXIT: u64 = 0;
@@ -804,6 +804,11 @@ pub const ENDPOINT_BADGE: u64 = 201;
 /// [`PART_PEER_NAME`]. NotFound when `pid` is not running; pid 0, the kernel,
 /// has none.
 pub const PART_PEER_CAPS: u64 = 202;
+/// `part_self(partition) -> pid`: the caller's own pid, for `fs`: pids only
+/// count up, so a caller with a lower one ran before this `fs` started, and
+/// may still think an action the last `fs` dropped is open (bug hunt 3,
+/// H3-11). Needs a `Partition` handle (any rights), as [`PART_PEER_NAME`].
+pub const PART_SELF: u64 = 203;
 
 /// The end of the reserved blocks (see the table above): the highest number a
 /// call may have. A call that is not there yet answers NotFound.

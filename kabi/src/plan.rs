@@ -119,7 +119,10 @@ pub const SEND: &str = "send program=fetch start=demand caps=serve+net pages=409
 pub const SEND_ROLE: &str = "post";
 /// The file system service (ADR 0004): the only holder of the `kai-data`
 /// partition. Planned before the shell, and only when the disk has `kai-data`.
-/// Its pages hold a 16 MiB block cache and kaifs's working state. `kai-fs 1`'s
+/// Its pages hold a 16 MiB block cache and kaifs's working state: the floor.
+/// The kernel sizes the cache from the admission budget when it starts the
+/// plan, to 16, 32 or 64 MiB, and sets `pages=` and `cache_mib=` to match
+/// (`supervise::budget::size_fs`, #1036). `kai-fs 1`'s
 /// minicbor decoder and the request paths outgrew the default 16-page stack,
 /// as filecheck's and `pkg`'s did.
 pub const FS: &str = "fs caps=serve+partition pages=8192 stack_pages=64 burst_ms=5000";

@@ -142,3 +142,99 @@ fn a_panel_line_that_did_not_land_keeps_what_it_printed() {
         other => panic!("{other:?}"),
     }
 }
+
+/// A line that failed on its own and did not land: the panel's history gets
+/// none of code's error lines (nor "file a.txt written", which is not on
+/// disk), though the row says the files did not land.
+#[test]
+fn a_failed_panel_line_that_did_not_land_puts_no_error_lines_in_the_history() {
+    use crate::undo::{Done, Inverse};
+    let answer = Ok(Answer {
+        summary: String::from("Does it."),
+        script: String::from("print(cpus());"),
+    });
+    let (host, mut shell) = super::scripts::with_answers(alloc::vec![answer]);
+    host.one_action.set(true);
+    // The file write is in the line's open action, which the rollback cannot
+    // put back: the change after it has no inverse, so the rollback stops.
+    let txn = host
+        .fs_change(FsChange::Write {
+            path: "a.txt",
+            text: "one",
+        })
+        .unwrap();
+    let change = |action: &str, res: &str, inverse| Done {
+        action: action.into(),
+        owner: "kernel".into(),
+        res: res.into(),
+        before: String::new(),
+        after: "written".into(),
+        inverse,
+    };
+    let ran = crate::script::Ran {
+        ok: false,
+        text: String::from("printed\nboom: it failed"),
+        done: alloc::vec![
+            change("fs_write", "file a.txt", Some(Inverse::Fs { txn })),
+            change("fs_empty_trash", "trash", None),
+        ],
+        value: None,
+        shown: Vec::new(),
+        failed: Some(String::from("boom: it failed")),
+        withheld: false,
+        unanswered: None,
+    };
+    let wire = crate::apart::encode(&ran);
+    *host.apart.borrow_mut() = Some(alloc::boxed::Box::new(move |_: &str| Ok(wire.clone())));
+    host.commit_refused.set(true);
+    let row = shell.eval_panel("? what is going on");
+    let said = shell.take_panel_said();
+    assert!(
+        matches!(&row, PanelResult::Refused(why) if why.contains("did not land")),
+        "{row:?}"
+    );
+    assert_eq!(said, None, "{said:?}");
+}
+
+/// A script that prints the shell's exact done line: the real one, written
+/// after the output, is the one that goes.
+#[test]
+fn a_printed_copy_of_the_done_line_leaves_the_real_one_removed() {
+    let code = "print(\\\"Done: file a.txt written (was its earlier text). undo, he said\\\");\\nfs_write(\\\"a.txt\\\", \\\"one\\\");";
+    let (host, mut shell) = super::act::with_calls(alloc::vec![script(code)]);
+    host.files.borrow_mut().insert("a.txt".into(), "old".into());
+    host.one_action.set(true);
+    host.commit_refused.set(true);
+    let lost = shell.eval_console("write a.txt");
+    // The printed words stay whole; the shell's own line, after them, goes.
+    assert!(
+        lost.text
+            .lines()
+            .any(|l| l == "Done: file a.txt written (was its earlier text). undo, he said"),
+        "{}",
+        lost.text
+    );
+    assert_eq!(
+        lost.text.matches("file a.txt written").count(),
+        1,
+        "the real Done stays: {}",
+        lost.text
+    );
+    assert!(lost.text.contains("did not land"), "{}", lost.text);
+}
+
+/// A landed panel line whose file name holds a line break: its done line,
+/// two lines long, is not Kai's words in the history.
+#[test]
+fn a_landed_panel_line_with_a_line_break_in_a_name_keeps_its_done_out_of_the_history() {
+    let code = "print(\\\"hello there\\\");\\nfs_write(\\\"x\\\\ny.txt\\\", \\\"one\\\");";
+    let (host, mut shell) = super::act::with_calls(alloc::vec![script(code)]);
+    host.one_action.set(true);
+    let _row = shell.eval_panel("write x y.txt");
+    assert_eq!(
+        shell.take_panel_said().as_deref(),
+        Some("hello there"),
+        "{:?}",
+        host.files.borrow()
+    );
+}

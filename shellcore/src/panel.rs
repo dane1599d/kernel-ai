@@ -15,8 +15,9 @@
 //!   AI's, apart from the system's look (the founder, 2026-11-14);
 //! - C is the terminal's (P4 task 12): a panel line runs at `kai>` even when
 //!   the terminal is at `c>`, and `:c` and `:rhai` are refused. While a C
-//!   entry waits on its question, a panel line is refused: the entry's log
-//!   entry takes in what is logged after it began.
+//!   entry waits on its question, a panel line is refused: the shell is still
+//!   the entry's, so the line would be decided as one of its calls, and its
+//!   `undo` could put back the entry's calls so far.
 
 use crate::{Reply, Shell};
 use alloc::string::String;
@@ -155,8 +156,16 @@ impl Shell {
             return None;
         }
         // A line whose file changes did not land ran: its output is real.
-        if !self.worded && self.clarifying.is_none() && !reply.ok && !self.line_did_not_land() {
+        if !self.worded && self.clarifying.is_none() && !reply.ok && !self.ran_but_did_not_land() {
             return None;
+        }
+        // The done line goes whole, so one that spans lines (a file name
+        // holding a line break) is not taken for the model's words.
+        let mut body = reply.text.clone();
+        if let Some(done) = self.done_line.as_deref()
+            && let Some(at) = body.rfind(done)
+        {
+            body.replace_range(at..at + done.len(), "");
         }
         let done = self.done_line.as_deref().map(without_undo);
         let ours = |line: &str| {
@@ -170,7 +179,7 @@ impl Shell {
                 .lines()
                 .filter(|line| !self.is_not_landed_note(line))
                 .collect(),
-            false => reply.text.lines().filter(|line| !ours(line)).collect(),
+            false => body.lines().filter(|line| !ours(line)).collect(),
         };
         // What the shell writes for a run that printed nothing ("Done.", or
         // "Done: " and the model's summary) is code's framing, not Kai's words.

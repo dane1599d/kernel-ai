@@ -17,7 +17,7 @@
 //! Anything that fails is `err <why>`. Every other holder of a `uses=pkg`
 //! route (the desktop's catalogue, say) reads, never installs or switches.
 
-use super::{BootRepo, Calls, KNOWN, NoLedger, now, start_apps, withdraw_apps};
+use super::{BootRepo, Calls, IMAGE_NAMES, KNOWN, NoLedger, now, start_apps, withdraw_apps};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -159,9 +159,10 @@ fn install(vol: &mut FsVolume<Calls>, rest: &str, handles: &[Handle]) -> Result<
 /// installed that `local` did not build (`local::foreign`). If the image's names cannot
 /// be read, nothing is published.
 fn taken(vol: &mut FsVolume<Calls>, key: &Key) -> Result<Vec<String>, String> {
-    let (image, mirror) = KNOWN.lock().clone();
+    let (_, mirror) = KNOWN.lock().clone();
+    let image = IMAGE_NAMES.lock().clone();
     let mut taken: Vec<String> = match image.is_empty() {
-        false => image.iter().map(|i| i.name.clone()).collect(),
+        false => image,
         true => image_names()?,
     };
     match mirror.is_empty() {
@@ -182,13 +183,7 @@ fn taken(vol: &mut FsVolume<Calls>, key: &Key) -> Result<Vec<String>, String> {
 fn image_names() -> Result<Vec<String>, String> {
     let checked = kaipkg::image::check(&mut BootRepo, kaipkg::PROVIDED)
         .map_err(|why| format!("the image's names cannot be read: {why}"))?;
-    let mut names: Vec<String> = checked.indexes.iter().map(|i| i.name.clone()).collect();
-    let refused = checked.refused.iter().filter_map(|(path, _)| {
-        let target = path.strip_suffix(".kpkg")?;
-        Some(target.rsplit_once('-')?.0.to_string())
-    });
-    names.extend(refused);
-    Ok(names)
+    Ok(kaipkg::image::names(&checked))
 }
 
 /// `switch-back <to> <from>`: compare-and-set on `current`, back to its parent

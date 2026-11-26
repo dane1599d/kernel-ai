@@ -28,7 +28,9 @@ pub const MAX_SHM_DATA: usize = 1 << 20;
 /// The most names in one [`Reply::Listed`]: 24 of 255 bytes still fit.
 pub const MAX_LIST: u32 = 24;
 /// The most rows in one [`Reply::Changes`], [`Reply::History`] or
-/// [`Reply::Restored`]; a longer answer ends with `more`.
+/// [`Reply::Restored`]. A longer Changes answer says so with `more`; a
+/// Restored is also cut to one message ([`restored`]), and its restore has
+/// landed whole whatever rows it leaves out.
 pub const MAX_ROWS: u32 = 64;
 /// The most path text in one [`Reply::Trash`]: items stop before it is passed,
 /// and a single path longer than this is shown by its last this-many bytes.
@@ -390,8 +392,13 @@ pub enum Outcome {
     },
     #[n(3)]
     Removed,
+    /// Left as it is; `folder` says whether it is a folder, which a later
+    /// change that only added or removed a name in it leaves too.
     #[n(4)]
-    Left,
+    Left {
+        #[n(0)]
+        folder: bool,
+    },
 }
 
 /// One thing in the trash, as [`Request::TrashList`] tells it.
@@ -464,7 +471,9 @@ pub enum Error {
     /// On another caller's, which the owner never hears, every change of the
     /// owner's after it is refused this way until it sends Abort (answered
     /// Done) or Begin, so a change it meant for the action never lands
-    /// outside it.
+    /// outside it. A restarted `fs` answers it, with [`DropCause::Io`], to the
+    /// first change of each caller that ran before it started (unless that
+    /// change is a Begin or an Abort): the restart dropped any action it had.
     #[n(12)]
     Dropped(#[n(0)] DropCause),
 }
@@ -525,6 +534,8 @@ pub enum Reply {
         #[n(0)]
         generation: u64,
     },
+    /// [`Request::Restore`]'s answer: what it did with each object, as many
+    /// rows as fit ([`restored`]), and the commit that holds it.
     #[n(6)]
     Restored {
         #[n(0)]
@@ -659,6 +670,45 @@ pub fn encode_reply(reply: &Reply) -> Vec<u8> {
 
 pub fn decode_reply(bytes: &[u8]) -> Result<Reply, Error> {
     decode(bytes)
+}
+
+/// [`Reply::Restored`] cut to one message. A restore commits before it
+/// answers, so its answer must reach the caller whatever the names: rows go
+/// in, at most [`MAX_ROWS`], while the encoded reply stays within
+/// [`MAX_MESSAGE`]. A client counts the [`Outcome::Left`] rows to tell the
+/// person what was not undone, and they are the shortest, so they come
+/// first, after one row that is not Left, which shows something came back.
+pub fn restored(rows: Vec<(u64, Outcome)>, generation: u64) -> Reply {
+    let (left, mut rest): (Vec<_>, Vec<_>) = rows
+        .into_iter()
+        .partition(|(_, o)| matches!(o, Outcome::Left { .. }));
+    let first = (!rest.is_empty()).then(|| rest.remove(0));
+    let empty = Reply::Restored {
+        rows: Vec::new(),
+        generation,
+    };
+    // The reply without rows, and a byte for the rows' length once it takes
+    // two (24 rows or more).
+    let mut size = encode(&empty).len() + 1;
+    let mut kept = Vec::new();
+    for row in first
+        .into_iter()
+        .chain(left)
+        .chain(rest)
+        .take(MAX_ROWS as usize)
+    {
+        let mut bytes = Vec::new();
+        let _ = Encoder::new(&mut bytes).encode(&row);
+        if size + bytes.len() > MAX_MESSAGE {
+            break;
+        }
+        size += bytes.len();
+        kept.push(row);
+    }
+    Reply::Restored {
+        rows: kept,
+        generation,
+    }
 }
 
 #[cfg(test)]
