@@ -176,3 +176,20 @@ fn an_os_rows_name_written_as_a_group_is_held_to_the_registry() {
     // A package's own group is still a package's.
     assert!(Manifest::parse_with(&manifest("my_tool_*"), &[]).is_ok());
 }
+
+/// Writes the `agent_manifest` target's seeds, one file each, to
+/// `$FUZZ_SEED_DIR/agent_manifest/`.
+#[test]
+#[ignore = "writes the fuzz corpus; run by the fuzz workflow"]
+fn write_fuzz_seeds() {
+    let dir = std::env::var("FUZZ_SEED_DIR").expect("FUZZ_SEED_DIR names the corpus folder");
+    let folder = std::path::Path::new(&dir).join("agent_manifest");
+    std::fs::create_dir_all(&folder).unwrap();
+    for (n, bytes) in SAMPLES
+        .map(|s| s.as_bytes().to_vec())
+        .into_iter()
+        .enumerate()
+    {
+        std::fs::write(folder.join(format!("seed-{n}")), bytes).unwrap();
+    }
+}

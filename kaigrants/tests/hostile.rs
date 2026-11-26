@@ -18,8 +18,20 @@ use kaigrants::parse;
 /// The tree is a fixed 64 KiB or so; the rest grows with the input.
 const ALLOC_PER_BYTE: usize = 16;
 const ALLOC_FLOOR: usize = 256 * 1024;
+/// `parse` alone holds no tree, so it is held to the bound it had before the
+/// harness: 16 KiB, and 16 B a byte.
+const PARSE_FLOOR: usize = 16 * 1024;
 
 fn bounded(bytes: &[u8]) {
+    if let Ok(text) = core::str::from_utf8(bytes) {
+        let (_, peak) = hostile::peak_alloc(|| parse(text));
+        let cap = ALLOC_PER_BYTE * bytes.len() + PARSE_FLOOR;
+        assert!(
+            peak <= cap,
+            "parse: {peak} bytes allocated for {}",
+            bytes.len()
+        );
+    }
     let ((), peak) = hostile::peak_alloc(|| harness::grants(bytes));
     let cap = ALLOC_PER_BYTE * bytes.len() + ALLOC_FLOOR;
     assert!(peak <= cap, "{peak} bytes allocated for {}", bytes.len());
@@ -61,4 +73,20 @@ fn more_grants_than_nodes_fill_the_tree_and_stop() {
     }
     let made = harness::file(&text).expect("the file reads");
     assert_eq!(made, captable::grant::NODES - 3);
+}
+
+/// Writes the `kai_grants` target's seeds, one file each, to
+/// `$FUZZ_SEED_DIR/kai_grants/`.
+#[test]
+#[ignore = "writes the fuzz corpus; run by the fuzz workflow"]
+fn write_fuzz_seeds() {
+    let dir = std::env::var("FUZZ_SEED_DIR").expect("FUZZ_SEED_DIR names the corpus folder");
+    let folder = std::path::Path::new(&dir).join("kai_grants");
+    std::fs::create_dir_all(&folder).unwrap();
+    for (n, bytes) in [SAMPLE.as_bytes().to_vec(), harness::sample_steps()]
+        .into_iter()
+        .enumerate()
+    {
+        std::fs::write(folder.join(format!("seed-{n}")), bytes).unwrap();
+    }
 }
