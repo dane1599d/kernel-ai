@@ -27,8 +27,9 @@ pub struct Gprs {
 }
 
 unsafe extern "C" {
-    /// CLGI; VMSAVE the host's hidden state; VMLOAD the guest's; VMRUN;
-    /// VMSAVE the guest's; VMLOAD the host's; STGI.
+    /// VMSAVE the host's hidden state; VMLOAD the guest's; VMRUN; VMSAVE
+    /// the guest's; VMLOAD the host's. GIF is left as #VMEXIT leaves it,
+    /// clear (see `stgi`).
     fn s063_vmrun(regs: *mut Gprs, guest_vmcb: u64, host_vmcb: u64);
 }
 
@@ -44,7 +45,6 @@ core::arch::global_asm!(
     "push rdi",
     "push rdx",
     "push rsi",
-    "clgi",
     "mov rax, rdx",
     "vmsave rax",
     "mov rax, rsi",
@@ -85,7 +85,6 @@ core::arch::global_asm!(
     "vmsave rax",
     "pop rax",
     "vmload rax",
-    "stgi",
     "pop rdi",
     "pop r15",
     "pop r14",
@@ -160,6 +159,19 @@ pub struct Times {
     pub run_init_line: Option<u64>,
     pub decode: Option<(u64, u64)>,
     pub bench: Option<(u64, u64, u64)>,
+}
+
+/// Sets GIF, so the host takes the interrupts held since the last #VMEXIT.
+///
+/// Spike shortcut: the run loop handles exits with GIF clear and sets it
+/// only on a host-interrupt exit, before HLT and when the run ends. An
+/// interrupt that arrives meanwhile ends the next VMRUN at once (INTR is
+/// intercepted) and is taken then. On the GitHub AMD runners KVM runs on
+/// Hyper-V with vgif=0, so a CLGI and an STGI around every VMRUN were two
+/// exits of our own on each guest round trip.
+fn stgi() {
+    // SAFETY: SVM is on for this CPU (`enable`), so STGI is defined.
+    unsafe { core::arch::asm!("stgi", options(nomem, nostack)) };
 }
 
 pub struct Vcpu<'a> {
@@ -306,6 +318,12 @@ impl<'a> Vcpu<'a> {
 
     /// Runs the guest until it is done, halts for good, or is killed.
     pub fn run(&mut self, dev: &mut Devices) -> Result<End, &'static str> {
+        let end = self.run_exits(dev);
+        stgi();
+        end
+    }
+
+    fn run_exits(&mut self, dev: &mut Devices) -> Result<End, &'static str> {
         self.times.start = nanos();
         loop {
             let now = nanos();
@@ -393,7 +411,10 @@ impl<'a> Vcpu<'a> {
 
     fn kernel(&mut self, what: Kernel, dev: &mut Devices) -> Result<Flow, &'static str> {
         match what {
-            Kernel::HostEvent => self.stats.intr += 1,
+            Kernel::HostEvent => {
+                self.stats.intr += 1;
+                stgi();
+            }
             Kernel::Cpuid => {
                 self.stats.cpuid += 1;
                 let r = cpuid(self.vmcb.save.rax as u32, self.regs.rcx as u32, self.vmcb.save.cr4);
@@ -461,6 +482,7 @@ impl<'a> Vcpu<'a> {
             if self.vmcb.control.int_control & V_IRQ != 0 || dev.has_interrupt() {
                 return None;
             }
+            stgi();
             x86_64::instructions::interrupts::enable_and_hlt();
         }
     }
