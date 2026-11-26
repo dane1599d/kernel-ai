@@ -202,6 +202,7 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
             "desk-profile-floor: the supervisor, the shell and desktop were not made background, nor their quotas lowered",
             "desk-profile-floor: free / 2: a raise one page past the admission budget was refused, and one to it was taken",
             "desk-profile-floor: system services' CPU share: a service holding TERM was not made background, and an app was",
+            "desk-profile-floor: a trial's labels meet the same floors: desktop and a service holding TERM were refused, and an app was not",
             "desk-profile-floor: every floor held, whatever the shell asked",
         ],
         ..case("desk-profile-floor", "test=desk-profile-floor")
