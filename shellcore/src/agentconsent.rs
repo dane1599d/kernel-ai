@@ -156,7 +156,7 @@ impl Shell {
             self.agent_told(
                 name.clone(),
                 pending.id,
-                false,
+                (false, false),
                 String::from("Not run: the agent was retired."),
             );
         }
@@ -195,7 +195,12 @@ impl Shell {
             "request {id}: on the card, dropped: {name} was retired"
         ));
         self.retired_card = Some(id);
-        self.agent_told(String::from(name), id, false, String::from(RETIRED));
+        self.agent_told(
+            String::from(name),
+            id,
+            (false, false),
+            String::from(RETIRED),
+        );
     }
 
     /// The card's answer to question `id`, whose agent was retired while it

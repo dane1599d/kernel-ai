@@ -54,6 +54,37 @@ fn an_agents_card_names_it_offers_no_always_and_its_allow_runs_once() {
     );
 }
 
+/// bug-hunt-6 H6-26: the person allowed the agent's step and it then failed
+/// (the process was gone): the wait hears a failed run, which the goals agent
+/// bills and logs as one, and not a no, which it would remember and hold a
+/// repeat for.
+#[test]
+fn a_step_that_failed_after_allow_is_told_as_failed_not_as_a_no() {
+    let host = FakeHost::new();
+    *host.procs.borrow_mut() = alloc::vec![String::from("notes")];
+    let mut shell = shell(&host);
+    let badge = u64::from(shell.roster_mut().install(ops_manifest()).unwrap().badge());
+    let stop = r#"{"name":"process_stop","arguments":{"name":"notes"}}"#;
+    assert!(step(&mut shell, badge, stop).starts_with("ok asked "));
+    let menu = take_agents_card(&mut shell);
+    host.procs.borrow_mut().clear();
+    let once = host.mint(menu.id, menu.call());
+    shell.eval_console(&format!("answer {} allow once={once}", menu.id));
+    let told = step(&mut shell, badge, &format!("wait {}", menu.id));
+    assert!(
+        told.starts_with(&format!("err failed #{}:", menu.id)),
+        "{told}"
+    );
+    assert!(matches!(
+        goalcore::reply::read(&told),
+        goalcore::reply::Reply::Done(goalcore::StepDone {
+            entry: Some(_),
+            failed: Some(_),
+            ..
+        })
+    ));
+}
+
 /// bug-hunt-5 H5-8: while the console is at c>, the person's Allow on an
 /// agent's card runs its call as at kai>, never goes to cc as C, and the
 /// agent's wait hears that it ran.
