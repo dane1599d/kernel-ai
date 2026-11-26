@@ -30,6 +30,7 @@ static COMPONENTS: Mutex<Vec<Component>> = Mutex::new(Vec::new());
 const CONTROL_MS: u64 = 60_000;
 
 fn with<R>(f: impl FnOnce(&mut Vec<Component>) -> R) -> R {
+    crate::threads::ready::not_in_ready(&"the component table");
     threads::preempt_disable();
     let result = f(&mut COMPONENTS.lock());
     threads::preempt_enable();

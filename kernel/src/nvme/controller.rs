@@ -6,6 +6,7 @@
 
 use super::dma::Page;
 use crate::hpet;
+use alloc::boxed::Box;
 use nvme::command::{self as cmd, Command, Completion};
 use nvme::identify::{self, IDENTIFY_BYTES};
 use nvme::regs::{self, Capabilities};
@@ -15,8 +16,10 @@ use nvme::{CompletionQueue, SubmissionQueue};
 const ENTRIES: u16 = 64;
 /// The one I/O queue pair's ID.
 const IO_QID: u16 = 1;
-/// How long one command may take.
-const COMMAND_TIMEOUT_NS: u64 = 5_000_000_000;
+/// How long one command may take. A timeout disables the controller until
+/// reboot, so this is long enough for a slow SSD under load (garbage collection,
+/// a deep flush) and short enough that a dead one does not hang a boot.
+const COMMAND_TIMEOUT_NS: u64 = 30_000_000_000;
 
 /// A queue pair's memory and bookkeeping.
 struct Pair {
@@ -48,9 +51,21 @@ pub struct Controller {
     next_cid: u16,
     /// The page Identify writes into.
     scratch: Page,
+    /// A command timed out: it may still be outstanding, so the device was
+    /// disabled and nothing more is submitted. The staging buffers its DMA
+    /// named are never reused while it could move data.
+    failed: bool,
+    /// Turns the function's PCI bus mastering off, for a controller that does
+    /// not stop when disabled.
+    bus_master_off: Box<dyn Fn() + Send>,
 }
 
 impl Controller {
+    /// A command timed out and the controller was disabled: nothing more runs.
+    pub fn failed(&self) -> bool {
+        self.failed
+    }
+
     fn read32(&self, offset: usize) -> u32 {
         // SAFETY: `regs` maps BAR0 uncached for at least caps.bar_bytes(2) bytes, and
         // every offset used is a register or doorbell inside that.
@@ -69,7 +84,11 @@ impl Controller {
 
     /// Resets and enables the controller at BAR0 `regs` (mapped for `mapped`
     /// bytes) with an admin queue pair.
-    pub fn start(regs: u64, mapped: usize) -> Result<Self, &'static str> {
+    pub fn start(
+        regs: u64,
+        mapped: usize,
+        bus_master_off: Box<dyn Fn() + Send>,
+    ) -> Result<Self, &'static str> {
         // SAFETY: the caller mapped at least the first page of BAR0 at `regs`.
         let cap = unsafe {
             let low = (regs as *const u32).read_volatile();
@@ -94,6 +113,8 @@ impl Controller {
             io: None,
             next_cid: 0,
             scratch: Page::new()?,
+            failed: false,
+            bus_master_off,
         };
         controller.reset(u32::from(entries))?;
         Ok(controller)
@@ -150,6 +171,9 @@ impl Controller {
     /// Submits `command` on the admin queue (`io` false) or the I/O queue, and
     /// waits for its completion.
     fn run(&mut self, io: bool, command: Command) -> Result<Completion, &'static str> {
+        if self.failed {
+            return Err("nvme: the controller was disabled after a command timed out");
+        }
         let regs = self.regs;
         let caps = self.caps;
         let pair = match io {
@@ -198,10 +222,28 @@ impl Controller {
                 return Ok(done);
             }
             if hpet::nanos() > deadline {
-                return Err("nvme: a command timed out");
+                break;
             }
             core::hint::spin_loop();
         }
+        // The command may still be outstanding, and its PRPs name the disk's
+        // staging pages, which the next request would fill or read. Disabling
+        // the controller (CC.EN = 0) aborts what it holds; after that nothing
+        // is submitted, so every later read, write and flush fails instead.
+        self.failed = true;
+        let cc = self.read32(regs::CC);
+        self.write32(regs::CC, cc & !regs::CC_ENABLE);
+        if self.wait_ready(false).is_ok() {
+            crate::log!("nvme: a command timed out; the controller is disabled");
+        } else {
+            // Still ready after CC.EN = 0: its DMA may go on. Stop it at the
+            // bus, so it cannot reach the staging pages again.
+            (self.bus_master_off)();
+            crate::log!(
+                "nvme: a command timed out and the controller did not stop when disabled; its bus mastering is turned off"
+            );
+        }
+        Err("nvme: a command timed out")
     }
 
     /// Identify with `cns` for `nsid`; the page stays in `scratch`.

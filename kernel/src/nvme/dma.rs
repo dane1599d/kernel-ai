@@ -32,7 +32,8 @@ impl Page {
     pub fn bytes(&self, len: usize) -> &[u8] {
         let len = len.min(self.len);
         // SAFETY: the memory is ours for good and `len` stays inside it; the device
-        // writes it only while a command runs, and commands are waited on.
+        // writes it only while a command runs, and commands are waited on (one that timed out disables the controller, which
+        // then takes no more).
         unsafe { core::slice::from_raw_parts(self.virt as *const u8, len) }
     }
 

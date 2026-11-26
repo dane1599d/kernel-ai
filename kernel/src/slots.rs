@@ -14,8 +14,9 @@
 //! The dev loop's directory ESP names no slot, and nothing here runs.
 //!
 //! `test=slot` drives the lever from the command line for the `slot-ab` case:
-//! `slot-do=commit`, `slot-do=stage` (the other slot, as `slot-seq=`) and
-//! `slot-do=panic` (before the checks), each ending the boot in a reset.
+//! `slot-do=commit`, `slot-do=stage` (the other slot, as `slot-seq=`),
+//! `slot-do=panic` (before the checks) and `slot-do=efi-fault` (a fault inside
+//! a firmware call, before the checks), each ending the boot in a reset.
 
 use crate::efi::{self, Guid, KAI, NV_BS_RT};
 use crate::{bootfiles, ipc, log, threads};
@@ -182,6 +183,7 @@ pub enum Action {
     Commit,
     Stage(u32),
     Panic,
+    EfiFault,
 }
 
 fn action() -> Action {
@@ -190,6 +192,7 @@ fn action() -> Action {
         Some("commit") => Action::Commit,
         Some("stage") => Action::Stage(seq),
         Some("panic") => Action::Panic,
+        Some("efi-fault") => Action::EfiFault,
         _ => Action::Restart,
     }
 }
@@ -257,6 +260,9 @@ fn lever(test: bool) {
     if action == Action::Panic {
         panic!("slots: slot-do=panic before the required checks");
     }
+    if action == Action::EfiFault {
+        efi::fault_in_call();
+    }
     if !checks_pass() {
         crate::fail("slots: the required checks did not pass");
     }
@@ -301,7 +307,7 @@ fn lever(test: bool) {
                 entry_id(other)
             );
         }
-        Action::Restart | Action::Panic => {}
+        Action::Restart | Action::Panic | Action::EfiFault => {}
     }
     if test {
         finish(&nv, write(&before, &nv));
@@ -554,11 +560,32 @@ fn keep_booted(change: impl FnOnce(&mut Nv)) {
 }
 
 /// From the fault path: records the fault in this boot's slot and deletes the
-/// one-shot, so R boots next. Does nothing off a slot image or in R.
+/// one-shot, so R boots next. Does nothing off a slot image or in R, and
+/// writes nothing when the firmware must not be entered: then `fault::reset`
+/// reboots without it.
 pub fn on_fault() {
     let Some((before, slot)) = BOOTED.try_lock().and_then(|mut b| b.take()) else {
         return;
     };
+    // The fault goes unrecorded. R boots next unless this boot had armed its
+    // own slot again; a trial's tries bound that loop (ADR 0008, "fault").
+    match efi::after_fault() {
+        Ok(()) => {}
+        Err(efi::Busy::InCall) => {
+            log!(
+                "slots: a fault inside a firmware call; not recorded in {}",
+                entry_id(slot)
+            );
+            return;
+        }
+        Err(efi::Busy::Held) => {
+            log!(
+                "slots: a firmware call did not end; the fault is not recorded in {}",
+                entry_id(slot)
+            );
+            return;
+        }
+    }
     let mut after = before;
     bootslot::fault(&mut after, slot, FAULT_PANIC, 0);
     // The one-shot is deleted whatever BOOTED remembers of it (a fault just

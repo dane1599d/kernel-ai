@@ -12,9 +12,9 @@
 //! 2. SLOT_WRITE refused for the active slot, and for R while it is a trial;
 //! 3. BOOTREC_SET refused for a record whose CRC fails, and for a one-shot that
 //!    names a slot being written;
-//! 4. *stage*: the other slot marked Updating, the active slot copied into it
-//!    in 128 KiB writes, flushed, read back and compared, then a trial of
-//!    release 2;
+//! 4. *stage*: the other slot marked Updating, the active slot's image (its
+//!    FAT32 volume, not the whole partition) copied into it in 128 KiB writes,
+//!    flushed, read back and compared, then a trial of release 2;
 //! 5. *restart into* it: BOOTREC_SET with the restart flag.
 //!
 //! `step=models` exercises the model channel (`models.rs`) for the `models`
@@ -103,15 +103,18 @@ fn main() -> i32 {
         println!("updated: reconciled: {outcome:?}");
     }
     // The model channel: a trial the last boot left is settled before anything
-    // waits on `llm` (`models.rs`). The plan line's one route is to `llm`.
+    // waits on `llm` (`models.rs`). The plan line's one route is to `llm`. A
+    // start again within the boot (the supervisor's `restart=N`, N > 0)
+    // judges a trial it finds by what `llm` says this boot runs.
     let folders = folders::Folders::from_startup().ok();
     let test = args.split_whitespace().any(|w| w == "fetch=test");
     let (hosts, lists) = (offers::hosts(test), download::lists(test));
     let mut channel = folders
         .as_ref()
         .and_then(|f| models::Channel::open(handle, f, user::route(0), hosts, lists));
+    let again = modelchan::trial::started_again(args);
     if let Some(channel) = &mut channel
-        && let Err(why) = channel.at_boot()
+        && let Err(why) = channel.at_boot(again)
     {
         println!("updated: model trial: {why}");
     }
@@ -419,9 +422,15 @@ fn check(handle: Handle) -> Result<(), String> {
     set(handle, &nv, false)?;
     println!("updated: BOOTREC_SET refuses a bad record and arming a slot being written");
 
-    let sectors = info(active as u64)?
-        .sectors
-        .min(info(other as u64)?.sectors);
+    // The running slot's image at its own size, as an update writes one: its
+    // FAT32 volume, not the whole partition, which is larger (ADR 0008 §1).
+    let sectors = image_sectors(handle, active as u64)?;
+    let room = info(other as u64)?.sectors;
+    if sectors > room {
+        return Err(format!(
+            "the running slot's image is {sectors} sectors, more than {other:?}'s {room}"
+        ));
+    }
     copy(handle, active as u64, other as u64, sectors)?;
     bootslot::stage_end(&mut nv, other, STAGED_RELEASE);
     bootslot::restart_into(&mut nv, other);
@@ -464,6 +473,19 @@ pub(crate) fn set(handle: Handle, nv: &Nv, restart: bool) -> Result<(), String> 
     sys::bootrec_set(handle, &nv.record.encode(), one_shot, restart)
         .map(|_| ())
         .map_err(|e| format!("BOOTREC_SET: {e:?}"))
+}
+
+/// Sectors of the slot image in `slot`: its FAT32 volume's own size, from its
+/// boot sector. xtask writes each slot's image at its files' size at the start
+/// of a larger partition, as an update does.
+fn image_sectors(handle: Handle, slot: u64) -> Result<u64, String> {
+    let mut boot = [0u8; SECTOR as usize];
+    sys::slot_read(handle, slot, 0, &mut boot).map_err(|e| format!("SLOT_READ: {e:?}"))?;
+    let total = u32::from_le_bytes([boot[32], boot[33], boot[34], boot[35]]);
+    if boot[510..] != [0x55u8, 0xAA] || total == 0 {
+        return Err(format!("slot {slot} holds no FAT32 volume"));
+    }
+    Ok(u64::from(total))
 }
 
 /// Copies `sectors` sectors of slot `from` into slot `to`, flushes, and reads

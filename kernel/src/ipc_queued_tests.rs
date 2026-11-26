@@ -1,6 +1,7 @@
 //! #1164's review: a call queued on a server that ends is woken at once, so
 //! APP_CTL's `gone` cancel fires rather than the 5 s deadline, and APP_CTL
-//! answers Dead for a ctl that was taken (it may have taken effect).
+//! answers Dead for a ctl that was taken (it may have taken effect). That
+//! cancel takes no lock in the call's `ready()` ([`ready_rule`]).
 //!
 //! Holder `hqheld` takes call A and holds it 3 s. Call B, from here, queues
 //! behind A with APP_CTL's cancel (the server is no longer `hqheld`'s pid).
@@ -10,6 +11,7 @@
 //! woken (its cancel check, run each time it wakes, ran no more after the kill).
 
 use crate::fpu_tests::wait_exit;
+use crate::process::syscall::standing::ctl_cancel;
 use crate::process::{self, SpawnRequest};
 use crate::{hpet, ipc, log, threads};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
@@ -121,7 +123,9 @@ pub fn check() -> Result<(), &'static str> {
     }
     spawn("ipcq-c", call_c).map_err(|_| "ipc-queued: no thread for C")?;
     spawn("ipcq-k", killer).map_err(|_| "ipc-queued: no killer thread")?;
-    let gone = || ipc::server_of(HELD) != Some(held);
+    ready_rule()?;
+    // APP_CTL's own cancel.
+    let gone = ctl_cancel(HELD).ok_or("ipc-queued: the held server is not bound")?;
     let queued_at = hpet::nanos();
     let b = ipc::call_from_unless(HELD, b"queued", CALL_MS, gone);
     let took_ms = hpet::nanos().saturating_sub(queued_at) / 1_000_000;
@@ -165,6 +169,28 @@ pub fn check() -> Result<(), &'static str> {
     log!(
         "ipc-queued: a call queued on a server that died ended Cancelled in {took_ms} ms; the held one ServiceDied; another server's queue was left alone"
     );
+    Ok(())
+}
+
+/// A call's cancel runs in its sleep's `ready()`, where a lock held with
+/// interrupts on can freeze two CPUs (`threads::ready`). Debug builds count such
+/// a lock: `server_of`, APP_CTL's cancel before, takes the IPC lock and is
+/// counted; APP_CTL's cancel now takes none. Every boot case also fails when a
+/// real `ready()` took one (`main::run_case`).
+fn ready_rule() -> Result<(), &'static str> {
+    let looked_up = threads::ready::locks_in_ready(|| {
+        let _ = ipc::server_of(HELD);
+    });
+    if cfg!(debug_assertions) && looked_up == 0 {
+        return Err("ipc-queued: a lock taken in a ready() was not counted");
+    }
+    let gone = ctl_cancel(HELD).ok_or("ipc-queued: the held server is not bound")?;
+    if threads::ready::locks_in_ready(|| {
+        let _ = gone();
+    }) != 0
+    {
+        return Err("ipc-queued: APP_CTL's cancel takes a lock in a ready()");
+    }
     Ok(())
 }
 

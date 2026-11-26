@@ -270,17 +270,24 @@ impl Canvas<'_> {
     }
 }
 
+/// The coverage (0-255) [`Image::round_corners`] gives px `(cx, cy)` of a
+/// corner of radius `r`, counted from the corner itself: 0 where the quarter
+/// disc does not reach, so what was under it shows unchanged.
+pub fn corner_alpha(r: i32, cx: i32, cy: i32) -> u32 {
+    let rf = r as f32;
+    let (dx, dy) = (rf - cx as f32 - 0.5, rf - cy as f32 - 0.5);
+    let d = libm::sqrtf(dx * dx + dy * dy);
+    ((rf - d + 0.5).clamp(0.0, 1.0) * 255.0) as u32
+}
+
 impl Image {
     /// Rounds the corners: each corner pixel's alpha becomes its coverage of a
     /// quarter disc of radius `r`, premultiplied.
     pub fn round_corners(&mut self, r: i32) {
         let r = r.clamp(0, self.w.min(self.h) / 2);
-        let rf = r as f32;
         for cy in 0..r {
             for cx in 0..r {
-                let (dx, dy) = (rf - cx as f32 - 0.5, rf - cy as f32 - 0.5);
-                let d = libm::sqrtf(dx * dx + dy * dy);
-                let a = ((rf - d + 0.5).clamp(0.0, 1.0) * 255.0) as u32;
+                let a = corner_alpha(r, cx, cy);
                 for (x, y) in [
                     (cx, cy),
                     (self.w - 1 - cx, cy),

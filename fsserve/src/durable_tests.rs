@@ -156,3 +156,41 @@ fn done_always_means_on_the_disk_whichever_write_fails() {
     }
     assert!(answered_done > 0, "no failure point late enough to land");
 }
+
+/// A GC pass whose closing commit fails loses what it freed with that commit,
+/// so the next idle runs another pass, which commits (bug hunt 5, H5-7).
+/// Before, nothing asked for one, and what the pass freed stayed in use.
+#[test]
+fn a_pass_whose_commit_fails_runs_again() {
+    let shared = Shared(Rc::new(RefCell::new(State {
+        bytes: vec![0; BLOCKS * BLOCK],
+        runs: 0,
+        fail_from: None,
+    })));
+    let stack = Cached::new(Batched::new(shared.clone()), 256);
+    let (mut server, _) = Server::start(stack, [5; 16]).unwrap();
+    server.fs.gc_start().unwrap();
+    let before = server.generation();
+    // The disk takes nothing: the pass ends, and its commit fails.
+    {
+        let mut s = shared.0.borrow_mut();
+        s.fail_from = Some(s.runs);
+    }
+    server.idle(1_000);
+    assert!(!server.fs.gc_running());
+    assert_eq!(server.generation(), before);
+    assert!(server.gc_again, "nothing asks for the next pass");
+    shared.0.borrow_mut().fail_from = None;
+    for now in 2_000..2_100 {
+        server.idle(now);
+        if !server.fs.gc_running() {
+            break;
+        }
+    }
+    assert!(!server.fs.gc_running(), "the next pass never ended");
+    assert!(!server.gc_again);
+    assert!(
+        server.generation() > before,
+        "no pass ran after the failed one"
+    );
+}

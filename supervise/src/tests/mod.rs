@@ -439,6 +439,24 @@ fn too_many_restarts_in_the_window_gives_up_for_good() {
 }
 
 #[test]
+fn a_restart_asked_for_is_counted_but_not_against_the_cap() {
+    // `restart=N` goes to every start: a restart the user asked for shows too,
+    // so `updated` can tell this boot's start again from a new boot (bug hunt
+    // 1, #27). It is no failure: neither the cap nor the backoff sees it.
+    let policy = Policy {
+        max_restarts: 1,
+        ..POLICY
+    };
+    let mut record = Record::new("updated");
+    record.restarted_on_request();
+    record.restarted_on_request();
+    assert_eq!(record.restarts, 2);
+    assert!(record.recent.is_empty() && record.quick_failures == 0);
+    assert_eq!(record.on_exit(&policy, 10, 1), Decision::RestartAfterMs(50));
+    assert_eq!(record.restarts, 3);
+}
+
+#[test]
 fn old_restarts_leave_the_window() {
     let policy = Policy {
         max_restarts: 2,

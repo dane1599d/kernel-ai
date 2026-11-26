@@ -85,6 +85,35 @@ fn kind(ty: &ArgType) -> Kind<'static> {
     }
 }
 
+/// Whether `rows`, an app's, decode under the tagged grammar. The shell's
+/// loader takes kinds the decoder cannot steer (an int range with nothing in
+/// it, a text of no characters, a list of lists), and one such app must not
+/// keep every other app's rows from the model. Nothing is leaked but the inner
+/// kind of a list or option argument.
+pub fn decodable(rows: &[&'static agentabi::Action]) -> bool {
+    let args: Vec<Vec<Arg<'static>>> = rows
+        .iter()
+        .map(|row| {
+            row.args
+                .iter()
+                .map(|a| Arg {
+                    name: a.name,
+                    kind: kind(&a.ty),
+                })
+                .collect()
+        })
+        .collect();
+    let actions: Vec<Action<'_>> = rows
+        .iter()
+        .zip(&args)
+        .map(|(row, args)| Action {
+            name: row.name,
+            args,
+        })
+        .collect();
+    infer::tagged::check(&actions).is_ok()
+}
+
 /// The actions an `act` answer may name: the pack's rows, then `say`,
 /// `clarify`, `script` and `undo`. Built once, when the model loads.
 pub fn actions(rows: &[&'static agentabi::Action]) -> Vec<Action<'static>> {
@@ -202,6 +231,15 @@ pub fn grammar_flat(groups: &[AppGroup]) -> Result<Grammar, infer::Error> {
     build(groups, None)
 }
 
+/// Spike S10-2's described arm: [`grammar_with`]'s grammars, on the index
+/// level, with the apps turn's index rows each followed by a short
+/// description from its doc (`pack::apps::described_turn`, the same budget
+/// by `apps::estimate`). What ships is [`grammar_with`].
+pub fn grammar_described(groups: &[AppGroup]) -> Result<Grammar, infer::Error> {
+    let turn = apps::described_turn(groups, apps::estimate);
+    build_from(groups, true, turn.text, &turn.left_out)
+}
+
 /// The grammars over the pack's rows and `groups`' rows, those on the index
 /// level when `count` is given (the apps turn counted with it), all in the
 /// flat apps turn (no budget, no count) when it is `None`.
@@ -209,11 +247,21 @@ fn build(
     groups: &[AppGroup],
     count: Option<&dyn Fn(&str) -> usize>,
 ) -> Result<Grammar, infer::Error> {
-    let apps_indexed = count.is_some();
     let (apps_turn, left_out) = match count {
         Some(count) => apps::turn_counted(groups, count),
         None => apps::flat_turn(groups),
     };
+    build_from(groups, count.is_some(), apps_turn, &left_out)
+}
+
+/// [`build`] for an apps turn already made: `groups` less `left_out`, their
+/// rows on the index level when `apps_indexed`.
+fn build_from(
+    groups: &[AppGroup],
+    apps_indexed: bool,
+    apps_turn: String,
+    left_out: &[String],
+) -> Result<Grammar, infer::Error> {
     let shown: Vec<AppGroup> = groups
         .iter()
         .filter(|group| !left_out.contains(&group.app))
@@ -562,6 +610,36 @@ mod tests {
         assert!(grammar.second("tune").is_none());
         assert!(grammar.second("tune_undo").is_none());
         assert!(grammar.second("set_policy").is_none());
+    }
+
+    /// Audit (lane M, items 3 and 5): kinds the shell's loader takes and the
+    /// decoder refuses are found per app, so llm leaves that app out alone.
+    #[test]
+    fn an_apps_row_the_decoder_cannot_steer_is_not_decodable() {
+        let like = agentabi::find(&agentabi::ROWS, "fs_create").unwrap();
+        let with = |name: &'static str, ty: ArgType| -> &'static agentabi::Action {
+            let args: &'static [agentabi::Arg] =
+                Box::leak(Box::new([agentabi::Arg { ty, ..like.args[0] }]));
+            Box::leak(Box::new(agentabi::Action {
+                name,
+                args,
+                ..*like
+            }))
+        };
+        assert!(decodable(&[with(
+            "good_add",
+            ArgType::Int { min: 0, max: 9 }
+        )]));
+        for ty in [
+            ArgType::Int { min: 5, max: 3 },
+            ArgType::Text { max: 0 },
+            ArgType::List(&ArgType::List(&ArgType::Path, 4), 4),
+        ] {
+            let rows = [with("good_add", ArgType::Path), with("bad_add", ty)];
+            assert!(!decodable(&rows), "{ty:?}");
+            // The rows that do decode still build a grammar.
+            assert!(decodable(&rows[..1]));
+        }
     }
 
     #[test]

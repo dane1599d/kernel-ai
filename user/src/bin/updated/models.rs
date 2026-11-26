@@ -31,7 +31,7 @@ use modelchan::fetch::Hosts;
 use modelchan::import::{self, Importing};
 use modelchan::listing;
 use modelchan::remove::{self, Holds, Remove};
-use modelchan::trial::{self, AtBoot, Decision, Health, State, Switch, Trial};
+use modelchan::trial::{self, AtBoot, Health, ON_TRIAL, Probation, State, Switch, Trial, Write};
 use user::{println, sys};
 
 /// The trial record, in `/system/updates`.
@@ -39,9 +39,17 @@ const TRIAL: &str = "model-trial";
 /// How long a boot waits for `llm` to load a candidate: ADR 0008 §9's limit
 /// for a trial slot to come up.
 const PROBATION_MS: u64 = 300_000;
-/// How often the probation asks `llm`, and how long it waits for an answer.
+/// How long the probation leaves between the end of one look at `llm` and
+/// the next, so requests are answered between its waits. It waits
+/// `trial::HEALTH_WAIT_MS` for an answer, as a switch and a remove do; the
+/// list, which only shows what runs, waits `HEALTH_CALL_MS`, within the model
+/// manager's 5 s read.
 const HEALTH_EVERY_MS: u64 = 5_000;
 const HEALTH_CALL_MS: u64 = 3_000;
+/// How long the probation's last answer stands for `llm`'s: a request that
+/// waited behind its look takes that answer rather than wait again, so it
+/// waits one `trial::HEALTH_WAIT_MS` at most, within the shell's 10 s call.
+const FRESH_MS: u64 = 1_000;
 /// Names listed at a time from the store.
 const LIST_PAGE: u32 = 64;
 
@@ -116,9 +124,11 @@ pub struct Channel {
     import: Option<Running>,
     /// The last import's end: the target it stored, or why it was refused.
     last: Option<Result<String, String>>,
-    /// The trial this boot judges, and when it started.
-    probation: Option<(Trial, u64)>,
+    /// The trial this start judges, or checks (`trial::Probation`).
+    probation: Option<Probation>,
+    /// When the probation's last look at `llm` ended, and what `llm` said.
     asked_ms: u64,
+    last_health: Option<(u64, Option<String>)>,
     /// The hosts models are downloaded from (`offers::hosts`), and where the
     /// role's chunk lists are (`download::lists`).
     hosts: &'static [Hosts],
@@ -151,6 +161,7 @@ impl Channel {
             last: None,
             probation: None,
             asked_ms: 0,
+            last_health: None,
             hosts,
             lists,
             download: None,
@@ -183,35 +194,56 @@ impl Channel {
         }
     }
 
-    /// The first thing a boot does with the last trial, before it waits on
-    /// anything (K's condition 3): a pending trial is marked attempted, and
-    /// one already attempted, which a hang cut short, goes back at once.
-    pub fn at_boot(&mut self) -> Result<(), String> {
-        match trial::at_boot(self.record()?.as_ref()) {
-            AtBoot::Nothing => {}
-            AtBoot::Try(attempted) => {
-                self.keep(Some(&attempted))?;
-                println!(
-                    "updated: model {} is on trial",
-                    &hex(&attempted.candidate)[..12]
-                );
-                self.probation = Some((attempted, now_ms()));
+    /// The first thing a start does with the last trial, before it waits on
+    /// anything (K's condition 3), as `trial::at_boot` and `trial::start` say:
+    /// its first start in a boot marks a pending trial attempted, with the
+    /// hint on the way back, and rolls one already attempted, which a hang
+    /// cut short, back at once. A start again (`again`: the supervisor's
+    /// `restart=N`, N > 0) judges by what `llm` says this boot runs.
+    pub fn at_boot(&mut self, again: bool) -> Result<(), String> {
+        let found = trial::at_boot(self.record()?.as_ref(), again);
+        let start = trial::start(&found, now_ms());
+        let made = self.make(&start.writes);
+        self.probation = match &made {
+            Ok(()) => start.probation,
+            Err(_) => start.retry,
+        };
+        let said = match &found {
+            AtBoot::Nothing => None,
+            AtBoot::Try(t) => Some((t, String::from("is on trial"))),
+            AtBoot::Resume(t) => {
+                Some((t, String::from("is still on trial: updated started again")))
             }
-            AtBoot::RollBack(back) => self.roll_back(back)?,
+            AtBoot::Check(t) => Some((
+                t,
+                String::from(
+                    "is pending and updated started again: llm says whether this boot runs it",
+                ),
+            )),
+            AtBoot::RollBack(t) => match &t.state {
+                State::RolledBack(why) => Some((t, format!("rolled back: {why}"))),
+                _ => None,
+            },
+        };
+        if let (Some((t, said)), Ok(())) = (said, &made) {
+            self.said(t, &said);
+        }
+        made
+    }
+
+    /// Makes `writes` in order, stopping at the first that fails.
+    fn make(&self, writes: &[Write]) -> Result<(), String> {
+        for write in writes {
+            match write {
+                Write::Hint(model) => self.hint(model.as_ref())?,
+                Write::Record(trial) => self.keep(Some(trial))?,
+            }
         }
         Ok(())
     }
 
-    fn roll_back(&mut self, trial: Trial) -> Result<(), String> {
-        self.hint(trial.previous.as_ref())?;
-        self.keep(Some(&trial))?;
-        if let State::RolledBack(why) = &trial.state {
-            println!(
-                "updated: model {} rolled back: {why}",
-                &hex(&trial.candidate)[..12]
-            );
-        }
-        Ok(())
+    fn said(&self, trial: &Trial, said: &str) {
+        println!("updated: model {} {said}", &hex(&trial.candidate)[..12]);
     }
 
     /// Work between requests: the probation's next look at `llm`, the
@@ -279,9 +311,7 @@ impl Channel {
         // As for an import: a trial's verdict writes its record, which the
         // copy's open action would block.
         if self.probation.is_some() {
-            return Err(String::from(
-                "a model is on trial; ask again once it is kept or rolled back",
-            ));
+            return Err(String::from(ON_TRIAL));
         }
         let (signed, lists) = role_and_lists()?;
         let store = Store {
@@ -313,9 +343,16 @@ impl Channel {
         self.download.is_some()
     }
 
-    /// Whether a model is on trial, its probation not yet decided.
+    /// Whether a trial's probation, or a check of one, is not yet decided.
     pub fn on_trial(&self) -> bool {
         self.probation.is_some()
+    }
+
+    /// Whether a switch waits for the probation (`Probation::holds_switches`).
+    fn holds_switches(&self) -> bool {
+        self.probation
+            .as_ref()
+            .is_some_and(Probation::holds_switches)
     }
 
     /// Leaves `case-<step>.done` in `/system/updates` for the kernel's half of
@@ -324,49 +361,54 @@ impl Channel {
         folders::write(self.updates, &format!("case-{step}.done"), b"")
     }
 
+    /// The probation's next look at `llm` (`trial::look`), once
+    /// [`HEALTH_EVERY_MS`] has passed since the last one ended. Its verdict is
+    /// written only over the trial's record as it stands (bug hunt 1, #25);
+    /// when a write fails the probation stays, and its next look writes again.
     fn judge(&mut self) -> Result<(), String> {
-        let Some((trial, started)) = self.probation.clone() else {
+        let Some(probation) = self.probation.clone() else {
             return Ok(());
         };
-        let now = now_ms();
-        if now.saturating_sub(self.asked_ms) < HEALTH_EVERY_MS {
+        if now_ms().saturating_sub(self.asked_ms) < HEALTH_EVERY_MS {
             return Ok(());
         }
+        let reply = self.health(trial::HEALTH_WAIT_MS);
+        // From the end of the wait, so the next one waits HEALTH_EVERY_MS
+        // after it (the review of #1349: no waits back to back).
+        let now = now_ms();
         self.asked_ms = now;
-        let reply = self.health();
+        self.last_health = Some((now, reply.clone()));
         let health = match reply.as_deref() {
             None => Health::NotYet,
-            Some(text) => health_of(text),
+            Some(text) => trial::health_of(text, state_word(text)),
         };
-        match trial::decide(trial.fnv, health, now - started, PROBATION_MS) {
-            Decision::Wait => Ok(()),
-            Decision::Keep => {
-                let kept = Trial {
-                    state: State::Kept,
-                    ..trial
-                };
-                self.probation = None;
-                self.keep(Some(&kept))?;
-                println!("updated: model {} kept", &hex(&kept.candidate)[..12]);
-                Ok(())
-            }
-            Decision::RollBack(why) => {
-                let back = Trial {
-                    state: State::RolledBack(why),
-                    ..trial
-                };
-                self.probation = None;
-                self.roll_back(back)
-            }
+        let record = self.record()?;
+        let look = trial::look(&probation, record.as_ref(), health, now, PROBATION_MS);
+        self.make(&look.writes)?;
+        if let Some(said) = &look.said {
+            self.said(&probation.trial, said);
         }
+        self.probation = look.after;
+        Ok(())
     }
 
-    /// `llm`'s `health` reply, or none when it does not answer in time.
-    fn health(&self) -> Option<String> {
+    /// `llm`'s `health` reply, or none when it does not answer within
+    /// `within_ms`.
+    fn health(&self, within_ms: u64) -> Option<String> {
         let llm = self.llm?;
         let mut reply = vec![0u8; kabi::MAX_MESSAGE];
-        let len = sys::call_route(llm, b"health", &mut reply, HEALTH_CALL_MS).ok()?;
+        let len = sys::call_route(llm, b"health", &mut reply, within_ms).ok()?;
         String::from_utf8(reply[..len.min(reply.len())].to_vec()).ok()
+    }
+
+    /// [`Self::health`], or the probation's answer when its look ended within
+    /// [`FRESH_MS`]: a request that waited behind that look does not wait
+    /// again.
+    fn health_now(&self, within_ms: u64) -> Option<String> {
+        match &self.last_health {
+            Some((at, reply)) if now_ms().saturating_sub(*at) < FRESH_MS => reply.clone(),
+            _ => self.health(within_ms),
+        }
     }
 
     /// One request from the shell: `models`, `models import`, `models
@@ -440,19 +482,25 @@ impl Channel {
     }
 
     /// The stored model `llm` reports loaded, if any; an error when `llm` is
-    /// there and does not say.
+    /// there and does not say (`listing::running`).
     fn running_now(&self) -> Result<Option<Sha256>, String> {
+        let blobs = self.blobs()?;
+        self.running(&blobs, trial::HEALTH_WAIT_MS)
+    }
+
+    /// The model among the store's `blobs` that `llm` runs, asked within
+    /// `within_ms`: none with no `llm`, and an error when it cannot say.
+    fn running(
+        &self,
+        blobs: &[(Sha256, u64, u64)],
+        within_ms: u64,
+    ) -> Result<Option<Sha256>, String> {
         if self.llm.is_none() {
             return Ok(None);
         }
-        let text = self
-            .health()
-            .ok_or_else(|| String::from("llm did not say which model it runs; ask again"))?;
-        let Some((len, fnv)) = listing::loaded(&text) else {
-            return Ok(None);
-        };
-        let blobs = self.blobs()?;
-        Ok(blobs.iter().find(|b| (b.1, b.2) == (len, fnv)).map(|b| b.0))
+        let reply = self.health_now(within_ms);
+        let state = reply.as_deref().and_then(state_word);
+        listing::running(reply.as_deref(), state, blobs)
     }
 
     /// `models offers`, or with `id`, `models ask <id>` (`offers.rs`).
@@ -509,20 +557,14 @@ impl Channel {
     }
 
     /// What the model manager shows: the role, the store, the running and
-    /// next models and the last trial, as `comp_models` holds them.
+    /// next models and the last trial, as `comp_models` holds them. A
+    /// running model `llm` does not say is shown as none, and then only a
+    /// pending candidate as the next (`trial::next`).
     fn models(&self) -> Result<Models, String> {
         let signed = role()?;
         let blobs = self.blobs()?;
-        let running = self
-            .health()
-            .and_then(|text| listing::loaded(&text))
-            .and_then(|(len, fnv)| blobs.iter().find(|b| (b.1, b.2) == (len, fnv)))
-            .map(|b| b.0);
+        let running = self.running(&blobs, HEALTH_CALL_MS).ok();
         let record = self.record()?;
-        let next = record
-            .as_ref()
-            .filter(|t| t.state == State::Pending)
-            .map(|t| t.candidate);
         let rolled_back = record.as_ref().and_then(|t| match &t.state {
             State::RolledBack(why) => Some((t.candidate, why.clone())),
             _ => None,
@@ -534,9 +576,9 @@ impl Channel {
                     .iter()
                     .map(|&(sha256, length, _)| Stored { sha256, length })
                     .collect(),
-                running,
-                next,
-                on_trial: self.probation.is_some(),
+                running: running.flatten(),
+                next: trial::next(record.as_ref(), running),
+                on_trial: self.holds_switches(),
                 rolled_back,
             },
             ..Models::default()
@@ -550,7 +592,7 @@ impl Channel {
     }
 
     /// `model_use`: the stored, signed model `sha256` from the next restart,
-    /// on trial; or back to the running one before it.
+    /// on trial; or back to the model before it while that trial waits.
     fn use_model(&mut self, sha256: &Sha256) -> Result<String, String> {
         // The record and the hint are written outside an action, which the
         // import holds until its blob is whole (K's review of #447).
@@ -558,33 +600,51 @@ impl Channel {
             println!("updated: models use refused: {why}");
             return Err(why);
         }
-        let models = self.models()?;
-        if models.use_model(sha256).is_none() && models.store.running != Some(*sha256) {
-            return Err(format!(
+        // The probation's verdict would be written over a new record, and
+        // its rollback would move the hint (bug hunt 1, #25). A check of a
+        // pending trial writes only over that record, so it lets a switch by.
+        if self.holds_switches() {
+            println!("updated: models use refused: a model is on trial");
+            return Err(String::from(ON_TRIAL));
+        }
+        let refused = || {
+            format!(
                 "{} is not a stored model the signed role takes",
                 &hex(sha256)[..12]
-            ));
+            )
+        };
+        let blobs = self.blobs()?;
+        if !blobs.iter().any(|b| b.0 == *sha256) {
+            return Err(refused());
         }
+        // Only signed models (K): a switch that tries one needs a stored blob
+        // the role signs under a licence the project takes; one that changes
+        // nothing, or cancels a trial, does not.
+        let signed = role()?
+            .iter()
+            .any(|s| s.sha256 == *sha256 && s.licence_ok());
+        let record = self.record()?;
+        // With no trial record, the way back is the model this boot runs,
+        // which `llm` must say: never taken as none (bug hunt 1, #26). With
+        // one, the record names it, and `llm` is not asked (`trial::switch`).
+        let running = match &record {
+            None => self.running(&blobs, trial::HEALTH_WAIT_MS)?,
+            Some(_) => None,
+        };
         let fnv = match folders::ask(self.store, &Request::ModelInfo { name: blob(sha256) })? {
             (Reply::Model { fnv, .. }, _) => fnv,
             other => return Err(format!("the store's {}: {other:?}", blob(sha256))),
         };
-        let running = models.store.running;
-        match trial::switch(running, self.record()?.as_ref(), *sha256, fnv) {
-            Switch::Nothing => Ok(String::from("ok already")),
-            // The record first: a boot that finds a hint and no record would
-            // try the candidate with nothing to go back to.
-            Switch::Try(pending) => {
-                self.keep(Some(&pending))?;
-                self.hint(Some(sha256))?;
-                Ok(format!("ok next {}", hex(sha256)))
-            }
-            Switch::Cancel => {
-                self.hint(running.as_ref())?;
-                self.keep(None)?;
-                Ok(String::from("ok cancelled"))
-            }
-        }
+        let switch = trial::switch(running, record.as_ref(), *sha256, fnv);
+        let answer = match &switch {
+            Switch::Nothing => String::from("ok already"),
+            Switch::Try(_) if !signed => return Err(refused()),
+            Switch::Try(_) => format!("ok next {}", hex(sha256)),
+            Switch::Cancel(_) => String::from("ok cancelled"),
+            Switch::OnTrial => return Err(String::from(ON_TRIAL)),
+        };
+        self.make(&switch.writes())?;
+        Ok(answer)
     }
 
     fn start_import(&mut self) -> Result<String, String> {
@@ -595,9 +655,7 @@ impl Channel {
         // would block, so an import waits for the trial to end.
         if self.probation.is_some() {
             println!("updated: models import refused: a model is on trial");
-            return Err(String::from(
-                "a model is on trial; ask again once it is kept or rolled back",
-            ));
+            return Err(String::from(ON_TRIAL));
         }
         let info = sys::slot_info(self.update, IMPORT).map_err(|_| "no import disk")?;
         let signed = role()?;
@@ -711,19 +769,8 @@ impl Channel {
     }
 }
 
-/// `llm`'s `health` reply as the probation reads it.
-fn health_of(text: &str) -> Health<'_> {
-    use llmproto::health::{State as Llm, Status};
-    let state = Status::of(text).map(|s| s.state);
-    match state {
-        Some(Llm::Ready | Llm::Warming) => match listing::loaded(text) {
-            Some((_, fnv)) => Health::Ready { fnv },
-            None => Health::Failed("its health names no model"),
-        },
-        Some(Llm::Failed) => Health::Failed(text),
-        Some(Llm::NoModel | Llm::Remote) => Health::NoModel,
-        Some(Llm::Waiting | Llm::Busy) => Health::NotYet,
-        None if text.starts_with("err no model") => Health::NoModel,
-        None => Health::NotYet,
-    }
+/// The state word `llm`'s `health` reply gives, as `modelchan` reads it
+/// (`trial::health_of`, `listing::running`).
+fn state_word(text: &str) -> Option<&'static str> {
+    llmproto::health::state_of(text).map(llmproto::health::State::word)
 }

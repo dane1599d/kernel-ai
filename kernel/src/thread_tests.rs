@@ -426,10 +426,13 @@ const RACE_ARMED_MAX_NS: u64 = 125_000_000;
 /// The reader's gap: the first time through, tell the test the slot is held and
 /// stay running (yielding, never blocked) until it lets go.
 fn race_gap() {
-    let pass = RACE_PASSES.fetch_add(1, Ordering::SeqCst);
-    if pass == 1 {
+    // The time of the second pass goes in before the count says it began: the
+    // test reads it once it sees two passes, and only this reader changes the
+    // count, so the load is the pass the add will be.
+    if RACE_PASSES.load(Ordering::SeqCst) == 1 {
         RACE_AGAIN_AT.store(hpet::nanos(), Ordering::SeqCst);
     }
+    let pass = RACE_PASSES.fetch_add(1, Ordering::SeqCst);
     if pass == 0 {
         RACE_HELD.store(true, Ordering::SeqCst);
         while !RACE_RELEASED.load(Ordering::SeqCst) {

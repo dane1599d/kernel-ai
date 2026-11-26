@@ -205,6 +205,38 @@ fn paging_fetches_the_lines_it_has_not_got() {
     rig.assert_consistent();
 }
 
+/// 97 lines, of which line 77 is one character. The open loads lines 1 to 65,
+/// so line 77 comes only once paging puts the cursor on it.
+fn short_line_past_the_first_window() -> Rig {
+    let lib = format!("{}x\n{}", numbered(76, "\n"), numbered(20, "\n"));
+    Rig::new(&lib, 20, 40)
+}
+
+#[test]
+fn backspace_after_paging_onto_a_short_line_that_was_not_loaded_yet() {
+    let mut rig = short_line_past_the_first_window();
+    // Column 7, at the end of line 20; pages land on 39, 58 and 77.
+    rig.press("<C-g>20<enter><end><pgdn><pgdn><pgdn><bs>");
+    assert_eq!(rig.screen.position(), (77, 0));
+    rig.assert_consistent();
+    assert!(
+        rig.source().contains("line 76\n\nline 1\n"),
+        "{}",
+        rig.source()
+    );
+}
+
+#[test]
+fn a_line_that_comes_under_the_cursor_clamps_its_column_and_keeps_its_goal() {
+    let mut rig = short_line_past_the_first_window();
+    rig.press("<C-g>20<enter><end><pgdn><pgdn><pgdn>");
+    assert_eq!(rig.screen.position(), (77, 1), "clamped once the line came");
+    // The column it started from is kept for a longer line.
+    rig.press("<down>");
+    assert_eq!(rig.screen.position(), (78, 6));
+    rig.assert_consistent();
+}
+
 #[test]
 fn keys_typed_while_requests_are_in_flight_give_the_same_text() {
     let script = "ab<enter>cd<up><bs><bs><down><down>x<end><enter><enter>q<up><up><del><C-z>";
