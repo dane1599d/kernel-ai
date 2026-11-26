@@ -92,6 +92,9 @@ struct Running {
 struct Pending {
     running: Running,
     call: ResumableCallHostTrap,
+    /// When the run stopped for the effect: an effect `cc` answers itself
+    /// charges the time since to the run ([`Session::resume_at_once`]).
+    trapped_ns: u64,
 }
 
 /// A committed entry: what `undo` puts back, and its module for `:dis`.
@@ -231,10 +234,34 @@ impl Session {
     /// Goes on with a suspended run; `value` is the effect's result. The time
     /// spent waiting does not count against the run's budget.
     pub fn resume(&mut self, value: i64, host: &dyn Host) -> Result<Step, Failure> {
+        self.resume_after(value, host, false)
+    }
+
+    /// [`Session::resume`] for an effect `cc` answered itself, at once (a
+    /// refused call): the time since the run stopped for it was `cc`'s own
+    /// work, never the shell's, so it counts against the run's budget (H2-12).
+    pub fn resume_at_once(&mut self, value: i64, host: &dyn Host) -> Result<Step, Failure> {
+        self.resume_after(value, host, true)
+    }
+
+    fn resume_after(
+        &mut self,
+        value: i64,
+        host: &dyn Host,
+        at_once: bool,
+    ) -> Result<Step, Failure> {
         let Some(pending) = self.pending.take() else {
             return Err(Failure::Internal("no run is waiting".into()));
         };
-        let Pending { running, call } = *pending;
+        let Pending {
+            mut running,
+            call,
+            trapped_ns,
+        } = *pending;
+        if at_once {
+            let spent = host.now_ns().saturating_sub(trapped_ns);
+            running.run_ns = running.run_ns.saturating_add(spent);
+        }
         let budget = &Budget::new(host, host.line_ns().saturating_sub(running.run_ns));
         // Effects answered at once come back here without the run running out
         // of fuel, so the budget is checked on every resume too.
@@ -337,7 +364,8 @@ impl Session {
                     call = out.resume(&mut self.store, &mut []);
                 }
                 Ok(ResumableCall::HostTrap(trap)) => {
-                    running.run_ns += budget.now().saturating_sub(started);
+                    let trapped_ns = budget.now();
+                    running.run_ns += trapped_ns.saturating_sub(started);
                     let Some(need) = trap.host_error().downcast_ref::<Need>() else {
                         self.fail(&running);
                         return Err(Failure::Trap("host"));
@@ -349,6 +377,7 @@ impl Session {
                     self.pending = Some(Box::new(Pending {
                         running,
                         call: trap,
+                        trapped_ns,
                     }));
                     return Ok(step);
                 }
