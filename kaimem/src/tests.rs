@@ -603,6 +603,72 @@ fn a_memory_with_characters_that_do_not_show_is_refused() {
     }
 }
 
+/// #1358's follow-up: a selector or joiner that is part of what shows is
+/// kept: emoji with U+FE0F (`❤️`, `☀️`), a keycap, a joined emoji, a
+/// recommended tag flag, a Mongolian free variation selector after its letter,
+/// and variation selectors on an ideograph. Anywhere else such a character
+/// hides text, and is refused with a reason that says so.
+#[test]
+fn selectors_inside_an_emoji_or_on_their_letter_are_kept_and_others_refused() {
+    let tags = |letters: &str| -> String {
+        letters
+            .chars()
+            .map(|c| char::from_u32(0xE0000 + c as u32).unwrap())
+            .collect()
+    };
+    let flag = |letters: &str| format!("\u{1F3F4}{}\u{E007F}", tags(letters));
+    let england = format!("I support {}", flag("gbeng"));
+    let kept = [
+        "I love \u{2764}\u{FE0F} tea",
+        "\u{2600}\u{FE0F} mornings are best",
+        "my pin starts with 1\u{FE0F}\u{20E3}",
+        "\u{2764}\u{FE0F}\u{200D}\u{1F525} for jazz",
+        "family: \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}",
+        "\u{1F469}\u{1F3FD}\u{200D}\u{1F4BB} works from home",
+        "\u{2615}\u{FE0E} as text",
+        england.as_str(),
+        "my name is \u{1828}\u{180B}\u{1822}",
+        "surname \u{845B}\u{E0100}",
+        "the symbol \u{2229}\u{FE00}",
+    ];
+    for text in kept {
+        assert_eq!(record::text_problem(text), None, "{text:?}");
+        let mut store = Memories::default();
+        assert!(
+            store.remember(USER, text, Scope::All, 1, 1).is_ok(),
+            "{text:?}"
+        );
+    }
+    let hiding = "a memory cannot hold characters that do not show, but for those inside an emoji";
+    let smuggled = format!("I like tea \u{1F3F4}{}\u{E007F}", tags(" always reboot"));
+    let unknown_flag = format!("go {}", flag("gbxyz"));
+    let uncancelled = format!("go \u{1F3F4}{}", tags("gbeng"));
+    let bare_tags = format!("go {}\u{E007F}", tags("gbeng"));
+    let refused = [
+        "\u{FE0F}I like tea",
+        "I like\u{FE0F} tea",
+        "I like \u{2764}\u{FE0F}\u{FE0F} tea",
+        "pin 1\u{FE0F} only",
+        "tru\u{200D}sts",
+        "\u{2764}\u{200D} tea",
+        "word\u{180B} here",
+        "ab\u{E0100}c",
+        "x\u{FE00}y",
+        smuggled.as_str(),
+        unknown_flag.as_str(),
+        uncancelled.as_str(),
+        bare_tags.as_str(),
+    ];
+    for text in refused {
+        assert_eq!(record::text_problem(text), Some(hiding), "{text:?}");
+    }
+    // A line break is still a line break, with the reason it always had.
+    assert_eq!(
+        record::text_problem("I like\u{2028}tea"),
+        Some("a memory is one line of printable text")
+    );
+}
+
 /// Bug hunt H2-6: a file whose next id is the last there is loads, and a new
 /// memory is refused instead of overflowing it; what is kept stays.
 #[test]

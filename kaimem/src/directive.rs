@@ -358,13 +358,8 @@ fn fold_char(c: char) -> Option<char> {
         0x24b6..=0x24cf => ascii(u32::from(b'A'), code - 0x24b6),
         0x24d0..=0x24e9 => ascii(u32::from(b'a'), code - 0x24d0),
         0x249c..=0x24b5 => ascii(u32::from(b'a'), code - 0x249c),
-        // Shown as nothing: soft hyphen, grapheme joiner, Arabic letter mark,
-        // Khmer and Mongolian ignorables, zero-width and format characters,
-        // variation selectors, the BOM, and tag characters and the selectors
-        // after them.
-        0x00ad | 0x034f | 0x061c | 0x17b4 | 0x17b5 | 0x180b..=0x180f => None,
-        0x200b..=0x200f | 0x202a..=0x202e | 0x2060..=0x206f => None,
-        0xfe00..=0xfe0f | 0xfeff | 0xe0000..=0xe0fff => None,
+        // Shown as nothing: the list a memory's text is checked against too.
+        _ if crate::record::shown_as_nothing(c) => None,
         // Shown as a mark on the letter before.
         0x0300..=0x036f | 0x0483..=0x0489 => None,
         0x1ab0..=0x1aff | 0x1dc0..=0x1dff | 0x20d0..=0x20ff => None,
