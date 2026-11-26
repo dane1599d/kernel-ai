@@ -67,3 +67,20 @@ impl Damage {
         alloc::vec![whole]
     }
 }
+
+/// One frame's rectangles to repaint: the desk's own damage and what `desktop`
+/// added itself (`extra`, drained), all through one [`Damage`] so the merging
+/// and the [`MAX`] cap apply to both (H6-20: a pointer event adds two boxes, and
+/// a frame reads up to 32 events), each then grown by what its drawing reaches
+/// outside it ([`paint::reach`](crate::paint::reach)) and cut to the screen.
+pub fn for_frame(desk: Vec<Rect>, extra: &mut Vec<Rect>, width: i32, height: i32) -> Vec<Rect> {
+    let mut all = Damage::new(width, height);
+    for r in desk.into_iter().chain(extra.drain(..)) {
+        all.add(r);
+    }
+    let bounds = Rect::new(0, 0, width, height);
+    all.take()
+        .into_iter()
+        .filter_map(|r| crate::paint::reach(r).intersect(&bounds))
+        .collect()
+}

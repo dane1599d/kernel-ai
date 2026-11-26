@@ -71,6 +71,39 @@ fn damage_merges_cuts_and_caps_at_sixteen() {
     const { assert!(damage::MAX == 16) };
 }
 
+/// H6-20: `desktop`'s own damage (a pointer event's two cursor boxes) goes
+/// through the same merge and cap as the desk's: a read of 32 moves is one or two
+/// clips, not 64.
+#[test]
+fn a_burst_of_pointer_moves_is_merged_into_few_clips() {
+    let mut extra = Vec::new();
+    let mut at = Point { x: 500, y: 500 };
+    for n in 0..32 {
+        let before = at;
+        if n % 2 == 0 {
+            at.x += 3;
+        } else {
+            at.y += 3;
+        }
+        extra.push(crate::paint::cursor_box(before));
+        extra.push(crate::paint::cursor_box(at));
+    }
+    assert_eq!(extra.len(), 64);
+    let desk = alloc::vec![Rect::new(0, 0, 10, 10)];
+    let clips = damage::for_frame(desk, &mut extra, 1920, 1080);
+    assert!(extra.is_empty());
+    assert!(clips.len() <= damage::MAX, "{}", clips.len());
+    assert!(clips.len() <= 3, "{clips:?}");
+    for (n, a) in clips.iter().enumerate() {
+        for (m, b) in clips.iter().enumerate() {
+            assert!(n == m || a.intersect(b) != Some(*b), "{a:?} holds {b:?}");
+        }
+    }
+    // Nothing the person moved over is left out.
+    let pointer = crate::paint::reach(crate::paint::cursor_box(at));
+    assert!(clips.iter().any(|c| c.intersect(&pointer) == Some(pointer)));
+}
+
 #[test]
 fn chrome_hits_controls_title_content_and_grabs() {
     let content = Rect::new(100, 100, 400, 300);
