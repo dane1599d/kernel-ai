@@ -21,6 +21,9 @@ pub fn named() -> Vec<ExitCode> {
     codes
 }
 
+/// EFER: on the MSR list both ways, so an MSR exit here is emulated.
+const EFER: u64 = 0xC000_0080;
+
 fn exit(code: ExitCode, info1: u64, info2: u64, nrip: Option<u64>) -> Exit {
     Exit {
         code,
@@ -28,6 +31,7 @@ fn exit(code: ExitCode, info1: u64, info2: u64, nrip: Option<u64>) -> Exit {
         info2,
         nrip,
         interrupted: 0,
+        rcx: EFER,
     }
 }
 
@@ -468,14 +472,15 @@ fn an_exit_reads_nrip_only_with_nrips() {
     vmcb.control.exit_info_2 = 8;
     vmcb.control.next_rip = 0x4002;
     assert_eq!(
-        Exit::read(&vmcb.control, true),
+        Exit::read(&vmcb.control, true, EFER),
         exit(ExitCode::CPUID, 7, 8, Some(0x4002))
     );
-    assert_eq!(Exit::read(&vmcb.control, false).nrip, None);
+    assert_eq!(Exit::read(&vmcb.control, false, 0).nrip, None);
+    assert_eq!(Exit::read(&vmcb.control, false, 0x1B).rcx, 0x1B);
     vmcb.control.exit_int_info = Event::interrupt(0x30).encode() as u32;
     vmcb.control.exit_int_info_error = 0;
     assert_eq!(
-        Exit::read(&vmcb.control, true).interrupted,
+        Exit::read(&vmcb.control, true, 0).interrupted,
         Event::interrupt(0x30).encode()
     );
 }
@@ -524,6 +529,23 @@ fn an_exit_during_delivery_redelivers_or_kills() {
         during(ExitCode::SHUTDOWN, 0, irq.encode()),
         Action::Kill(Kill::Shutdown)
     );
+    // #BP and #OF come from INT3 and INTO, with RIP on the instruction: not
+    // injected again.
+    for vector in [3, 4] {
+        let trap = Event::exception(vector, None).unwrap();
+        assert_eq!(
+            during(ExitCode::INTR, 0, trap.encode()),
+            Action::Kill(Kill::Delivery(ExitCode::INTR))
+        );
+    }
+    // An interrupt or NMI with the error-code bit is not one the CPU writes.
+    for event in [irq, Event::nmi()] {
+        let with_code = event.encode() | 1 << 11 | 7 << 32;
+        assert_eq!(
+            during(ExitCode::NMI, 0, with_code),
+            Action::Kill(Kill::BadInfo(ExitCode::NMI))
+        );
+    }
     // A reserved event type is not one the CPU writes.
     let reserved = 1 << 31 | 1 << 8;
     assert_eq!(

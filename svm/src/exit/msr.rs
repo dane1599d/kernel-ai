@@ -1,16 +1,14 @@
 //! The kernel's MSR allow-list (ADR 0006 item 3): which MSRs a guest's
 //! RDMSR and WRMSR reach the kernel's emulation for. ECX is not in the VMCB,
-//! so [`dispatch`](super::dispatch) answers an MSR exit with
-//! [`Kernel::Msr`](super::Kernel::Msr) and [`msr`] then decides from the
-//! guest's RCX: on the list, the kernel emulates it; off it, #GP(0), as a
-//! CPU gives for an MSR it does not have.
+//! so the run loop gives [`dispatch`](super::dispatch) the guest's RCX
+//! ([`Exit::rcx`](super::Exit::rcx)), and `dispatch` decides from it: on the
+//! list, [`Kernel::Msr`](super::Kernel::Msr); off it, #GP(0), as a CPU gives
+//! for an MSR it does not have.
 //!
 //! The list is what a 64-bit Linux guest touches on a machine with an x2APIC
 //! and no PMU or MCE banks. It decides only who handles an access: each
 //! emulation still checks the value written (EFER keeps SVME clear, for
 //! one).
-
-use super::{Action, Exit, Fault, Guest, Kernel, dispatch};
 
 /// MSRs `first..=last` and the directions the kernel emulates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,21 +64,4 @@ pub fn msr_allowed(msr: u32, write: bool) -> bool {
     MSR_ALLOWED
         .iter()
         .any(|a| (a.first..=a.last).contains(&msr) && if write { a.write } else { a.read })
-}
-
-/// [`dispatch`], with the MSR exit decided by the guest's `rcx`: emulated
-/// as `dispatch` said when the MSR is on the list in that direction, else
-/// #GP(0) with RIP unchanged. RDMSR and WRMSR read ECX, so RCX's upper half
-/// is ignored. Every other exit is `dispatch`'s answer.
-pub fn msr(exit: &Exit, guest: &Guest, rcx: u64) -> Action {
-    match dispatch(exit, guest) {
-        Action::Kernel(Kernel::Msr { write }, next) => match msr_allowed(rcx as u32, write) {
-            true => Action::Kernel(Kernel::Msr { write }, next),
-            false => match crate::Event::exception(13, Some(0)) {
-                Ok(event) => Action::Inject(Fault { event, cr2: None }),
-                Err(_) => Action::Kill(super::Kill::BadInfo(exit.code)),
-            },
-        },
-        other => other,
-    }
 }
