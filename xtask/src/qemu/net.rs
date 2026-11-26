@@ -61,11 +61,11 @@ pub fn behind_amd_iommu(args: &mut Vec<String>) {
             arg.push_str(PLATFORM);
         }
     }
+    // QEMU 11.0's amd-iommu has dma-remap off by default, and run
+    // 45846080935 showed DMA untranslated with it off: the canary was written.
     if let Some(at) = args.iter().position(|arg| arg == "q35") {
-        args.splice(
-            at + 1..at + 1,
-            ["-device".to_string(), "amd-iommu".to_string()],
-        );
+        let iommu = "amd-iommu,dma-remap=on".to_string();
+        args.splice(at + 1..at + 1, ["-device".to_string(), iommu]);
     }
 }
 
