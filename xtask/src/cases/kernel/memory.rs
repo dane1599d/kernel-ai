@@ -7,6 +7,8 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
     TestCase {
         expect: &[
             "profile: a quota stopped a commit, a class showed in SCHED_STATS, and the floors held",
+            // Bug hunt 5 H5-17: a lowered quota still counts what is held past it.
+            "profile: a quota lowered under what its process holds freed no admission budget",
         ],
         ..case("profile", "test=profile")
     },

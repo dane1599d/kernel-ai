@@ -186,6 +186,12 @@ impl Process {
 static TABLE: Mutex<[Process; MAX_PROCESSES]> = Mutex::new([Process::FREE; MAX_PROCESSES]);
 static SPACES: [Mutex<Option<UserSpace>>; MAX_PROCESSES] =
     [const { Mutex::new(None) }; MAX_PROCESSES];
+/// What each slot's space counts against its quota (`UserSpace::frames`), as
+/// the last lock of it left it (`space::SpaceGuard`'s drop). The admission
+/// rule counts a process at the larger of this and its quota
+/// ([`committed_in`]), so a quota lowered under what the process holds frees
+/// no budget until the pages go back (bug hunt 5 H5-17).
+static HELD: [AtomicU64; MAX_PROCESSES] = [const { AtomicU64::new(0) }; MAX_PROCESSES];
 
 /// The next pid: only ever counted up, so a pid is never reused, which `fs`
 /// relies on when it matches a caller to its own folder of `/system/apps`
@@ -248,9 +254,38 @@ pub fn set_page_budget(pages: u64) {
 }
 
 /// The global admission rule's budget (free / 2 at boot): what every live
-/// process's quota adds up to at most.
+/// process's quota, or what it holds when that is more, adds up to at most.
 pub(crate) fn page_budget() -> u64 {
     PAGE_BUDGET.load(Ordering::Relaxed)
+}
+
+/// What the admission rule counts for the live processes in `table`: each
+/// one's quota, or what its space holds if that is more (a quota lowered
+/// under it).
+pub(crate) fn committed_in(table: &[Process; MAX_PROCESSES]) -> u64 {
+    committed_but(table, None)
+}
+
+/// [`committed_in`] with the process in slot `skip` left out: the raise
+/// check counts that one itself, from one read of what it holds.
+fn committed_but(table: &[Process; MAX_PROCESSES], skip: Option<usize>) -> u64 {
+    table
+        .iter()
+        .enumerate()
+        .filter(|&(slot, p)| p.live() && Some(slot) != skip)
+        .map(|(slot, p)| p.limits.max_pages.max(held(slot)))
+        .sum()
+}
+
+/// [`committed_in`] for the table as it is now, for the cases that fill the
+/// budget.
+pub(crate) fn committed_pages() -> u64 {
+    with_table(|table| committed_in(table))
+}
+
+/// What the space in `slot` counted against its quota when last unlocked.
+fn held(slot: usize) -> u64 {
+    HELD[slot].load(Ordering::Relaxed)
 }
 
 fn slot_of(tid: Tid) -> Option<usize> {
@@ -484,12 +519,7 @@ pub fn spawn_in(
         if table.iter().any(|p| p.live() && p.name == name) {
             return Err(Error::Busy);
         }
-        let committed: u64 = table
-            .iter()
-            .filter(|p| p.live())
-            .map(|p| p.limits.max_pages)
-            .sum();
-        if committed + request.limits.max_pages > budget {
+        if committed_in(table) + request.limits.max_pages > budget {
             return Err(Error::NoMemory);
         }
         let slot = table.iter().position(|p| !p.live()).ok_or(Error::Busy)?;
