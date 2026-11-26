@@ -328,8 +328,6 @@ fn main() -> i32 {
                 screen.info.width, screen.info.height
             );
         }
-        // PROBE (throwaway, dropped before merge): widens the claim-to-bind gap.
-        sys::sleep_ms(300);
         let result = run(&mut state, &screen);
         // The clients' pools go with this connection's state; they greet again.
         for pool in &state.pools {
