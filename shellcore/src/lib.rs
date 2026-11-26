@@ -105,7 +105,7 @@ pub use effects::EffectDone;
 pub use engine::Exec;
 use engine::Line;
 pub use guard::placeholder_target;
-pub use host::{Consent, FsChange, FsRead, FsRefused, Host, NO_FILES, NO_NET, Proof};
+pub use host::{Consent, FsChange, FsRead, FsRefused, FsUndone, Host, NO_FILES, NO_NET, Proof};
 pub use ledger::LogFailed;
 pub use panel::PanelResult;
 use rhai::{AST, Dynamic, Engine, EvalAltResult, Scope};
@@ -615,7 +615,9 @@ impl Shell {
     /// `new`: llm forgets the conversation. The action log and `undo` stay: what
     /// was done can still be undone.
     fn forget(&mut self) -> Reply {
-        self.host.forget();
+        if let Err(why) = self.host.forget() {
+            return Reply::err(format!("The conversation was not cleared: {why}"));
+        }
         self.clarifying = None;
         // The panel's question goes with the conversation.
         self.panel_clarifying = None;

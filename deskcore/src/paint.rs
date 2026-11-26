@@ -3,7 +3,9 @@
 //! tray, the Kai pane, Start, a tooltip, the ask card and the cursor, in the
 //! theme's tokens and type (the dark theme until
 //! [`Painter::set_theme`]). The card is
-//! drawn last but the cursor, so nothing else covers it (ADR 0005 §7).
+//! drawn last but the cursor, so nothing else covers it (ADR 0005 §7), and
+//! the painter says what it drew over the windows ([`Painter::covered`]), so
+//! no client's own px are put on any of that at a scale above 1.0 either.
 //! Pure: the same [`Scene`] gives the same pixels, on the host as in `desktop`,
 //! so the look is pinned by a host test and by `desk-boot`'s golden. The panel
 //! is drawn in `paint_panel.rs`, and its history on the desk in
@@ -93,6 +95,9 @@ pub struct Painter {
     /// Each monogram letter's fit to its tile, by text size
     /// ([`crate::monogram`]).
     pub(crate) monograms: alloc::vec::Vec<crate::monogram::Fit>,
+    /// What the last [`Painter::paint`] (and [`Painter::cursor`]) drew over
+    /// the windows ([`Painter::covered`]).
+    pub(crate) covered: alloc::vec::Vec<Rect>,
 }
 
 /// `0xFF` alpha on a token.
@@ -131,6 +136,7 @@ impl Painter {
             icons: gfx2d::icons::Icons::default(),
             chat_laid: alloc::vec::Vec::new(),
             monograms: alloc::vec::Vec::new(),
+            covered: alloc::vec::Vec::new(),
         })
     }
 
@@ -154,6 +160,39 @@ impl Painter {
         opaque(self.palette.window)
     }
 
+    /// Every px the last [`Painter::paint`] inside its clip, and the
+    /// [`Painter::cursor`] after it, drew over the windows: the agent's
+    /// outline, the taskbar and tray, the Kai pane, Start, a tooltip, the ask
+    /// card and the arrow, each cut to the clip, rounded corners left out only
+    /// where the shape does not reach. Nothing in them is any window's, so
+    /// `desktop` clears the overlay's mask there ([`crate::overlay`]): a
+    /// client's own px never land on them, whatever colour they are painted.
+    pub fn covered(&self) -> &[Rect] {
+        &self.covered
+    }
+
+    /// Notes that `r`, its corners rounded to `radius` as
+    /// [`gfx2d::Image::round_corners`] rounds them, was drawn over the
+    /// windows inside `clip`: every px of it the shape reaches at all.
+    pub(crate) fn cover(&mut self, r: Rect, radius: i32, clip: Rect) {
+        let radius = radius.clamp(0, r.w.min(r.h) / 2);
+        let covered = &mut self.covered;
+        let mut add = |band: Rect| {
+            if let Some(band) = band.intersect(&clip) {
+                covered.push(band);
+            }
+        };
+        for cy in 0..radius {
+            let inset = (0..radius)
+                .find(|&cx| gfx2d::canvas::corner_alpha(radius, cx, cy) > 0)
+                .unwrap_or(radius);
+            let w = r.w - 2 * inset;
+            add(Rect::new(r.x + inset, r.y + cy, w, 1));
+            add(Rect::new(r.x + inset, r.bottom() - 1 - cy, w, 1));
+        }
+        add(Rect::new(r.x, r.y + radius, r.w, r.h - 2 * radius));
+    }
+
     /// Paints everything inside `clip`. `content` draws window `id`'s pixels
     /// into the canvas given (the window's layer) at the rectangle given, and
     /// says whether it had any; a window with none shows `window`.
@@ -165,6 +204,7 @@ impl Painter {
         content: &mut dyn FnMut(WindowId, &mut Canvas<'_>, Rect) -> bool,
     ) {
         let desk = scene.desk;
+        self.covered.clear();
         c.fill(g(clip), opaque(self.palette.desk));
         for window in desk.windows().iter().filter(|w| !w.minimized) {
             if reach(window.frame).intersect(&clip).is_none() {
@@ -183,12 +223,18 @@ impl Painter {
             let at = (window.frame.x, window.frame.y);
             let radius = chrome::radius(window.maximized());
             c.draw_window(&layer, at, g(clip), radius, true);
-            if desk.agent() == Some(window.id) {
-                outline(c, trusted::outline(window.frame), clip, self.palette.ai);
+        }
+        // The agent's outline over every window, its own and any stacked
+        // above it, so no app covers where the agent acts; then the taskbar
+        // and tray, then the Kai pane (ADR 0005 §7's paint order).
+        let agent = desk.agent().and_then(|id| desk.window(id));
+        if let Some(window) = agent.filter(|w| !w.minimized) {
+            let ring = trusted::outline(window.frame);
+            for edge in edges(ring, trusted::OUTLINE) {
+                fill(c, edge, clip, self.palette.ai);
+                self.cover(edge, 0, clip);
             }
         }
-        // The taskbar and tray, then the Kai pane, over the windows (ADR 0005
-        // §7's paint order).
         self.taskbar(c, clip, scene);
         self.pane(c, clip, scene);
         // Start, then a tooltip, over both and under the card.
@@ -205,6 +251,7 @@ impl Painter {
                     let (width, height) = (c.width as i32, c.height as i32);
                     let card = trusted::card(width, height, &ask);
                     fill(c, card, clip, self.palette.raised);
+                    self.cover(card, 0, clip);
                     fill(
                         c,
                         Rect::new(card.x, card.y, card.w, 3),
@@ -350,8 +397,9 @@ impl Painter {
         self.text.draw(c, g(clip), x, y, style, 1.0, color, text)
     }
 
-    /// The pointer, drawn by `desktop` when the screen has no hardware cursor.
-    pub fn cursor(&self, c: &mut Canvas<'_>, clip: Rect, at: Point) {
+    /// The pointer, drawn by `desktop` when the screen has no hardware cursor;
+    /// its px join [`Painter::covered`], the box round the arrow does not.
+    pub fn cursor(&mut self, c: &mut Canvas<'_>, clip: Rect, at: Point) {
         let r = cursor_box(at).intersect(&clip).unwrap_or_default();
         for y in r.y..r.bottom() {
             for x in r.x..r.right() {
@@ -359,6 +407,11 @@ impl Painter {
                     c.fill(gfx2d::Rect::new(x, y, 1, 1), color);
                 }
             }
+        }
+        // The arrow's row `y` is its px 0..=min(y, 11) ([`arrow`]).
+        for y in 0..CURSOR {
+            let row = Rect::new(at.x, at.y + y, y.min(11) + 1, 1);
+            self.cover(row, 0, clip);
         }
     }
 }
@@ -393,20 +446,21 @@ pub(crate) fn fill(c: &mut Canvas<'_>, r: Rect, clip: Rect, rgb: u32) {
     }
 }
 
-fn outline(c: &mut Canvas<'_>, r: Rect, clip: Rect, rgb: u32) {
-    frame(c, r, clip, rgb, trusted::OUTLINE);
-}
-
 /// `r`'s edges, `t` px thick, inside it.
 pub(crate) fn frame(c: &mut Canvas<'_>, r: Rect, clip: Rect, rgb: u32, t: i32) {
-    for edge in [
+    for edge in edges(r, t) {
+        fill(c, edge, clip, rgb);
+    }
+}
+
+/// `r`'s four edges, `t` px thick, inside it.
+fn edges(r: Rect, t: i32) -> [Rect; 4] {
+    [
         Rect::new(r.x, r.y, r.w, t),
         Rect::new(r.x, r.bottom() - t, r.w, t),
         Rect::new(r.x, r.y, t, r.h),
         Rect::new(r.right() - t, r.y, t, r.h),
-    ] {
-        fill(c, edge, clip, rgb);
-    }
+    ]
 }
 
 /// `rgb` at coverage `a` (0-1) on one pixel.

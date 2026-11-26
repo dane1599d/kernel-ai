@@ -8,7 +8,11 @@
 //! action of its own, so a restore can itself be undone):
 //! 1. An object changed after the action (its inode's `changed` is later) is never
 //!    touched. A file's version from before the action is written beside it as
-//!    `name (restored)`; a folder is left as it is.
+//!    `name (restored)`; a folder is left as it is. A file whose live version is
+//!    the very one the action left (its data, attributes, name and place, as a tree
+//!    from just after the action holds them) counts as not changed since, though
+//!    a later commit stamped it: the restore of a later action put it back as
+//!    this one left it, so restoring it loses no version (bug-hunt-6 H6-23).
 //! 2. An object the action made, and nothing changed since, is removed again,
 //!    deepest first; a folder that still holds names is left.
 //! 3. An object the action changed or removed, and nothing changed since, gets
@@ -365,8 +369,12 @@ impl<D: BlockDev> Fs<D> {
         for &ino in &undo.objects {
             let old = self.inode_in(then, ino)?;
             let live = self.inode_in(View::Live, ino)?;
+            let changed_since = match live {
+                Some(l) => l.changed > txn && !self.as_left_by(txn, ino, &l)?,
+                None => false,
+            };
             match (old, live) {
-                (_, Some(l)) if l.changed > txn => {
+                (_, Some(l)) if changed_since => {
                     let outcome = match old {
                         Some(o) => self.keep_beside(root, ino, &o, &l)?,
                         None => Outcome::Left,
@@ -409,6 +417,51 @@ impl<D: BlockDev> Fs<D> {
         }
         for (_, ino, _) in dirs {
             out.push((ino, self.unmake(ino)?));
+        }
+        Ok(out)
+    }
+
+    /// Whether file `ino`'s live version `live` is the one action `txn` left: a
+    /// tree whose `ino` was last changed by `txn` (the version that commit left)
+    /// holds the same data, attributes, size, mode, times, folder and name.
+    /// `ctime` is not compared: a restore stamps it.
+    fn as_left_by(&mut self, txn: u64, ino: u64, live: &Inode) -> Result<bool, Error> {
+        if live.kind != FileType::File {
+            return Ok(false);
+        }
+        let roots: Vec<BlockPtr> = core::iter::once(self.vol().base.0)
+            .chain(self.snapshots().values().map(|s| s.root))
+            .filter(|root| !root.is_null())
+            .collect();
+        for root in roots {
+            let then = View::Tree(root);
+            let Some(left) = self.inode_in(then, ino)? else {
+                continue;
+            };
+            if left.changed != txn {
+                continue;
+            }
+            let alike = left.kind == live.kind
+                && left.mode == live.mode
+                && left.nlink == live.nlink
+                && left.size == live.size
+                && left.parent == live.parent
+                && left.mtime == live.mtime
+                && left.crtime == live.crtime
+                && self.bytes_in(then, ino)? == self.bytes_in(View::Live, ino)?
+                && self.items_in(then, ino, K_XATTR)? == self.items_in(View::Live, ino, K_XATTR)?
+                && self.name_in(then, left.parent, ino)?.map(|e| e.name)
+                    == self.name_in(View::Live, live.parent, ino)?.map(|e| e.name);
+            return Ok(alike);
+        }
+        Ok(false)
+    }
+
+    /// File `ino`'s data in `view`, each item at its offset.
+    fn bytes_in(&mut self, view: View, ino: u64) -> Result<Vec<(u64, Vec<u8>)>, Error> {
+        let mut out = Vec::new();
+        for (key, raw) in self.items_in(view, ino, K_DATA)? {
+            out.push((key.off, decode_value(&raw, &mut self.io)?.into_bytes()));
         }
         Ok(out)
     }

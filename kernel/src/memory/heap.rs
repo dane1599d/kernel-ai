@@ -84,3 +84,10 @@ unsafe impl GlobalAlloc for Counting {
 
 #[global_allocator]
 static ALLOCATOR: Counting = Counting;
+
+/// `test=panic-reset what=heap-held` (bug hunt 4, H4-10): takes talc's lock for
+/// good on this CPU, as a fault inside the allocator leaves it. Every
+/// allocation after spins for ever, so the reset that follows must make none.
+pub fn hold_for_test() {
+    core::mem::forget(TALC.lock());
+}

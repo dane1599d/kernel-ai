@@ -96,6 +96,8 @@ mod vbox;
 mod wit;
 mod wit_tables;
 mod wpt;
+#[cfg(test)]
+mod workflow_lint;
 mod wsl;
 
 use options::{Accel, Options, Task, parse_args};
@@ -606,7 +608,7 @@ fn execute(options: &Options) -> Result<(), String> {
                 contains: disk
                     .as_ref()
                     .map_or_else(Vec::new, disk::ModelDisk::console_text),
-                cut: cutting.then(|| (format!("files: boot {boot}:"), cut_delay(case.name, boot))),
+                cut: cutting.then(|| (cases::cut_line(boot), cut_delay(case.name, boot))),
                 capture: case.differs.map(|text| (text, Arc::new(Mutex::new(None)))),
             };
             let requests = mock.requests();
