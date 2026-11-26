@@ -739,7 +739,7 @@ pub const NET_CONNECT: u64 = 192;
 /// [`super::net::STREAM_MAX_CALL`] (TooBig over it); 0 while the send buffer
 /// is full. Busy before it connected, Dead once it can no longer send,
 /// Revoked once its grant was; Permission, sending nothing, when the bytes
-/// would pass the day's of the agent `NetDest` it was connected on.
+/// would pass the day's bytes of the agent `NetDest` it was connected on.
 pub const NET_SEND: u64 = 193;
 /// `net_recv(stream, ptr, cap) -> received`: up to `cap` bytes, at most
 /// [`super::net::STREAM_MAX_CALL`]; 0 once the peer closed and everything was

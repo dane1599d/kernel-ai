@@ -7,10 +7,13 @@
 //! - **Both ways count.** What is sent and what is received are one day's bytes.
 //! - **A send that would pass the budget is refused whole**, before it leaves, and
 //!   charges nothing ([`DayMeter::try_send`]).
-//! - **What is received is counted when it arrives** ([`DayMeter::received`]): it
-//!   cannot be refused once it is here, so a receive may pass the budget by its own
-//!   bytes, and then nothing more moves that day: the kernel refuses the next
-//!   receive, as it does a send and a connect, once [`DayMeter::has_room`] is false.
+//! - **What is received is counted when the app reads it** ([`DayMeter::try_receive`]):
+//!   a receive is let through while the day has room and charged its whole `cap`
+//!   before it reads, then given back what it did not read, as a send is. So one
+//!   receive may pass the budget by its own bytes, two receives sharing the meter
+//!   cannot both pass it, and then nothing more moves that day: the kernel refuses
+//!   the next receive, as it does a send and a connect, once [`DayMeter::has_room`]
+//!   is false.
 //! - **The day turns forward only.** A later day starts the count again; a clock
 //!   that goes back is not a new day, so it never buys more bytes.
 //! - **No clock is no day** ([`NO_CLOCK`]): what moves before the wall clock is
@@ -35,6 +38,8 @@ pub struct DayMeter {
     budget: u64,
     used: u64,
     day: u32,
+    /// Whether a refusal was already logged on `day` ([`DayMeter::first_refusal`]).
+    refusal_logged: bool,
 }
 
 impl DayMeter {
@@ -44,6 +49,7 @@ impl DayMeter {
             budget,
             used: 0,
             day,
+            refusal_logged: false,
         }
     }
 
@@ -60,6 +66,7 @@ impl DayMeter {
                 self.used = 0;
             }
             self.day = day;
+            self.refusal_logged = false;
         }
     }
 
@@ -90,17 +97,32 @@ impl DayMeter {
         }
     }
 
-    /// Counts `bytes` received on `day`: whether the day's budget still has room.
-    pub fn received(&mut self, bytes: u64, day: u32) -> bool {
+    /// Whether a receive of up to `cap` bytes may read on `day`: if the day has
+    /// room, `cap` is charged before the read, so another receive on this meter
+    /// sees it spent at once; [`DayMeter::refund`] gives back what the read did
+    /// not take. What came cannot be refused once read, so one receive may pass
+    /// the budget by its own bytes, never two: the day's bytes stay under
+    /// `budget + cap`.
+    pub fn try_receive(&mut self, cap: u64, day: u32) -> bool {
         self.roll(day);
-        self.used = self.used.saturating_add(bytes);
-        self.used < self.budget
+        if self.used >= self.budget {
+            return false;
+        }
+        self.used = self.used.saturating_add(cap);
+        true
     }
 
     /// Whether anything more may move on `day`.
     pub fn has_room(&mut self, day: u32) -> bool {
         self.roll(day);
         self.used < self.budget
+    }
+
+    /// Whether this is the first refusal on `day` worth a log line: true once a
+    /// day, so an app that keeps asking past its budget does not fill the log.
+    pub fn first_refusal(&mut self, day: u32) -> bool {
+        self.roll(day);
+        !core::mem::replace(&mut self.refusal_logged, true)
     }
 
     /// The day's bytes so far.
@@ -142,12 +164,56 @@ mod tests {
     #[test]
     fn what_is_received_counts_and_stops_the_day_once_past() {
         let mut meter = DayMeter::from_mib(1, 7);
-        assert!(meter.received(MIB / 2, 7));
-        // A receive cannot be refused once here: it passes, and the day is done.
-        assert!(!meter.received(MIB, 7));
-        assert_eq!(meter.used(), MIB / 2 + MIB);
+        // A receive of up to 8 KiB reads 100: the rest is given back.
+        assert!(meter.try_receive(8192, 7));
+        meter.refund(8192 - 100, 7);
+        assert_eq!(meter.used(), 100);
+        // One that is read cannot be refused: it passes, and the day is done.
+        assert!(meter.try_receive(2 * MIB, 7));
+        assert_eq!(meter.used(), 100 + 2 * MIB);
+        assert!(!meter.try_receive(1, 7));
         assert!(meter.try_send(1, 7).is_err());
         assert!(!meter.has_room(7));
+    }
+
+    #[test]
+    fn receives_sharing_a_meter_pass_the_budget_by_one_cap_at_most() {
+        // #1433's review: receives on two CPUs, each let in before either has
+        // read. The first is charged its cap up front, so the second sees no room.
+        const CAP: u64 = 8192;
+        let mut meter = DayMeter::new(MIB, 3);
+        assert!(meter.try_send(MIB - 100, 3).is_ok());
+        assert!(meter.try_receive(CAP, 3));
+        assert!(!meter.try_receive(CAP, 3), "the second receive is refused");
+        // The first reads its whole cap: the day passes the budget by less
+        // than one cap.
+        assert_eq!(meter.used(), MIB - 100 + CAP);
+        // Any order of reserve and read, with every receive reading all it
+        // asked for, stays under it too.
+        for readers in 1..=16u64 {
+            let mut meter = DayMeter::new(MIB, 3);
+            assert!(meter.try_send(MIB - 1, 3).is_ok());
+            let let_in = (0..readers).filter(|_| meter.try_receive(CAP, 3)).count();
+            assert_eq!(let_in, 1);
+            assert!(meter.used() < MIB + CAP);
+        }
+        // A short read gives the rest back, and the next receive may then read.
+        let mut meter = DayMeter::new(MIB, 3);
+        assert!(meter.try_send(MIB - 100, 3).is_ok());
+        assert!(meter.try_receive(CAP, 3));
+        meter.refund(CAP - 10, 3);
+        assert_eq!(meter.used(), MIB - 90);
+        assert!(meter.try_receive(CAP, 3));
+    }
+
+    #[test]
+    fn a_refusal_is_worth_a_log_line_once_a_day() {
+        let mut meter = DayMeter::from_mib(0, 4);
+        assert!(meter.first_refusal(4));
+        assert!(!meter.first_refusal(4));
+        assert!(!meter.first_refusal(3), "a clock gone back is the same day");
+        assert!(meter.first_refusal(5));
+        assert!(!meter.first_refusal(5));
     }
 
     #[test]
@@ -178,8 +244,9 @@ mod tests {
         assert_eq!(max.budget(), 512 * MIB);
         assert!(max.try_send(u64::MAX, 1).is_err());
         assert_eq!(max.used(), 0);
-        assert!(!max.received(u64::MAX, 1));
+        assert!(max.try_receive(u64::MAX, 1));
         assert_eq!(max.used(), u64::MAX);
+        assert!(!max.try_receive(1, 1));
     }
 
     #[test]
