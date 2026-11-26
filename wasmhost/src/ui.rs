@@ -6,7 +6,7 @@
 //! `FixedAdvance` until it does.
 
 use crate::canonical::CoreInstance;
-use crate::instance::HostState;
+use crate::instance::{BYTES_PER_FUEL, HostState, READ_FUEL, WEIGHT_FUEL, charge};
 use crate::link::WitFunc;
 use crate::tables;
 use crate::uival::{self, bool_of, layout, str_of, u16_of, u32_of, widget};
@@ -65,11 +65,21 @@ pub(crate) struct UiHost {
     /// Whether the app may keep a window from the agent (`set-agent-private`):
     /// only one the system image grants it, as comphost says.
     pub(crate) may_be_private: bool,
+    /// Fuel the commits since `view` last set it to 0 cost ([`commit_fuel`]),
+    /// for `view` to charge to the guest's call.
+    pub(crate) work: u64,
 }
 
 /// The measure the windows are laid out with.
 fn measure(m: &Option<Box<dyn Measure>>) -> &dyn Measure {
     m.as_deref().unwrap_or(&FixedAdvance)
+}
+
+/// What a commit of `w` costs in fuel: everything it weighs and its title,
+/// each laid out, painted, described and copied ([`WEIGHT_FUEL`]).
+fn commit_fuel(w: &uikit::Window) -> u64 {
+    let bytes = w.tree().bytes().saturating_add(w.title().len());
+    (bytes as u64).saturating_mul(WEIGHT_FUEL)
 }
 
 impl UiHost {
@@ -93,7 +103,9 @@ impl UiHost {
     /// Lays out and paints `window`, and keeps its frame for comphost.
     fn commit(&mut self, window: u32) -> Result<(), UiError> {
         let m = measure(&self.measure);
-        let frame = self.ui.window(window).map(|w| w.commit(m))?;
+        let w = self.ui.window(window)?;
+        self.work = self.work.saturating_add(commit_fuel(w));
+        let frame = w.commit(m);
         for &(node, rows, cells) in &frame.code_sizes {
             self.sized(window, node, rows, cells);
         }
@@ -162,9 +174,17 @@ fn merged(damage: Vec<Rect>, (w, h): (i32, i32)) -> Vec<Rect> {
 /// arguments and storing the result.
 pub(crate) struct InCall<'a, 'b> {
     pub(crate) caller: &'a mut Caller<'b, HostState>,
+    /// What reading the guest's memory has cost so far, in fuel, for the host
+    /// function to [`charge`]: one lift reads at most `appabi::MAX_LIFT_UNITS`,
+    /// but the guest can call again and again.
+    pub(crate) fuel: u64,
 }
 
-impl InCall<'_, '_> {
+impl<'a, 'b> InCall<'a, 'b> {
+    pub(crate) fn new(caller: &'a mut Caller<'b, HostState>) -> Self {
+        Self { caller, fuel: 0 }
+    }
+
     fn memory(&self) -> Result<wasmi::Memory, Trap> {
         self.caller
             .get_export("memory")
@@ -175,6 +195,9 @@ impl InCall<'_, '_> {
 
 impl Guest for InCall<'_, '_> {
     fn read(&mut self, at: u32, len: u32) -> Result<Vec<u8>, Trap> {
+        self.fuel = self
+            .fuel
+            .saturating_add(READ_FUEL + u64::from(len) / BYTES_PER_FUEL);
         let start = at as usize;
         let end = start
             .checked_add(len as usize)
@@ -224,17 +247,18 @@ pub(crate) fn view(
 ) -> Result<(), Error> {
     let core = params.iter().map(core_of).collect::<Result<Vec<_>, _>>()?;
     let func = entry.func(String::new());
-    let mut guest = InCall {
-        caller: &mut caller,
-    };
+    let mut guest = InCall::new(&mut caller);
     let (args, ret) = appabi::lift_args(&mut guest, &func, &core).map_err(|t| Error::new(t.0))?;
-    let result = run_in(
-        &mut guest.caller.data_mut().ui,
-        entry.interface,
-        entry.name,
-        &args,
-    )
-    .map_err(|why| Error::new(format!("{VIEW} {}: {why}", entry.name)))?;
+    // The host's work is the guest's call's, in fuel: the lift, then what the
+    // call did with it (a commit lays the whole window out again).
+    let lifted = guest.fuel;
+    charge(guest.caller, lifted)?;
+    let host = &mut guest.caller.data_mut().ui;
+    host.work = 0;
+    let result = run_in(host, entry.interface, entry.name, &args)
+        .map_err(|why| Error::new(format!("{VIEW} {}: {why}", entry.name)))?;
+    let work = core::mem::take(&mut guest.caller.data_mut().ui.work);
+    charge(guest.caller, work)?;
     let value = match result {
         Ok(Some(id)) => Val::Result(Ok(Some(Box::new(Val::U32(id))))),
         Ok(None) => Val::Result(Ok(None)),
@@ -271,6 +295,9 @@ pub(crate) fn run_in(
     if name == "open" {
         let title = str_of(args.first())?;
         let (w, h) = (u16_of(args.get(1))?, u16_of(args.get(2))?);
+        if w.max(h) > crate::desk::MAX_WINDOW_PX {
+            return Ok(Err(UiError::TooBig));
+        }
         return Ok(host.ui.open(&title, w, h).map(Some));
     }
     let window = u32_of(args.first())?;

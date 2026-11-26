@@ -12,9 +12,13 @@
 //! - Every return takes the lock again and removes the waiter's own registration,
 //!   so none outlives the call: a waiter whose registration a waker already removed
 //!   was woken and says so, even if its timeout ran out at the same moment.
-//! - The word is translated before the lock is taken: SPACES is never taken under a
-//!   preempt-off lock. A process's pages are never unmapped while one of its threads
-//!   lives, so the frame stays the word's for the whole call.
+//! - The word is translated, read and registered with the process's space locked
+//!   (`uaccess::with_phys`), the futex lock taken inside it: SPACES, then WAITING,
+//!   and nothing takes them the other way round (FUTEX_WAKE takes WAITING alone).
+//!   MEM_RELEASE and SHM_UNMAP unmap a page under that space lock and free its frame
+//!   after, so the word read is the process's own, or the call is a Fault once the
+//!   page is gone. A registered waiter never touches the frame again, so a page
+//!   released while it sleeps frees nothing it reads.
 
 use super::{identity, killed, uaccess};
 use crate::{hpet, memory, threads};
@@ -33,6 +37,7 @@ static WOKEN: [AtomicBool; MAX_THREADS] = [const { AtomicBool::new(false) }; MAX
 const MAX_WAIT_MS: u64 = 3_600_000;
 
 fn with_waiting<R>(f: impl FnOnce(&mut [Option<(u64, u64)>; MAX_THREADS]) -> R) -> R {
+    threads::ready::not_in_ready(&"the futex table");
     threads::preempt_disable();
     let result = f(&mut WAITING.lock());
     threads::preempt_enable();
@@ -56,20 +61,22 @@ fn check(addr: u64) -> Result<(), Error> {
 pub fn wait(slot: usize, addr: u64, expected: u64, timeout_ms: u64) -> Result<u64, Error> {
     check(addr)?;
     let expected = u32::try_from(expected).map_err(|_| Error::Invalid)?;
-    let phys = uaccess::phys_of(slot, addr)?;
     let pid = identity(slot).pid;
     let tid = threads::current_tid();
-    // SAFETY: `phys` is a frame of this process, which is not freed while this
-    // thread lives, reached through the direct map; the word is 4-byte aligned.
-    let word = unsafe { &*((memory::hhdm() + phys) as *const AtomicU32) };
-    let registered = with_waiting(|waiting| {
-        if word.load(Ordering::SeqCst) != expected {
-            return false;
-        }
-        WOKEN[tid].store(false, Ordering::SeqCst);
-        waiting[tid] = Some((pid, addr));
-        true
-    });
+    let registered = uaccess::with_phys(slot, addr, |phys| {
+        // SAFETY: `phys` is a frame of this process, reached through the direct map,
+        // and stays one while the space is locked, which it is until this closure
+        // returns (`uaccess::with_phys`); the word is 4-byte aligned.
+        let word = unsafe { &*((memory::hhdm() + phys) as *const AtomicU32) };
+        with_waiting(|waiting| {
+            if word.load(Ordering::SeqCst) != expected {
+                return false;
+            }
+            WOKEN[tid].store(false, Ordering::SeqCst);
+            waiting[tid] = Some((pid, addr));
+            true
+        })
+    })?;
     if !registered {
         return Ok(1);
     }

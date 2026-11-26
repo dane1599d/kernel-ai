@@ -4,17 +4,27 @@
 //! is never rewritten: the kernel picks the next boot with Limine's one-shot
 //! variable (`kernel/src/slots.rs`), and no one-shot boots R.
 //!
+//! The partitions are the ADR's fixed sizes ([`PARTITION_MIB`]), not this
+//! build's. An install's slots never grow, since `kai-data` follows `kai-b`,
+//! so a later release's larger slot image must still fit them (bug-hunt-4
+//! H4-16). Each slot's volume is its files' size
+//! ([`fat32::fitting_sectors`]) at the start of its partition, as `updated`
+//! writes a slot image; the rest of the partition is zeros.
+//!
 //! The release disk adds `kai-data` as partition 5 ([`build_release`]), which
 //! `fs` finds by its type as it finds a disk of its own; the boot cases attach
 //! `kai-data` as a disk of its own.
 
 use super::fat32::{self, Node};
-use super::{MIB, SECTOR, gpt, volume_mib};
+use super::{MIB, SECTOR, gpt};
 use std::fs;
 use std::path::Path;
 
 /// The slots' GPT names, which are also their type GUIDs' labels.
 pub const SLOTS: [&str; 3] = ["kai-r", "kai-a", "kai-b"];
+/// ADR 0008 section 1's partition sizes in MiB, in disk order: the ESP,
+/// `kai-r`, `kai-a` and `kai-b`. 2,368 MiB before `kai-data`.
+pub const PARTITION_MIB: [u64; 4] = [64, 256, 1024, 1024];
 /// Volume ids, one per partition, fixed so the image is deterministic.
 const VOLUME_IDS: [u32; 4] = [0x4B41_4931, 0x4B41_4952, 0x4B41_4941, 0x4B41_4942];
 /// Seeds the disk's and the partitions' GUIDs. Unique per install later (the
@@ -43,21 +53,14 @@ pub fn limine_conf(cmdline: &str) -> String {
 }
 
 /// The `kai-slot 1` record of this build (ADR 0008 section 2), for `boot/slot`
-/// and the bundle's `kai.slot`.
-pub fn slot_record(root: &Path, release_seq: u32) -> String {
-    let version = fs::read_to_string(root.join("kernel/Cargo.toml"))
-        .ok()
-        .and_then(|toml| {
-            toml.lines().find_map(|line| {
-                line.strip_prefix("version = ")
-                    .map(|v| v.trim_matches('"').to_owned())
-            })
-        })
-        .unwrap_or_else(|| "0.0.0".into());
-    format!(
+/// and the bundle's `kai.slot`. Its version is the workspace's
+/// (`[workspace.package]`), which every crate inherits.
+pub fn slot_record(root: &Path, release_seq: u32) -> Result<String, String> {
+    let version = crate::notices::workspace_version(root)?;
+    Ok(format!(
         "kai-slot 1\nrelease_seq {release_seq}\nepoch 1\nversion {version}\ncommit {}\nchannel dev\n",
         crate::esp::commit_id(root)
-    )
+    ))
 }
 
 fn read(path: &Path) -> Result<Vec<u8>, String> {
@@ -78,16 +81,6 @@ fn dir(name: &str, children: Vec<Node>) -> Node {
     }
 }
 
-fn content(nodes: &[Node]) -> u64 {
-    nodes
-        .iter()
-        .map(|node| match node {
-            Node::File { bytes, .. } => bytes.len() as u64,
-            Node::Dir { children, .. } => content(children),
-        })
-        .sum()
-}
-
 /// One slot's files: the kernel and bundle of the ESP's `boot`, and `record`.
 fn slot_tree(boot: &Path, record: &str) -> Result<Vec<Node>, String> {
     Ok(vec![dir(
@@ -101,28 +94,83 @@ fn slot_tree(boot: &Path, record: &str) -> Result<Vec<Node>, String> {
 }
 
 /// A slot image on its own (ADR 0008 §2): the volume `updated` writes raw into
-/// a slot partition, as an update carries it. It must fit the slot it lands in,
-/// which the disk sized for the same files.
+/// a slot partition, as an update carries it. It is its files' size, with no
+/// room to spare, so a download is the image's size; it fits any install's
+/// `kai-a` and `kai-b` while it is under their [`PARTITION_MIB`].
 pub fn slot_image(esp: &Path, record: &str) -> Result<Vec<u8>, String> {
     let tree = slot_tree(&esp.join("boot"), record)?;
-    let count = volume_mib(content(&tree)) * MIB / u64::from(SECTOR);
-    let sectors = u32::try_from(count).map_err(|_| "a slot image would be too large")?;
+    let sectors = fat32::fitting_sectors(&tree)?;
     fat32::volume(sectors, 0, VOLUME_IDS[2], &tree)
 }
 
+/// What a slot disk does with a volume larger than its partition's
+/// [`PARTITION_MIB`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Room {
+    /// The release disk refuses it: an install keeps the partitions it was
+    /// written with.
+    Fixed,
+    /// A boot case's disk grows that partition to the volume: a test build is
+    /// larger than a release (219 MiB of slot files on 2026-11-25, the
+    /// release's 113 MiB) and is never installed.
+    Grow,
+}
+
+/// The sectors of partition `name`, ADR 0008's `mib` MiB, for a volume of
+/// `need` sectors: by `room`, refused or grown when the volume is larger.
+fn partition_sectors(name: &str, mib: u64, need: u32, room: Room) -> Result<u64, String> {
+    let sectors = mib * MIB / u64::from(SECTOR);
+    let need = u64::from(need);
+    match room {
+        _ if need <= sectors => Ok(sectors),
+        Room::Grow => Ok(need.next_multiple_of(2048)),
+        Room::Fixed => Err(format!(
+            "{name}'s files need a {} MiB volume, more than its {mib} MiB partition \
+             (ADR 0008 section 1). A release disk keeps the ADR's sizes, since an \
+             installed disk's partitions never grow: revisit the slot sizes before \
+             this ships (ADR 0008, S08-2)",
+            need.div_ceil(2048)
+        )),
+    }
+}
+
 /// A slot disk laid out: its size in sectors, its GPT's sectors, each
-/// partition's volume by its first LBA, and `kai-data`'s place if it has one.
+/// partition's volume by its first LBA, each partition as (first LBA,
+/// sectors) in disk order, and `kai-data`'s place if it has one.
 struct Plan {
     sectors: u64,
     gpt: Vec<(u64, Vec<u8>)>,
     volumes: Vec<(u64, Vec<u8>)>,
+    partitions: Vec<(u64, u64)>,
     data: Option<(u64, u64)>,
+}
+
+impl Plan {
+    /// The disk's size in bytes.
+    fn bytes(&self) -> u64 {
+        self.sectors * u64::from(SECTOR)
+    }
+
+    /// Slot B's partition: the last before `kai-data`, in [`SLOTS`]' order.
+    fn slot_b(&self) -> Result<(u64, u64), String> {
+        self.partitions
+            .last()
+            .copied()
+            .ok_or_else(|| "the slot disk has no slot B".into())
+    }
 }
 
 /// The layout for the directory ESP `esp`, whose kernel and bundle every slot
 /// gets, with `record` as each slot's `boot/slot`, and after the slots a
-/// `kai-data` partition of `data_mib` MiB if asked for.
-fn plan(esp: &Path, cmdline: &str, record: &str, data_mib: Option<u64>) -> Result<Plan, String> {
+/// `kai-data` partition of `data_mib` MiB if asked for. The partitions are
+/// [`PARTITION_MIB`]; `room` says what a larger volume does.
+fn plan(
+    esp: &Path,
+    cmdline: &str,
+    record: &str,
+    data_mib: Option<u64>,
+    room: Room,
+) -> Result<Plan, String> {
     let boot = esp.join("boot");
     let mut esp_files = vec![
         dir(
@@ -152,13 +200,10 @@ fn plan(esp: &Path, cmdline: &str, record: &str, data_mib: Option<u64>) -> Resul
         trees.push(slot_tree(&boot, record)?);
     }
     let mut volumes = Vec::new();
+    let mut partitions = Vec::new();
     let mut specs = Vec::new();
     let mut first = gpt::FIRST_LBA;
-    for (n, (tree, id)) in trees.iter().zip(VOLUME_IDS).enumerate() {
-        let count = volume_mib(content(tree)) * MIB / u64::from(SECTOR);
-        let sectors = u32::try_from(count).map_err(|_| "a partition would be too large")?;
-        let hidden = u32::try_from(first).map_err(|_| "a partition starts too far in")?;
-        volumes.push((first, fat32::volume(sectors, hidden, id, tree)?));
+    for (n, ((tree, id), mib)) in trees.iter().zip(VOLUME_IDS).zip(PARTITION_MIB).enumerate() {
         let (kind, name) = match n {
             0 => (diskmap::ESP_TYPE, "EFI system partition"),
             _ => (
@@ -166,7 +211,25 @@ fn plan(esp: &Path, cmdline: &str, record: &str, data_mib: Option<u64>) -> Resul
                 SLOTS[n - 1],
             ),
         };
+        let need = fat32::fitting_sectors(tree).map_err(|e| format!("{name}: {e}"))?;
+        let count = partition_sectors(name, mib, need, room)?;
+        if count > mib * MIB / u64::from(SECTOR) {
+            println!(
+                "xtask: {name} is {} MiB for this test build, past ADR 0008's {mib} MiB",
+                count / 2048
+            );
+        }
+        // The ESP's volume fills its partition, which the firmware reads and P8's
+        // installer writes again; a slot's is its files' size, as an update's is.
+        let sectors = match n {
+            0 => count,
+            _ => u64::from(need),
+        };
+        let sectors = u32::try_from(sectors).map_err(|_| "a partition would be too large")?;
+        let hidden = u32::try_from(first).map_err(|_| "a partition starts too far in")?;
+        volumes.push((first, fat32::volume(sectors, hidden, id, tree)?));
         specs.push((kind, name, first, first + count - 1));
+        partitions.push((first, count));
         first = (first + count).next_multiple_of(2048);
     }
     // Partition 5 (ADR 0004): starts on a MiB, so on a kaifs block too.
@@ -193,24 +256,63 @@ fn plan(esp: &Path, cmdline: &str, record: &str, data_mib: Option<u64>) -> Resul
         sectors,
         gpt,
         volumes,
+        partitions,
         data,
     })
 }
 
-/// The disk for the directory ESP `esp`, whose kernel and bundle every slot
-/// gets, with `record` as each slot's `boot/slot`.
-pub fn disk(esp: &Path, cmdline: &str, record: &str) -> Result<Vec<u8>, String> {
-    Ok(lay(&plan(esp, cmdline, record, None)?))
+/// Writes `plan`'s disk to `out` as a new file: the GPT and each volume where
+/// the layout puts it, a piece at a time, and zeros everywhere else, left
+/// sparse where the system allows. The disk is gigabytes, most of them the
+/// slots' free room, and is never held in memory. With `keep_b`, slot B's
+/// whole partition is that disk's, as it is, in place of a new volume.
+fn write(plan: &Plan, out: &Path, keep_b: Option<&Path>) -> Result<(), String> {
+    use std::io::{Seek, SeekFrom, Write};
+    let shown = out.display();
+    let fail = |e: std::io::Error| format!("cannot write {shown}: {e}");
+    let (b_first, b_sectors) = plan.slot_b()?;
+    let mut file = fs::File::create(out).map_err(fail)?;
+    file.set_len(plan.bytes()).map_err(fail)?;
+    let volumes = plan
+        .volumes
+        .iter()
+        .filter(|(lba, _)| keep_b.is_none() || *lba != b_first);
+    for (lba, bytes) in plan.gpt.iter().chain(volumes) {
+        file.seek(SeekFrom::Start(lba * u64::from(SECTOR)))
+            .and_then(|_| file.write_all(bytes))
+            .map_err(fail)?;
+    }
+    if let Some(old) = keep_b {
+        let sector = u64::from(SECTOR);
+        copy_range(old, &mut file, b_first * sector, b_sectors * sector)?;
+    }
+    file.sync_all().map_err(fail)
 }
 
-/// `plan`'s disk: the GPT and each partition's volume where the layout puts it.
-fn lay(plan: &Plan) -> Vec<u8> {
-    let mut disk = vec![0u8; (plan.sectors * u64::from(SECTOR)) as usize];
-    for (lba, bytes) in plan.gpt.iter().chain(&plan.volumes) {
-        let at = (lba * u64::from(SECTOR)) as usize;
-        disk[at..at + bytes.len()].copy_from_slice(bytes);
+/// Copies the `len` bytes at `at` of the file `old` into `to`, a new file of
+/// zeros, at the same place, a MiB at a time. A MiB of zeros is not written,
+/// so it stays sparse in `to`.
+fn copy_range(old: &Path, to: &mut fs::File, at: u64, len: u64) -> Result<(), String> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let shown = old.display();
+    let mut from = fs::File::open(old).map_err(|e| format!("cannot read {shown}: {e}"))?;
+    from.seek(SeekFrom::Start(at))
+        .map_err(|e| format!("cannot read {shown}: {e}"))?;
+    let zeros = vec![0u8; MIB as usize];
+    let mut piece = vec![0u8; MIB as usize];
+    let mut done = 0;
+    while done < len {
+        let n = (len - done).min(MIB) as usize;
+        from.read_exact(&mut piece[..n])
+            .map_err(|e| format!("cannot read {shown}: {e}"))?;
+        if piece[..n] != zeros[..n] {
+            to.seek(SeekFrom::Start(at + done))
+                .and_then(|_| to.write_all(&piece[..n]))
+                .map_err(|e| format!("cannot copy slot B from {shown}: {e}"))?;
+        }
+        done += n as u64;
     }
-    disk
+    Ok(())
 }
 
 /// [`build`], but slot B keeps the bytes it holds in the disk already at `out`
@@ -218,25 +320,24 @@ fn lay(plan: &Plan) -> Vec<u8> {
 /// of `updated` has the slot it was writing as it left it, so a resumed download
 /// finds the chunks the first run wrote; `build` makes every boot's slots anew.
 pub fn build_keeping_b(esp: &Path, out: &Path, cmdline: &str, record: &str) -> Result<u64, String> {
-    let plan = plan(esp, cmdline, record, None)?;
-    let mut disk = lay(&plan);
-    // The slots are the partitions after the ESP, in [`SLOTS`]' order: B is last.
-    let (lba, volume) = plan.volumes.last().ok_or("the slot disk has no slot B")?;
-    let (at, len) = ((lba * u64::from(SECTOR)) as usize, volume.len());
-    if let Ok(old) = fs::read(out)
-        && old.len() == disk.len()
-    {
-        disk[at..at + len].copy_from_slice(&old[at..at + len]);
+    let plan = plan(esp, cmdline, record, None, Room::Grow)?;
+    let same = fs::metadata(out).is_ok_and(|old| old.len() == plan.bytes());
+    if !same {
+        write(&plan, out, None)?;
+        return Ok(plan.bytes());
     }
-    fs::write(out, &disk).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
-    Ok(disk.len() as u64)
+    // The new disk beside the old, whose B it copies, then in its place.
+    let next = out.with_extension("next");
+    write(&plan, &next, Some(out))?;
+    fs::rename(&next, out).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
+    Ok(plan.bytes())
 }
 
 /// Writes the slot disk to `out`; its size.
 pub fn build(esp: &Path, out: &Path, cmdline: &str, record: &str) -> Result<u64, String> {
-    let disk = disk(esp, cmdline, record)?;
-    fs::write(out, &disk).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
-    Ok(disk.len() as u64)
+    let plan = plan(esp, cmdline, record, None, Room::Grow)?;
+    write(&plan, out, None)?;
+    Ok(plan.bytes())
 }
 
 /// `kai-data`'s GPT name, which is also its type GUID's label.
@@ -257,39 +358,29 @@ pub fn release_cmdline_ok(cmdline: &str) -> bool {
         .any(|word| word.starts_with("online=") || word.starts_with("test="))
 }
 
-/// Writes the release disk to `out`: the slot disk with an empty command line,
+/// Writes the release disk to `out`: the slot disk with an empty command line
+/// and exactly [`PARTITION_MIB`] (a build whose files do not fit is refused),
 /// then `kai-data` as partition 5, formatted with a fixed volume id, so every
 /// build of a commit writes the same bytes. `updated` never writes it: it
 /// writes only `kai-a` and `kai-b`. The disk is written a piece at a time and
 /// left sparse where the system allows, never held in memory. Its size.
 pub fn build_release(esp: &Path, out: &Path, record: &str, data_mib: u64) -> Result<u64, String> {
-    use std::io::{Seek, SeekFrom, Write};
     if !release_cmdline_ok(RELEASE_CMDLINE) {
         return Err("a release image may not carry a test word".into());
     }
-    let plan = plan(esp, RELEASE_CMDLINE, record, Some(data_mib))?;
-    let shown = out.display();
-    let len = plan.sectors * u64::from(SECTOR);
-    let mut file = fs::File::create(out).map_err(|e| format!("cannot write {shown}: {e}"))?;
-    file.set_len(len)
-        .map_err(|e| format!("cannot size {shown}: {e}"))?;
-    for (lba, bytes) in plan.gpt.iter().chain(&plan.volumes) {
-        file.seek(SeekFrom::Start(lba * u64::from(SECTOR)))
-            .and_then(|_| file.write_all(bytes))
-            .map_err(|e| format!("cannot write {shown}: {e}"))?;
-    }
-    file.sync_all()
-        .map_err(|e| format!("cannot write {shown}: {e}"))?;
-    drop(file);
+    let plan = plan(esp, RELEASE_CMDLINE, record, Some(data_mib), Room::Fixed)?;
+    write(&plan, out, None)?;
     let (first, sectors) = plan.data.ok_or("the release disk has no kai-data")?;
     let uuid = gpt::guid(&format!("{DISK_NAME} kai-data volume"));
     crate::fs_tool::format_partition(out, first, sectors, uuid)?;
-    Ok(len)
+    Ok(plan.bytes())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::path::PathBuf;
 
     #[test]
     fn a_release_image_never_carries_online_test() {
@@ -317,17 +408,27 @@ mod tests {
         assert!(limine_conf("").contains("cmdline: slot=a\n"));
     }
 
+    /// The record's version is the workspace's, not `0.0.0` (bug-hunt-4
+    /// H4-17): `kernel/Cargo.toml` only inherits it.
     #[test]
-    fn the_slot_record_reads_back_with_bootslot() {
-        let record = slot_record(Path::new("."), 5);
+    fn the_slot_record_reads_back_with_bootslot_and_the_workspace_version() {
+        let root = crate::workspace_root();
+        let record = slot_record(&root, 5).unwrap();
         let file = bootslot::slotfile::parse(&record).unwrap();
         assert_eq!((file.release_seq, file.epoch, file.channel), (5, 1, "dev"));
+        // xtask's own version is the workspace's too.
+        assert_eq!(file.version, env!("CARGO_PKG_VERSION"));
+        assert_ne!(file.version, "0.0.0");
+        assert_eq!(
+            crate::notices::workspace_version(&root).unwrap(),
+            file.version
+        );
     }
 
     const RECORD: &str = "kai-slot 1\nrelease_seq 1\nepoch 1\n";
 
     /// A directory ESP with stand-in files, under the system's temp directory.
-    fn fake_esp(name: &str) -> std::path::PathBuf {
+    fn fake_esp(name: &str) -> PathBuf {
         let esp = std::env::temp_dir().join(format!("kai-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&esp);
         fs::create_dir_all(esp.join("EFI/BOOT")).unwrap();
@@ -338,16 +439,57 @@ mod tests {
         esp
     }
 
-    struct Mem(Vec<u8>);
-    impl diskmap::Disk for Mem {
+    /// A disk image file, read through `diskmap` a few sectors at a time: the
+    /// disks are gigabytes, and sparse.
+    struct FileDisk(fs::File);
+    impl diskmap::Disk for FileDisk {
         fn sectors(&self) -> u64 {
-            self.0.len() as u64 / 512
+            self.0.metadata().map_or(0, |m| m.len() / 512)
         }
         fn read(&mut self, lba: u64, out: &mut [u8]) -> Result<(), diskmap::Error> {
-            let at = lba as usize * 512;
-            out.copy_from_slice(&self.0[at..at + out.len()]);
-            Ok(())
+            self.0
+                .seek(SeekFrom::Start(lba * 512))
+                .and_then(|_| self.0.read_exact(out))
+                .map_err(|_| diskmap::Error::Read)
         }
+    }
+
+    fn partitions(disk: &Path) -> Vec<diskmap::Partition> {
+        let file = fs::File::open(disk).unwrap();
+        diskmap::read(&mut FileDisk(file)).unwrap().partitions
+    }
+
+    fn read_at(disk: &Path, at: u64, len: usize) -> Vec<u8> {
+        let mut file = fs::File::open(disk).unwrap();
+        let mut out = vec![0; len];
+        file.seek(SeekFrom::Start(at)).unwrap();
+        file.read_exact(&mut out).unwrap();
+        out
+    }
+
+    fn write_at(disk: &Path, at: u64, bytes: &[u8]) {
+        let mut file = fs::OpenOptions::new().write(true).open(disk).unwrap();
+        file.seek(SeekFrom::Start(at)).unwrap();
+        file.write_all(bytes).unwrap();
+    }
+
+    /// Whether the files `a` and `b` hold the same bytes from `from` to `to`.
+    fn same(a: &Path, b: &Path, from: u64, to: u64) -> bool {
+        let mut at = from;
+        while at < to {
+            let n = (to - at).min(16 * MIB) as usize;
+            if read_at(a, at, n) != read_at(b, at, n) {
+                return false;
+            }
+            at += n as u64;
+        }
+        true
+    }
+
+    /// The total sectors in the FAT32 boot sector at `lba`.
+    fn volume_sectors(disk: &Path, lba: u64) -> u32 {
+        let field = read_at(disk, lba * 512 + 32, 4);
+        u32::from_le_bytes(field.try_into().unwrap())
     }
 
     #[test]
@@ -356,12 +498,12 @@ mod tests {
         let (one, two) = (esp.join("one.img"), esp.join("two.img"));
         let len = build_release(&esp, &one, RECORD, 32).unwrap();
         build_release(&esp, &two, RECORD, 32).unwrap();
-        let bytes = fs::read(&one).unwrap();
-        assert_eq!(bytes.len() as u64, len);
-        assert!(bytes == fs::read(&two).unwrap(), "two builds differ");
+        assert_eq!(fs::metadata(&one).unwrap().len(), len);
+        assert!(same(&one, &two, 0, len), "two builds differ");
         // Its first four partitions hold the slot disk's own bytes.
-        let slots = disk(&esp, "", RECORD).unwrap();
-        let parts = diskmap::read(&mut Mem(bytes.clone())).unwrap().partitions;
+        let slots = esp.join("slots.img");
+        build(&esp, &slots, "", RECORD).unwrap();
+        let parts = partitions(&one);
         let names: Vec<&str> = parts.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
             names,
@@ -375,8 +517,7 @@ mod tests {
         );
         assert_eq!(parts[4].kind, diskmap::KAI_DATA_TYPE);
         assert_eq!(parts[4].sectors(), 32 * 2048);
-        let (from, to) = (2048 * 512, (parts[3].last + 1) as usize * 512);
-        assert!(bytes[from..to] == slots[from..to]);
+        assert!(same(&one, &slots, 2048 * 512, (parts[3].last + 1) * 512));
         // kaifs on it mounts and checks, with its first folders.
         let path = one.display().to_string();
         crate::fs_tool::main(&["check".into(), path.clone()]).unwrap();
@@ -384,48 +525,118 @@ mod tests {
         fs::remove_dir_all(&esp).unwrap();
     }
 
+    /// Bug-hunt-4 H4-16: the release disk's partitions are ADR 0008's whatever
+    /// this build holds, so the slot image of a later, larger release still fits
+    /// an install's `kai-a` and `kai-b`. With slots sized to this build, a
+    /// kernel 1 MiB larger was refused.
+    #[test]
+    fn a_later_larger_slot_image_fits_the_release_disks_slots() {
+        let mib = MIB as usize;
+        let now = fake_esp("release-now");
+        fs::write(now.join("boot/kernel"), vec![0x5A; 40 * mib]).unwrap();
+        let later = fake_esp("release-later");
+        fs::write(later.join("boot/kernel"), vec![0x5A; 41 * mib]).unwrap();
+        let out = now.join("release.img");
+        let len = build_release(&now, &out, RECORD, 32).unwrap();
+        let parts = partitions(&out);
+        let sizes: Vec<u64> = parts.iter().map(|p| p.sectors() / 2048).collect();
+        assert_eq!(sizes, [64, 256, 1024, 1024, 32]);
+        // 2,368 MiB after the first, then kai-data, then the backup GPT's MiB.
+        assert_eq!(parts[4].first, 2048 * (1 + 2368));
+        assert_eq!(len, (1 + 2368 + 32 + 1) * MIB);
+        let image = slot_image(&later, RECORD).unwrap();
+        let own = slot_image(&now, RECORD).unwrap();
+        assert!(image.len() > own.len(), "the later image is the larger");
+        for slot in &parts[2..4] {
+            assert!(image.len() as u64 <= slot.sectors() * 512, "{}", slot.name);
+        }
+        // Each slot's volume is this build's own image's size.
+        for slot in &parts[1..4] {
+            let sectors = u64::from(volume_sectors(&out, slot.first));
+            assert_eq!(sectors * 512, own.len() as u64, "{}", slot.name);
+        }
+        fs::remove_dir_all(&now).unwrap();
+        fs::remove_dir_all(&later).unwrap();
+    }
+
+    #[test]
+    fn a_release_whose_files_outgrow_a_partition_is_refused_and_a_test_disk_grows() {
+        let mib = |n: u64| n * 2048;
+        assert_eq!(
+            partition_sectors("kai-r", 256, 200 * 2048, Room::Fixed),
+            Ok(mib(256))
+        );
+        let refused = partition_sectors("kai-r", 256, 300 * 2048, Room::Fixed).unwrap_err();
+        for part in ["kai-r", "300 MiB", "256 MiB"] {
+            assert!(refused.contains(part), "{refused}");
+        }
+        assert_eq!(
+            partition_sectors("kai-r", 256, 300 * 2048, Room::Grow),
+            Ok(mib(300))
+        );
+        assert_eq!(
+            partition_sectors("kai-a", 1024, 1024 * 2048, Room::Fixed),
+            Ok(mib(1024))
+        );
+    }
+
     #[test]
     fn slot_b_keeps_what_a_run_of_updated_wrote_into_it_and_nothing_else_does() {
         let esp = fake_esp("keep-b");
         let out = esp.join("slots.img");
-        build_keeping_b(&esp, &out, "test=slot", RECORD).unwrap();
-        let fresh = fs::read(&out).unwrap();
-        let parts = diskmap::read(&mut Mem(fresh.clone())).unwrap().partitions;
-        let at = |p: usize| parts[p].first as usize * 512;
-        // The guest wrote a chunk into B and a byte into A.
-        let mut written = fresh.clone();
-        written[at(3) + 4096..at(3) + 4096 + 8].copy_from_slice(b"chunk-b!");
-        written[at(2) + 4096] = 0xAA;
-        fs::write(&out, &written).unwrap();
+        let len = build_keeping_b(&esp, &out, "test=slot", RECORD).unwrap();
+        let parts = partitions(&out);
+        let at = |p: usize| parts[p].first * 512;
+        // Past the end of B's volume, as a larger update's chunks are.
+        let past = at(3) + 512 * MIB;
+        let fresh_b = read_at(&out, at(3) + 4096, 8);
+        let fresh_a = read_at(&out, at(2) + 4096, 1);
+        let esp_bytes = read_at(&out, at(0), 64 * MIB as usize);
+        // The guest wrote chunks into B and a byte into A.
+        write_at(&out, at(3) + 4096, b"chunk-b!");
+        write_at(&out, past, b"chunk-2!");
+        write_at(&out, at(2) + 4096, &[0xAA]);
         // The next boot's disk is rebuilt, B as the guest left it.
         build_keeping_b(&esp, &out, "test=update", RECORD).unwrap();
-        let next = fs::read(&out).unwrap();
-        assert_eq!(&next[at(3) + 4096..at(3) + 4096 + 8], b"chunk-b!");
-        assert_eq!(next[at(2) + 4096], fresh[at(2) + 4096], "A is made anew");
+        assert_eq!(fs::metadata(&out).unwrap().len(), len);
+        assert!(!out.with_extension("next").exists());
+        assert_eq!(read_at(&out, at(3) + 4096, 8), b"chunk-b!");
+        assert_eq!(read_at(&out, past, 8), b"chunk-2!");
+        assert_eq!(read_at(&out, at(2) + 4096, 1), fresh_a, "A is made anew");
         // The command line is the new boot's, in the ESP.
-        assert!(next != written);
+        assert!(read_at(&out, at(0), 64 * MIB as usize) != esp_bytes);
         // `build` makes every slot anew.
         build(&esp, &out, "test=update", RECORD).unwrap();
-        assert_eq!(
-            &fs::read(&out).unwrap()[at(3) + 4096..at(3) + 4096 + 8],
-            &fresh[at(3) + 4096..at(3) + 4096 + 8]
-        );
+        assert_eq!(read_at(&out, at(3) + 4096, 8), fresh_b);
+        assert_eq!(read_at(&out, past, 8), [0u8; 8]);
         // A disk of another size is not carried over.
         fs::write(&out, b"short").unwrap();
         build_keeping_b(&esp, &out, "test=update", RECORD).unwrap();
-        assert_eq!(fs::read(&out).unwrap().len(), fresh.len());
+        assert_eq!(fs::metadata(&out).unwrap().len(), len);
+        assert_eq!(read_at(&out, at(3) + 4096, 8), fresh_b);
         fs::remove_dir_all(&esp).unwrap();
     }
 
     #[test]
-    fn the_disk_has_four_partitions_in_order_with_the_slot_types() {
+    fn the_disk_has_four_partitions_in_order_with_the_slot_types_and_the_adrs_sizes() {
         let esp = fake_esp("slots-test");
-        let disk = disk(&esp, "", RECORD).unwrap();
-        fs::remove_dir_all(&esp).unwrap();
-        let parts = diskmap::read(&mut Mem(disk)).unwrap().partitions;
+        let out = esp.join("slots.img");
+        build(&esp, &out, "", RECORD).unwrap();
+        let parts = partitions(&out);
         let names: Vec<&str> = parts.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["EFI system partition", "kai-r", "kai-a", "kai-b"]);
         assert_eq!(parts[2].kind.0, gpt::guid("kai-a partition type"));
         assert!(parts.windows(2).all(|w| w[0].last < w[1].first));
+        let sizes: Vec<u64> = parts.iter().map(|p| p.sectors() / 2048).collect();
+        assert_eq!(sizes, PARTITION_MIB);
+        // The ESP's volume fills its partition; a slot's is its files' size, here
+        // FAT32's floor of 33 MiB, and the same as the slot image of these files.
+        assert_eq!(volume_sectors(&out, parts[0].first), 64 * 2048);
+        let image = slot_image(&esp, RECORD).unwrap();
+        assert_eq!(image.len(), 33 * MIB as usize);
+        for slot in &parts[1..] {
+            assert_eq!(volume_sectors(&out, slot.first), 33 * 2048, "{}", slot.name);
+        }
+        fs::remove_dir_all(&esp).unwrap();
     }
 }

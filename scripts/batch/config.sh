@@ -33,5 +33,5 @@ mkdir -p "$S" || { echo "config.sh: cannot create $S" >&2; exit 2; }
 MAX=${KAI_BATCH_MAX:-15}
 DELETE_BRANCHES=${KAI_BATCH_DELETE_BRANCHES:-1}
 FLUENCY_MIN=${KAI_FLUENCY_MIN:-90}
-MODEL_PATHS=${KAI_MODEL_PATHS:-'^(llmproto/|infer/src/|quant/|gguf/|user/src/bin/llm|user/src/pool\.rs|agentabi/|shellcore/src/(agentcore|state)\.rs)'}
+MODEL_PATHS=${KAI_MODEL_PATHS:-'^(llmproto/|infer/src/|quant/|gguf/|user/src/bin/llm|user/src/pool\.rs|agentabi/|shellcore/src/(agentcore(\.rs|/)|state\.rs))'}
 NOBOOT=${KAI_BATCH_NOBOOT:-1}

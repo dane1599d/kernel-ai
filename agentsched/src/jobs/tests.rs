@@ -395,3 +395,17 @@ fn a_running_job_stops_only_for_the_person_or_its_own_stop() {
     assert_eq!(answer(KAI, "ask why"), WhileJob::Stop);
     assert_eq!(answer(NO_AGENT, "model"), WhileJob::Stop);
 }
+
+/// bug-hunt-4 H4-15: what a job used comes back with its answer, so the agent
+/// can charge its own budget; a job that used nothing reads as before.
+#[test]
+fn a_taken_answer_says_what_its_job_used() {
+    let mut jobs = jobs();
+    let t = ticket(&start(&mut jobs, GOALS, "agent-start act plan a step"));
+    jobs.charge(t, 70, NOW);
+    jobs.charge(t, 5, NOW);
+    let request = jobs.job(t).unwrap().queued.unwrap();
+    jobs.finish(request, "ok ok say".to_string());
+    let taken = jobs.handle(by(GOALS), Command::Take(t), 0, 0, NOW);
+    assert_eq!(taken, "used 75 ok ok say");
+}

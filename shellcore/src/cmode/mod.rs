@@ -106,7 +106,7 @@ impl Shell {
     }
 
     /// The line at `c>`, or a `:c` line at `kai>`; `None` for every other line
-    /// at `kai>`.
+    /// at `kai>`, and at either prompt for an open question's answer.
     pub(crate) fn c_line(&mut self, input: &str) -> Option<Reply> {
         if let Some(entry) = self.c.partial.take() {
             return Some(self.c_continue(entry, input));
@@ -117,6 +117,12 @@ impl Shell {
                 return Some(reply);
             }
             self.c_abandon("another line came first");
+        }
+        // The answer to a question the shell has open, from the question's
+        // own prompt or the desktop's card, is no C: it goes to the question,
+        // as at `kai>` (bug-hunt-5 H5-8).
+        if self.answers_open_question(line) {
+            return None;
         }
         // Not C at either prompt: `crate::ccbuild`.
         if let Some(name) = line.strip_prefix("cc build")
@@ -166,6 +172,25 @@ impl Shell {
                 },
             },
         })
+    }
+
+    /// Whether `line` is `answer <id> …` for a question the shell has open
+    /// under `id`, which `eval_line`'s `answer` branch takes: the card's (a
+    /// desktop line's, an app's network ask, Kai's install, an agent's or a
+    /// retired agent's), the console's, or a tune trial's. Only those ids
+    /// count, so any other line stays C; no C entry reads `answer 12 …`, and
+    /// a line that continues an open entry never gets here.
+    fn answers_open_question(&self, line: &str) -> bool {
+        let Some(id) = line
+            .strip_prefix("answer ")
+            .and_then(|rest| rest.split(' ').next())
+            .and_then(|id| id.parse::<u64>().ok())
+        else {
+            return false;
+        };
+        self.pending.as_ref().is_some_and(|p| p.id == id)
+            || self.tuner.waiting(id)
+            || self.retired_card == Some(id)
     }
 
     fn c_continue(&mut self, mut entry: String, input: &str) -> Reply {
@@ -257,9 +282,14 @@ impl Shell {
                             run.names.push(name.to_string());
                         }
                     }
-                    Record::Retyped(name) => shown.push_str(&format!(
-                        "{name} changed type; code that already called it keeps the old one\n"
-                    )),
+                    // A function's `def` may have been left out for room; its
+                    // `retyped` still says the entry defined something.
+                    Record::Retyped(name) => {
+                        defined = true;
+                        shown.push_str(&format!(
+                            "{name} changed type; code that already called it keeps the old one\n"
+                        ));
+                    }
                     Record::Value { ty, text } => {
                         let text = String::from_utf8_lossy(text);
                         value = match ty {

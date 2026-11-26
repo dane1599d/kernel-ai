@@ -8,4 +8,4 @@ pub(super) mod desk;
 pub(super) mod display;
 pub(super) mod memory;
 
-use super::{KAI, ROOM_WARNING, TestCase, case};
+use super::{KAI, TestCase, case};

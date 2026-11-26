@@ -4,9 +4,10 @@
 //!
 //! - `test=net-setup`: DHCP gives 10.0.2.15/24 via 10.0.2.2 with DNS 10.0.2.3; the
 //!   gateway answers pings; names resolve, CNAMEs too, from the cache within their
-//!   TTL and from the server after it; NXDOMAIN and silence fail the right way;
-//!   ring 3 resolves through RESOLVE_ON on a `NetDest` handle and is refused
-//!   without one; and the lease, capped at 4 s, is renewed rather than lost.
+//!   TTL and from the server after it, and a reply slower than one try still
+//!   counts; NXDOMAIN and silence fail the right way; ring 3 resolves through
+//!   RESOLVE_ON on a `NetDest` handle and is refused without one; and the lease,
+//!   capped at 4 s, is renewed rather than lost.
 //! - `test=net-fallback`: with DHCP sent to a port nobody serves, the fallback
 //!   address comes after `dhcp_wait_ms` and the gateway answers on it.
 //! - `test=net-static`: `ip=static` is used at once, with no DHCP.
@@ -172,6 +173,16 @@ fn resolve_checks() -> Result<(), &'static str> {
         return Err("net-setup: short.kai.test was still cached after its 1 s TTL");
     }
     log!("net-setup: short.kai.test was asked again once its 1 s TTL ran out");
+    // Only the first query is answered, 2.5 s late: after the second try's own
+    // second. Its reply must still count, with no third query sent.
+    let slow_address = Ipv4Addr::from(fixture::SLOW_ADDRESS);
+    let (before, _) = resolve::counts();
+    let slow = lookup(fixture::SLOW);
+    let (after, _) = resolve::counts();
+    if !slow.is_ok_and(|found| found.addresses == [slow_address]) || after != before + 2 {
+        return Err("net-setup: slow.kai.test, answered once 2.5 s late, did not resolve");
+    }
+    log!("net-setup: slow.kai.test, answered once 2.5 s late, still resolved to 10.0.2.96");
     match lookup(fixture::MISSING) {
         Err("dns: no such host") => log!("net-setup: missing.kai.test: no such host"),
         _ => return Err("net-setup: missing.kai.test did not fail with no such host"),
@@ -655,6 +666,13 @@ fn any_host_pinned() -> Result<(), &'static str> {
 ///   TooBig; a port the handle does not name is refused; the 17th stream of a
 ///   process is Busy; each closes, and none is left open.
 /// - A process killed while it holds three streams leaves none open.
+/// - Revoking the grant a `NetDest` was given under stops its streams, its
+///   narrowing and itself ([`revoke_check`]).
+/// - A refused HANDLE_REPLACE on a stream closes the stream ([`replace_check`]).
+/// - An agent's `NetDest` past its day's bytes is refused a receive, and the
+///   echo it would have read is not counted ([`budget_check`]).
+/// - A connect never takes the local port of a stream still open, even once
+///   the port counter has come round to it ([`port_check`]).
 pub fn stream_check(cmdline: &str) -> Result<(), &'static str> {
     let (server, port) = cmdline
         .split_whitespace()
@@ -690,15 +708,7 @@ pub fn stream_check(cmdline: &str) -> Result<(), &'static str> {
     };
     let pid = process::spawn_with(&request, alloc::vec![entry], false)
         .map_err(|_| "net-stream: cannot start netcheck")?;
-    let mut held = false;
-    for _ in 0..SETUP_WAIT_MS / 10 {
-        if net::stream::count(pid).0 == 3 {
-            held = true;
-            break;
-        }
-        threads::sleep_ms(10);
-    }
-    if !held {
+    if !comes_to_hold(pid, 3) {
         return Err("net-stream: netcheck never held 3 streams");
     }
     process::kill(pid, ExitReason::Killed).map_err(|_| "net-stream: cannot kill netcheck")?;
@@ -707,5 +717,159 @@ pub fn stream_check(cmdline: &str) -> Result<(), &'static str> {
         return Err("net-stream: a killed process's streams stayed open");
     }
     log!("net-stream: a process killed with 3 streams open left none");
+    revoke_check(&spec, port)?;
+    replace_check(&spec, port)?;
+    budget_check(&spec, port)?;
+    port_check(server, port)
+}
+
+/// Whether the process `pid` comes to hold `n` open streams within
+/// [`SETUP_WAIT_MS`].
+fn comes_to_hold(pid: u64, n: usize) -> bool {
+    for _ in 0..SETUP_WAIT_MS / 10 {
+        if net::stream::count(pid).0 == n {
+            return true;
+        }
+        threads::sleep_ms(10);
+    }
+    false
+}
+
+/// Bug hunt 2's H2-18: `netcheck` (`stream=revoke`) holds a `NetDest` given
+/// under a grant node, a narrowing of it, and 3 streams on the two. Revoking
+/// the node aborts the streams at once, before `netcheck` looks; from then on
+/// a poll waiting on one, every use of them, of the `NetDest` and of the
+/// narrowing answers Revoked, and the streams' handles still close.
+fn revoke_check(spec: &str, port: u16) -> Result<(), &'static str> {
+    use crate::handle::grant as grants;
+    use captable::grant::{Life, SYSTEM};
+    let node = grants::create(grants::root(SYSTEM), 0, Life::Request, b"net-stream")
+        .map_err(|_| "net-stream: cannot make a grant node")?;
+    let (_, entry) = netdest(spec)?;
+    let entry = captable::Entry {
+        grant: Some(node),
+        ..entry
+    };
+    let args = alloc::format!("stream=revoke port={port}");
+    let request = SpawnRequest {
+        name: "netstream-c",
+        program: "netcheck",
+        args: args.as_bytes(),
+        limits: NETCHECK_LIMITS,
+        spawner: 0,
+        supervisor: false,
+        uses: &[],
+    };
+    let Ok(pid) = process::spawn_with(&request, alloc::vec![entry], false) else {
+        let _ = grants::revoke(node);
+        return Err("net-stream: cannot start netcheck");
+    };
+    // The third stream opens once the first two have echoed.
+    let held = comes_to_hold(pid, 3);
+    let revoked = grants::revoke(node);
+    // Nothing `netcheck` does can open one meanwhile: every connect on the
+    // NetDest or its narrowing now answers Revoked.
+    let open = net::stream::count(pid).0;
+    if !held || revoked.is_err() {
+        let _ = process::kill(pid, ExitReason::Killed);
+        let _ = wait_exit(pid);
+        return Err("net-stream: netcheck never held 3 streams on its granted NetDest");
+    }
+    let exit = wait_exit(pid)?;
+    if open != 0 {
+        return Err("net-stream: a revoke left the streams on its grant open");
+    }
+    if exit != (ExitReason::Exited, 0) {
+        return Err(
+            "net-stream: a revoked NetDest, its narrowing or a stream on them still worked",
+        );
+    }
+    if net::stream::count(pid) != (0, 0) || net::stream::revoked_places(pid) != 0 {
+        return Err("net-stream: a revoked stream outlived its process");
+    }
+    log!(
+        "net-stream: a revoke aborted the 3 streams on a granted NetDest and its narrowing at once; each use after answered Revoked"
+    );
+    Ok(())
+}
+
+/// Bug hunt 2's H2-17: a refused HANDLE_REPLACE closes a stream's handle, and
+/// with it the stream, as HANDLE_CLOSE does: `netcheck` (`stream=replace`)
+/// opens 17 in turn, each refused, and never meets the limit of 16.
+fn replace_check(spec: &str, port: u16) -> Result<(), &'static str> {
+    let (_, entry) = netdest(spec)?;
+    netcheck(
+        "netstream-d",
+        &alloc::format!("stream=replace port={port}"),
+        Some(entry),
+    )?;
+    log!(
+        "net-stream: a refused HANDLE_REPLACE closed the stream with its handle: 17 in a row never met the limit of 16"
+    );
+    Ok(())
+}
+
+/// Bug hunt 5's H5-18: `netcheck` (`stream=budget`) holds an agent's
+/// `NetDest` with 8 KiB of its day left. Its 8 KiB send spends the day, and
+/// the echo then stays unread: NET_RECV is refused, as a send and a connect
+/// are, and the meter counts nothing past the budget.
+fn budget_check(spec: &str, port: u16) -> Result<(), &'static str> {
+    let left = net::stream::MAX_CALL as u64;
+    let meter = net::dest::meter(1);
+    let today = net::dest::today();
+    net::dest::with_meter(&meter, |m| m.try_send(netdest::meter::MIB - left, today))
+        .map_err(|_| "net-stream: cannot spend the test meter's day")?;
+    let dest = netdest::Dest::parse(spec).map_err(|_| "net-stream: a bad test destination")?;
+    let live = |object| crate::handle::names(kabi::handle::Kind::NetDest, object);
+    let object = net::dest::create_metered(dest, live, Some(meter.clone()))
+        .ok_or("net-stream: no room for a NetDest record")?;
+    let entry = captable::Entry::new(
+        kabi::handle::Kind::NetDest,
+        crate::handle::NETDEST_RIGHTS,
+        object,
+    );
+    netcheck(
+        "netstream-e",
+        &alloc::format!("stream=budget port={port}"),
+        Some(entry),
+    )?;
+    if net::dest::with_meter(&meter, |m| m.used()) != netdest::meter::MIB {
+        return Err("net-stream: a refused receive was counted against the day");
+    }
+    log!(
+        "net-stream: an agent's NetDest past its day's bytes was refused a receive, a send and a connect, and counted nothing past its budget"
+    );
+    Ok(())
+}
+
+/// Bug hunt 5's H5-19: a connect never takes the local port of a stream
+/// still open, even once the port counter has come round to it, so no new
+/// stream to the same server takes a live one's four-tuple.
+fn port_check(server: Ipv4Addr, port: u16) -> Result<(), &'static str> {
+    let held = net::stream::connect(0, server, port, false, None, None)
+        .map_err(|_| "net-stream: cannot open a stream to hold a port")?;
+    let result = match net::stream::local_port(0, held) {
+        None => Err("net-stream: a new stream has no local port"),
+        Some(taken) => {
+            // Where 16383 more connects would leave the counter.
+            net::draw_next(taken);
+            match net::stream::connect(0, server, port, false, None, None) {
+                Err(_) => Err("net-stream: cannot open a second stream"),
+                Ok(next) => {
+                    let got = net::stream::local_port(0, next);
+                    let _ = net::stream::close(0, next);
+                    match got {
+                        Some(got) if got != taken => Ok((taken, got)),
+                        _ => Err("net-stream: a connect took the local port a live stream holds"),
+                    }
+                }
+            }
+        }
+    };
+    let _ = net::stream::close(0, held);
+    let (taken, got) = result?;
+    log!(
+        "net-stream: with the port counter come round to a live stream's port {taken}, the next connect took {got}"
+    );
     Ok(())
 }

@@ -9,7 +9,8 @@
 //!   charges nothing ([`DayMeter::try_send`]).
 //! - **What is received is counted when it arrives** ([`DayMeter::received`]): it
 //!   cannot be refused once it is here, so a receive may pass the budget by its own
-//!   bytes, and then nothing more moves that day.
+//!   bytes, and then nothing more moves that day: the kernel refuses the next
+//!   receive, as it does a send and a connect, once [`DayMeter::has_room`] is false.
 //! - **The day turns forward only.** A later day starts the count again; a clock
 //!   that goes back is not a new day, so it never buys more bytes.
 //! - **No clock is no day** ([`NO_CLOCK`]): what moves before the wall clock is

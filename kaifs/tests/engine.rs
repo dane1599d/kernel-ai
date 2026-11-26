@@ -53,6 +53,33 @@ fn values_and_records_survive_a_remount() {
     check(&mut fs, &mut Cache::default()).unwrap();
 }
 
+/// A record rewritten in the transaction that wrote it is freed in that
+/// transaction too. With 200 of them the allocator's delta takes more than one
+/// block, and a later block frees runs an earlier one allocated: the commit
+/// still reads back, by an abort and by a mount (bug hunt 2, H2-1).
+#[test]
+fn records_rewritten_in_their_own_transaction_read_back() {
+    let mut fs = fresh();
+    for n in 100..300 {
+        fs.put_record(key(n), &[1; 2000]).unwrap();
+        fs.put_record(key(n), &[2; 3000]).unwrap();
+    }
+    let txn = fs.commit().unwrap();
+    assert!(
+        fs.io.alloc.chain().len() >= 3,
+        "a base and a delta of 2 blocks"
+    );
+    let state = fs.io.alloc.state();
+    assert_eq!(fs.abort().unwrap(), txn);
+    assert_eq!(fs.io.alloc.state(), state);
+    let mut fs = remount(fs);
+    assert_eq!(fs.io.alloc.state(), state);
+    for n in 100..300 {
+        assert_eq!(fs.get(&key(n)).unwrap(), Some(Value::Record(vec![2; 3000])));
+    }
+    check(&mut fs, &mut Cache::default()).unwrap();
+}
+
 #[test]
 fn an_uncommitted_change_is_gone_after_a_remount() {
     let mut fs = fresh();

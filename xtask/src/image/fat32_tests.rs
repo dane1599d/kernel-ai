@@ -266,3 +266,31 @@ fn files_that_do_not_fit_are_refused() {
     let big = vec![file("big", vec![0; 70 * 1024 * 1024])];
     assert!(volume(131_072, 2048, 1, &big).is_err());
 }
+
+/// A slot image is its content's size: the files fit the volume
+/// `fitting_sectors` gives, and not one MiB less. Little content still gets
+/// FAT32's floor.
+#[test]
+fn the_fitting_volume_is_the_smallest_whole_mib_that_holds_the_files() {
+    let mib = 1 << 20;
+    let tree = vec![dir(
+        "boot",
+        vec![
+            file("kernel", vec![0x5A; 40 * mib]),
+            file("kai.bundle", pattern(3 * mib + 5, 4)),
+            file("slot", b"kai-slot 1\n".to_vec()),
+        ],
+    )];
+    let sectors = fitting_sectors(&tree).unwrap();
+    assert_eq!(sectors % 2048, 0);
+    let image = volume(sectors, 0, 1, &tree).unwrap();
+    let reader = Reader::new(&image);
+    assert_eq!(reader.open("boot/kai.bundle"), pattern(3 * mib + 5, 4));
+    assert!(volume(sectors - 2048, 0, 1, &tree).is_err());
+    // The files and the FATs: 44 MiB for 43 MiB of files.
+    assert_eq!(sectors, 44 * 2048);
+    // The floor: 33 MiB is the first whole MiB with FAT32's clusters.
+    let small = esp_like();
+    assert_eq!(fitting_sectors(&small).unwrap(), 33 * 2048);
+    assert!(volume(33 * 2048, 0, 1, &small).is_ok());
+}

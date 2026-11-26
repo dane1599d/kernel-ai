@@ -1,6 +1,6 @@
 //! Firmware tables: reads the MADT and HPET table through the device window.
 
-use crate::memory;
+use crate::{log, memory};
 use acpitables::{PhysMem, Platform};
 use spin::Once;
 use x86_64::structures::paging::PageTableFlags;
@@ -34,5 +34,9 @@ pub fn init(rsdp: u64, hhdm: u64) -> Result<&'static Platform, &'static str> {
         acpitables::Error::NoMadt => "ACPI: no MADT, cannot find the APICs",
         acpitables::Error::TableTooLong => "ACPI: a table claims to be longer than 1 MiB",
     })?;
+    // As ACPICA does: a damaged optional table is reported and the boot goes on.
+    for (table, error) in &platform.ignored {
+        log!("ACPI: the {table} table is damaged ({error:?}); ignored, as if absent");
+    }
     Ok(PLATFORM.call_once(|| platform))
 }
