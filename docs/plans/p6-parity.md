@@ -246,7 +246,7 @@ P7's work, designed in ADR 0007. Listed here so the gaps have owners; P7's own p
 
 ### 6.9 Tracks S and V, apps from others
 
-- **V, the Linux VM** (row 32): ADR 0006's work order, items 1-13, unchanged, as one track. It starts when a lane is free after B1 if question 1 says yes. Its gates are ADR 0006's exit test and spikes S06-1 to S06-3. Firefox in the VM registers as Kai's second browser provider (ADR 0014, "Changes to recently merged and open work").
+- **V, the Linux VM** (row 32): ADR 0006's work order, items 1-13, unchanged, as one track. It starts when a lane is free after B1 if question 1 says yes. Its gates are ADR 0006's exit test and spikes S06-1 to S06-3. **Test plan (S06-1 and G16, section 13.2):** each backend is tested under KVM on its own runners, SVM with NPT and NRIPS on the AMD runners and VMX with EPT and unrestricted guest on the Intel ones, and SVM is tested under TCG (NPT, no NRIPS) on every runner. A case states the backend it needs, and a runner of the other vendor skips it under KVM with a named reason, never a pass. Firefox in the VM registers as Kai's second browser provider (ADR 0014, "Changes to recently merged and open work").
 - **S, others' apps in the store** (row 31): after v1.0, as ADR 0011 question 5 says. Nothing in P6.
 
 ## 7. Sessions and hot-file turns
@@ -307,7 +307,7 @@ None runs a model on the founder's PC, and none runs QEMU there.
 | **S14-3** `js-engines` | 0014 | GitHub runner | About 1 week | Boa or QuickJS-NG; B-11 | **Done**: QuickJS-NG (section 13.2) |
 | **S14-4** `web-compare` | 0014 | GitHub runner, read-only | Days | B-15 and the site-list gates | **Done**: 10 of 12 stable; gates compare in one job (section 13.2) |
 | **P6-S1** `audio-virtio` | 0007 | A KVM boot case on GitHub with QEMU's virtio-sound to a null backend | Days | M-4's first driver | **Passed** (section 13.2) |
-| **S06-1** to **S06-3** | 0006 | As ADR 0006 says | 2-5 weeks in all | Track V | S06-1 **done, its gate failed**: VMX joins P6 (section 13.2); S06-2 and S06-3 when V starts |
+| **S06-1** to **S06-3** | 0006 | As ADR 0006 says | 2-5 weeks in all | Track V | S06-1 **done, its gate failed**: VMX joins P6; G16 found EPT and unrestricted guest on every Intel runner (section 13.2); S06-2 and S06-3 when V starts |
 
 ADR 0014 gives S14-1 to S14-4's build, measure, pass and fail. **P6-S1** measures whether a `no_std` virtio-sound driver plays 60 s of 48 kHz stereo with no underrun under KVM; if it cannot, M-4 starts on emulated Intel HDA instead.
 
@@ -349,7 +349,7 @@ All person-months (PM) are estimates for one engineer.
 | L | 4-8 | Section 6.6's sizes |
 | U before P8 | 2-4 | U-1 to U-3 |
 | A | 4-7 | Section 6.8's sizes |
-| V | 8-17 | ADR 0006, option C, plus the VMX backend S06-1's fail rule moves into P6 (+1-2) |
+| V | 8-17 | ADR 0006, option C, plus the VMX backend S06-1's fail rule moves into P6 (+1-2). G16 keeps the +1-2: every Intel runner offers EPT and unrestricted guest, so the VMX backend needs no shadow paging and no real-mode emulation |
 | H | P7's plan | ADR 0007 |
 
 **v0.2's part** (F, B to B4, D-1 to D-3, M-1 to M-4): about 25-40 PM (est.). With four to five sessions in parallel and the founder's "good and slow over fast", that is about 8-12 months from approval (est.). The browser sets that date. Everyday-OS parity as a whole runs past v1.0; this plan is revised at each milestone.
@@ -398,6 +398,7 @@ While this plan waited for approval, the manager handed out the work that needs 
 | G8 | `kaimedia`: one decode API over PNG, JPEG, GIF and WebP, with ceilings | Queued, #1448 | M-1's host half. `uipaint` drawing images remains |
 | G10 | `cargo xtask wpt`: reftests through a pluggable renderer at a pinned commit | Queued, #1450 | B-2's harness. It needs B-1's renderer to report a baseline |
 | G14 | `kaizip`: list, extract and make, with bomb, escape, duplicate and encryption ceilings | Queued, #1447 and #1452 | M-7's host half. Files' menu remains |
+| G15 | S06-1's census on main: `cpufeat::Nesting`, the `nesting:` boot line, case `nesting-census`, and `nesting-census.yml` by dispatch only (P6 row 1) | In review, #1489 | Track V's runner choice, re-run when the pool may have changed |
 
 ### 13.2 What the spikes found
 
@@ -408,6 +409,7 @@ While this plan waited for approval, the manager handed out the work that needs 
 | **S14-3** `js-engines` (`spike/js-engines`, run 45720308618) | Without `built-ins/Temporal`, test262 is QuickJS-NG 95.96% and Boa 94.88%. With it, Boa 95.35% and QuickJS-NG 86.88% (QuickJS-NG has no Temporal). On Wasmtime ahead of time, QuickJS-NG's Octane score is 5.2-7.5x Boa's. The `.wasm` is 1.26 MB against 7.37 MB. Start-up is the same: about 6 ms a run. Neither needs a JIT | By ADR 0014's rule (the fastest of the two at 90% or more) **QuickJS-NG is taken**, reading the bar without Temporal. Its C is built by wasi-sdk in CI, which ADR 0006 question 2 allows. Boa stays the fallback, and S14-3 does not reach SpiderMonkey's trigger. Temporal is added to QuickJS-NG, or in our own code, by B4 |
 | **S14-4** `web-compare` (`spike/web-compare`, run 45732633843) | 10 of 12 tier-1 sites gave the same text on two runs. Hacker News (92.6% of words shared) and DuckDuckGo's results (66.9%) change live. With every cookie refused, Firefox read 0 words from Stack Overflow and 17 from BBC News | Each site gate compares our browser with Firefox **in the same job**, not across runs (section 4.2, B1). Stack Overflow and BBC News move to "tracked, not gated" (section 4.4) |
 | **S06-1** nesting census (`spike/nesting-census`, run 45734622772) | **The gate failed:** only 8 of 20 KVM runs had nested SVM with NPT, all of them on AMD hosts. The other 12 were Intel hosts with nested VMX. Under TCG, SVM with NPT was offered in 20 of 20 runs, without NRIPS | ADR 0006's fail column applies: the VMX backend moves into P6 (+1-2 PM, section 12.1). Track V tests SVM under KVM on AMD runners and under TCG on all of them |
+| **G16** VMX capability MSRs (`spike/nesting-census`, run 45824528913) | **All 12 Intel runs** (11 Xeon 6975P-C, 1 Xeon Platinum 8370C) offer nested VMX with EPT and unrestricted guest. VMXON is allowed (FEATURE_CONTROL `0x100005`, locked). VPID, true controls, 4-level EPT walks, write-back EPT, 2 MiB and 1 GiB EPT pages and EPT accessed and dirty flags are all offered. The 8 AMD runs had SVM with NPT and NRIPS again; TCG had SVM with NPT, no NRIPS, in 20 of 20. The 8370C allows fewer controls than the 6975P-C | Each backend can be tested under KVM on its own runners, SVM on AMD and VMX on Intel, and SVM under TCG on all (section 6.9's test plan). The VMX backend needs neither shadow paging nor real-mode emulation, so its +1-2 PM holds (section 12.1). `vmx` requires only the controls both Intel models allow |
 | **P6-S1** `audio-virtio` (#1454) | **Passed.** 60 s of 48 kHz stereo played over virtio-drivers' sound device with 0 underruns and about 1.3% CPU (debug build) | M-4 starts on virtio-sound. The emulated-HDA fallback is not needed |
 | **G13** PDF on hayro (`spike/hayro-pdf`, run 45728927723) | 19 of 20 PDFs rendered; the one with a user password was refused, as poppler refused it. About 15x faster than pdftoppm. Vector, transparency, CJK and forms differ from poppler on 0.2-2.6% of pixels. Standard-14 text differs on about 8%, because of hayro's own substitute fonts. Peak memory was 272 MiB, against 27-48 MiB for ordinary files | M-3 keeps hayro, with a memory ceiling, the OS's fonts for the standard 14, and a password ask |
 
