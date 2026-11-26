@@ -414,6 +414,110 @@ impl core::fmt::Display for Nesting {
     }
 }
 
+/// Spike S06-1's second step (groundwork G16): Intel's VMX capability MSRs, which
+/// only ring 0 can read (Intel SDM vol. 3D, appendix A). The kernel reads them
+/// when CPUID offers VMX, and each later MSR only when the earlier one says it
+/// exists, so `None` means "not offered", not "not read".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VmxCaps {
+    /// IA32_FEATURE_CONTROL (0x3A).
+    pub feature_control: u64,
+    /// IA32_VMX_BASIC (0x480).
+    pub basic: u64,
+    /// IA32_VMX_PROCBASED_CTLS (0x482).
+    pub procbased: u64,
+    /// IA32_VMX_PROCBASED_CTLS2 (0x48B), read when PROCBASED_CTLS allows bit 31,
+    /// "activate secondary controls".
+    pub procbased2: Option<u64>,
+    /// IA32_VMX_EPT_VPID_CAP (0x48C), read when the secondary controls allow EPT
+    /// or VPID.
+    pub ept_vpid_cap: Option<u64>,
+}
+
+pub const IA32_FEATURE_CONTROL: u32 = 0x3A;
+pub const IA32_VMX_BASIC: u32 = 0x480;
+pub const IA32_VMX_PROCBASED_CTLS: u32 = 0x482;
+pub const IA32_VMX_PROCBASED_CTLS2: u32 = 0x48B;
+pub const IA32_VMX_EPT_VPID_CAP: u32 = 0x48C;
+
+impl VmxCaps {
+    /// Reads the MSRs through `rdmsr`, which the caller supplies (ring 0 only).
+    /// Each MSR is read only when the one before it says it exists.
+    pub fn read(mut rdmsr: impl FnMut(u32) -> u64) -> Self {
+        let feature_control = rdmsr(IA32_FEATURE_CONTROL);
+        let basic = rdmsr(IA32_VMX_BASIC);
+        let procbased = rdmsr(IA32_VMX_PROCBASED_CTLS);
+        let procbased2 = (procbased & (1 << 63) != 0).then(|| rdmsr(IA32_VMX_PROCBASED_CTLS2));
+        let ept_vpid_cap = procbased2
+            .filter(|c| c & ((1 << (32 + 1)) | (1 << (32 + 5))) != 0)
+            .map(|_| rdmsr(IA32_VMX_EPT_VPID_CAP));
+        Self {
+            feature_control,
+            basic,
+            procbased,
+            procbased2,
+            ept_vpid_cap,
+        }
+    }
+
+    /// Whether a secondary control may be set (its allowed-1 bit, the MSR's high
+    /// half).
+    fn secondary(&self, bit: u32) -> bool {
+        self.procbased2.is_some_and(|c| c & (1 << (32 + bit)) != 0)
+    }
+
+    fn cap(&self, bit: u32) -> bool {
+        self.ept_vpid_cap.is_some_and(|c| c & (1 << bit) != 0)
+    }
+
+    pub fn ept(&self) -> bool {
+        self.secondary(1)
+    }
+    pub fn vpid(&self) -> bool {
+        self.secondary(5)
+    }
+    pub fn unrestricted_guest(&self) -> bool {
+        self.secondary(7)
+    }
+    /// VMXON is allowed outside SMX: FEATURE_CONTROL locked (bit 0) with bit 2
+    /// set. A hypervisor's guest sees what its host chose to show.
+    pub fn vmxon_allowed(&self) -> bool {
+        self.feature_control & 0b101 == 0b101
+    }
+}
+
+/// `vmxon_ok=1 ept=1 vpid=1 unrestricted=1 ept_4level=1 ept_wb=1 ept_2m=1 ept_1g=1
+/// ept_ad=1 true_ctls=1 vmcs_rev=0x4 feature_control=0x5 basic=... procbased=...
+/// procbased2=... ept_vpid_cap=...`: decoded words first, then the raw MSRs.
+impl core::fmt::Display for VmxCaps {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let on = |b: bool| u8::from(b);
+        let raw = |v: Option<u64>| v.unwrap_or(0);
+        write!(
+            f,
+            "vmxon_ok={} ept={} vpid={} unrestricted={} ept_4level={} ept_wb={} ept_2m={} \
+             ept_1g={} ept_ad={} true_ctls={} vmcs_rev={:#x} feature_control={:#x} \
+             basic={:#x} procbased={:#x} procbased2={:#x} ept_vpid_cap={:#x}",
+            on(self.vmxon_allowed()),
+            on(self.ept()),
+            on(self.vpid()),
+            on(self.unrestricted_guest()),
+            on(self.cap(6)),
+            on(self.cap(14)),
+            on(self.cap(16)),
+            on(self.cap(17)),
+            on(self.cap(21)),
+            on(self.basic & (1 << 55) != 0),
+            self.basic & 0x7fff_ffff,
+            self.feature_control,
+            self.basic,
+            self.procbased,
+            raw(self.procbased2),
+            raw(self.ept_vpid_cap),
+        )
+    }
+}
+
 /// Whether CPUID says the TSC runs at a constant rate in every power state
 /// (0x80000007 EDX bit 8, "invariant TSC").
 #[cfg(target_arch = "x86_64")]
@@ -521,6 +625,50 @@ unsafe fn xgetbv0() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vmx_caps_read_each_msr_only_when_the_one_before_offers_it() {
+        use std::collections::BTreeMap;
+        let mut msrs = BTreeMap::from([
+            (IA32_FEATURE_CONTROL, 0x5),
+            (IA32_VMX_BASIC, (1 << 55) | (6 << 50) | (0x1000 << 32) | 4),
+            (IA32_VMX_PROCBASED_CTLS, 1 << 63),
+            (IA32_VMX_PROCBASED_CTLS2, (1 << 33) | (1 << 37) | (1 << 39)),
+            (
+                IA32_VMX_EPT_VPID_CAP,
+                (1 << 6) | (1 << 14) | (1 << 16) | (1 << 17) | (1 << 21),
+            ),
+        ]);
+        let caps = VmxCaps::read(|m| msrs[&m]);
+        assert!(caps.vmxon_allowed() && caps.ept() && caps.vpid() && caps.unrestricted_guest());
+        assert!(std::format!("{caps}").starts_with(
+            "vmxon_ok=1 ept=1 vpid=1 unrestricted=1 ept_4level=1 ept_wb=1 ept_2m=1 ept_1g=1 \
+             ept_ad=1 true_ctls=1 vmcs_rev=0x4 "
+        ));
+
+        // No secondary controls: neither later MSR is read.
+        msrs.insert(IA32_VMX_PROCBASED_CTLS, 0);
+        let mut read = Vec::new();
+        let caps = VmxCaps::read(|m| {
+            read.push(m);
+            msrs[&m]
+        });
+        assert_eq!(
+            read,
+            [
+                IA32_FEATURE_CONTROL,
+                IA32_VMX_BASIC,
+                IA32_VMX_PROCBASED_CTLS
+            ]
+        );
+        assert!(!caps.ept() && !caps.unrestricted_guest() && caps.ept_vpid_cap.is_none());
+
+        // Secondary controls without EPT or VPID: EPT_VPID_CAP is not read.
+        msrs.insert(IA32_VMX_PROCBASED_CTLS, 1 << 63);
+        msrs.insert(IA32_VMX_PROCBASED_CTLS2, 1 << 39);
+        let caps = VmxCaps::read(|m| msrs[&m]);
+        assert!(caps.unrestricted_guest() && !caps.ept() && caps.ept_vpid_cap.is_none());
+    }
+
     #[test]
     fn nesting_reads_vmx_svm_and_leaf_a() {
         // QEMU TCG's SVM: npt set, nrips clear (ADR 0006).

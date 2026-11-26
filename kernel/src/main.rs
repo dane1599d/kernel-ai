@@ -362,6 +362,17 @@ extern "C" fn boot_continue() -> ! {
         core::str::from_utf8(&cpufeat::vendor()).unwrap_or("?"),
         cpufeat::Nesting::detect()
     );
+    // S06-1's second step (G16): with VMX, the capability MSRs only ring 0 can
+    // read, for EPT and unrestricted guest on the Intel runners.
+    if cpufeat::Nesting::detect().vmx {
+        // SAFETY: CPUID offers VMX, so FEATURE_CONTROL, VMX_BASIC and
+        // PROCBASED_CTLS exist; VmxCaps::read reads the later two only when
+        // those say they exist.
+        let caps = cpufeat::VmxCaps::read(|msr| unsafe {
+            x86_64::registers::model_specific::Msr::new(msr).read()
+        });
+        log!("vmx-caps: {caps}");
+    }
     // Before the other CPUs start: SetVirtualAddressMap runs on a borrowed PML4.
     if let Err(message) = efi::init() {
         log!("{message}; no runtime services");

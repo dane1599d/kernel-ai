@@ -4,7 +4,8 @@
 # Each Linux run prints the host CPU's vendor and model, /dev/kvm, and
 # kvm_amd/kvm_intel `nested`, then boots the `nesting-census` case under KVM
 # (-cpu max) and under TCG; the kernel logs `nesting: vendor=... vmx= svm= npt=
-# nrips= ...` from CPUID 1 and 0x8000_000A. macOS runs print the host facts only.
+# nrips= ...` from CPUID 1 and 0x8000_000A, and with VMX also `vmx-caps: ...`
+# from the VMX capability MSRs (G16). macOS runs print the host facts only.
 # The summary job tabulates every run.
 name: spike nesting census
 
@@ -109,6 +110,8 @@ jobs:
               --prebuilt "$RUNNER_TEMP/prebuilt" --prebuilt-sha "$PREBUILT_SHA" 2>&1 | tee "$log" || true
             line=$(grep -o 'nesting: vendor=.*' "$log" | head -1 | tr -d '\r')
             echo "${accel}_guest=${line:-none}" | tee -a census/host.txt
+            caps=$(grep -o 'vmx-caps: .*' "$log" | head -1 | tr -d '\r')
+            echo "${accel}_vmx=${caps:-none}" | tee -a census/host.txt
           done
       - uses: actions/upload-artifact@v4
         if: always()
@@ -161,11 +164,12 @@ jobs:
         run: |
           get() { grep -m1 "^$1=" "$2" | cut -d= -f2-; }
           guest() { echo "$1" | grep -o -E "(vmx|svm|npt|nrips)=[01]" | tr '\n' ' '; }
+          vmx() { echo "$1" | grep -o -E "(vmxon_ok|ept|vpid|unrestricted|ept_4level|ept_wb|ept_2m|ept_1g|ept_ad|true_ctls)=[01]" | tr '\n' ' '; }
           {
-            echo "| runner | run | vendor | model | /dev/kvm | kvm_amd nested | kvm_intel nested | host flags | KVM guest | TCG guest |"
-            echo "|---|---|---|---|---|---|---|---|---|---|"
+            echo "| runner | run | vendor | model | /dev/kvm | kvm_amd nested | kvm_intel nested | host flags | KVM guest | TCG guest | KVM VMX caps |"
+            echo "|---|---|---|---|---|---|---|---|---|---|---|"
             for f in $(ls all/*/host.txt | sort -V); do
-              echo "| $(get runner $f) | $(get run $f) | $(get vendor $f) | $(get model $f) | $(get dev_kvm $f) | $(get kvm_amd_nested $f) | $(get kvm_intel_nested $f) | $(get host_flags $f) | $(guest "$(get kvm_guest $f)") | $(guest "$(get tcg_guest $f)") |"
+              echo "| $(get runner $f) | $(get run $f) | $(get vendor $f) | $(get model $f) | $(get dev_kvm $f) | $(get kvm_amd_nested $f) | $(get kvm_intel_nested $f) | $(get host_flags $f) | $(guest "$(get kvm_guest $f)") | $(guest "$(get tcg_guest $f)") | $(vmx "$(get kvm_vmx $f)") |"
             done
             echo
             echo "Raw guest lines:"
@@ -173,6 +177,7 @@ jobs:
             for f in $(ls all/*/host.txt | sort -V); do
               echo "$(get runner $f) $(get run $f) kvm: $(get kvm_guest $f)"
               echo "$(get runner $f) $(get run $f) tcg: $(get tcg_guest $f)"
+              echo "$(get runner $f) $(get run $f) kvm vmx: $(get kvm_vmx $f)"
             done
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
