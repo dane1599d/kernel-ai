@@ -155,7 +155,10 @@ pub fn take_for_answer(publish: impl FnOnce()) -> bool {
 
 /// The answer [`take_for_answer`] waited for came. The holder gets the screen
 /// back, as on a second Ctrl+Alt+F12, if `took` says the answer took it; a
-/// screen the console had before stays the console's.
+/// screen the console had before stays the console's. A claim refused while
+/// the answer waited is told to come again (a `Screen` 1 event), unless
+/// Ctrl+Alt+F12 took the screen from a live holder: a `desktop` restarted
+/// during the ask then gets the screen.
 pub fn give_back(took: bool) {
     let mut state = STATE.lock();
     state.answering = false;

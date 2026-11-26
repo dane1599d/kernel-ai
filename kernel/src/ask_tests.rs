@@ -208,6 +208,8 @@ fn restarted_during_ask() -> Result<(), &'static str> {
     if showing().is_some() || ANSWER.load(Ordering::Acquire) != 0 {
         return Err("desk-ask: a new desktop got the screen while an ask waited");
     }
+    // The menu drops keys typed before it settles.
+    wait("the console's menu to take keys", terminal::menu_takes_keys)?;
     log!("desk-ask: ready for keys");
     wait("the answer typed on the console", || {
         ANSWER.load(Ordering::Acquire) != 0
