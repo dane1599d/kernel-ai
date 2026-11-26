@@ -835,10 +835,11 @@ impl Shell {
                         "Removed rule #{id} ({}); it asks again",
                         rule.action
                     )),
-                    // Never "it asks again" when the disk still holds it (#9).
-                    Err(why) => Reply::err(format!(
-                        "Removed rule #{id} ({}) for this boot only: the rules were not \
-                         saved ({why}), so it comes back after a restart",
+                    // The removal holds now, so the reply is ok; but never
+                    // "it asks again" when the disk may still hold it (#9).
+                    Err(why) => Reply::ok(format!(
+                        "Removed rule #{id} ({}) for this boot: the rules were not saved \
+                         ({why}), so it may come back after a restart",
                         rule.action
                     )),
                 }

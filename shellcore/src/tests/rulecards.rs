@@ -72,12 +72,17 @@ fn a_removal_the_disk_did_not_take_says_it_holds_for_this_boot_only() {
     let added = shell.eval(&format!("answer 1 always-kind once={once}"));
     assert!(added.text.contains("Rule #1 added"), "{added:?}");
     let removed = shell.eval("rules_remove 1");
-    assert!(!removed.ok, "{removed:?}");
+    // It is gone for this boot, so the reply is ok (#1344's act-rule boot
+    // test), and it says the restart may bring it back.
+    assert!(removed.ok, "{removed:?}");
     assert!(!removed.text.contains("it asks again"), "{removed:?}");
     assert!(
-        removed.text.contains("comes back after a restart"),
+        removed.text.contains("for this boot")
+            && removed.text.contains("may come back after a restart"),
         "{removed:?}"
     );
+    let listed = shell.eval("rules");
+    assert!(listed.text.starts_with("no rules"), "{listed:?}");
 }
 
 /// #10: an "Always allow" for an installed app's row wrote a rule the next
