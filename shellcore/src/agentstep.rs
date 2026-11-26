@@ -45,6 +45,8 @@ pub(crate) struct Told {
     pub(crate) agent: String,
     pub(crate) id: u64,
     pub(crate) ran: bool,
+    /// The person allowed it and the run failed: an error, not a no (H6-26).
+    pub(crate) failed: bool,
     pub(crate) line: String,
 }
 
@@ -224,6 +226,11 @@ impl Shell {
                 row.name
             ));
         }
+        // Only a file row's `path`, `from` and `to` are home-folder paths: a
+        // net_fetch's `path` is a URL's (H6-27).
+        if !agentabi::FS_ROWS.iter().any(|r| r.name == row.name) {
+            return Ok(());
+        }
         for arg in row
             .args
             .iter()
@@ -266,9 +273,12 @@ impl Shell {
         match at {
             Some(at) => {
                 let told = self.agents_told.remove(at);
-                match told.ran {
-                    true => Reply::ok(format!("ran #{id}: {}", told.line)),
-                    false => Reply::err(format!("not run #{id}: {}", told.line)),
+                match (told.ran, told.failed) {
+                    (true, _) => Reply::ok(format!("ran #{id}: {}", told.line)),
+                    // Allowed, then failed: the goals agent reads it as a failed
+                    // step (billed, with its entry), not as the person's no.
+                    (false, true) => Reply::err(format!("failed #{id}: {}", told.line)),
+                    (false, false) => Reply::err(format!("not run #{id}: {}", told.line)),
                 }
             }
             // Still on the card, or waiting for its place there.
@@ -285,7 +295,13 @@ impl Shell {
     }
 
     /// The card's answer to agent `agent`'s step `id`, kept for its wait.
-    pub(crate) fn agent_told(&mut self, agent: String, id: u64, ran: bool, line: String) {
+    pub(crate) fn agent_told(
+        &mut self,
+        agent: String,
+        id: u64,
+        (ran, failed): (bool, bool),
+        line: String,
+    ) {
         self.close_agent_ask(id);
         if self.agents_told.len() >= MAX_TOLD {
             self.agents_told.remove(0);
@@ -294,6 +310,7 @@ impl Shell {
             agent,
             id,
             ran,
+            failed,
             line,
         });
     }

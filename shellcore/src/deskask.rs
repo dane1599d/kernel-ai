@@ -296,7 +296,7 @@ impl Shell {
             match asker {
                 Asker::App(app) => self.card_came_to(&app, pending.id, &Reply::ok(LAPSED)),
                 Asker::Agent(agent) => {
-                    self.agent_told(agent, pending.id, false, String::from(LAPSED));
+                    self.agent_told(agent, pending.id, (false, false), String::from(LAPSED));
                 }
                 Asker::Panel => {}
             }
@@ -397,7 +397,13 @@ impl Shell {
                 };
                 self.card_came_to(&app, id, &told);
             }
-            Asker::Agent(agent) => self.agent_told(agent, id, ran, line),
+            Asker::Agent(agent) => {
+                // Only a run the person allowed and that then failed is the
+                // agent's failed step; every other "not run" (the agent's
+                // grants changed, a question answered elsewhere) stays one.
+                let failed = failed && line == crate::panel::FAILED;
+                self.agent_told(agent, id, (ran, failed), line);
+            }
         }
     }
 

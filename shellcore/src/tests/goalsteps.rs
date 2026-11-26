@@ -101,6 +101,42 @@ fn a_goal_step_acts_only_inside_the_folders_the_person_approved() {
     }
 }
 
+/// H6-27: net_fetch's `path` is a URL's, not a home-folder path, so a goal that
+/// may fetch a page is not refused for the page's path.
+#[test]
+fn a_net_fetch_path_is_a_url_path_not_a_home_folder_one() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    host.calls.borrow_mut().push_back(call(
+        r#"{"name":"goal_set","arguments":{"text":"save the web page from example.com in notes/q3","steps":10,"tokens":5000,"wall":"2h"}}"#,
+    ));
+    shell.eval("save the web page from example.com in notes/q3 and keep at it");
+    let once = host.mint(1, "goal_set(1)");
+    assert!(shell.eval(&format!("answer 1 allow once={once}")).ok);
+    step(&mut shell, GOALS, "next");
+    step(&mut shell, GOALS, "report 1 ok");
+    assert!(
+        shell
+            .roster
+            .goal_rows(1)
+            .unwrap()
+            .iter()
+            .any(|r| r == "net_fetch"),
+        "{:?}",
+        shell.roster.goal_rows(1)
+    );
+    for path in ["/forecast", "/index.html", "forecast?day=1", ""] {
+        let fetch = format!(
+            r#"goal=1 {{"name":"net_fetch","arguments":{{"host":"example.com","path":"{path}"}}}}"#
+        );
+        let wire = step(&mut shell, GOALS, &fetch);
+        assert!(!wire.contains("outside the folders"), "{path:?}: {wire}");
+    }
+    // A file row's path is still held to the folders.
+    let wire = step(&mut shell, GOALS, &list("/forecast"));
+    assert!(wire.contains("outside the folders"), "{wire}");
+}
+
 #[test]
 fn a_readmitted_row_stays_under_its_goal() {
     let (_, mut shell) = with_goal();

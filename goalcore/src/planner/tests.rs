@@ -226,3 +226,53 @@ fn what_planning_used_pauses_the_goal_at_its_tokens() {
     );
     assert_eq!(goals.get(id).unwrap().tokens_spent, 6_000);
 }
+
+/// H6-28: the planner's line lists only a step that ran as done; a failed, a
+/// refused and a held one are told with why, and no "next" is made up.
+#[test]
+fn the_plan_line_calls_only_a_step_that_ran_done() {
+    use crate::{Proposal, StepLog};
+    let mut goals = Goals::new();
+    let id = approved(&mut goals, 100_000);
+    let goal = goals.get_mut(id).unwrap();
+    let nothing = plan_line(goal);
+    assert_eq!(nothing, "goal: tidy the reports folder\ndone: nothing yet");
+    let log = |n: u32, row: &str, status: StepStatus, note: &str| StepLog {
+        n,
+        at_ms: T0,
+        proposal: Proposal {
+            row: row.to_string(),
+            targets: Vec::new(),
+            tier: Tier::Run,
+            tokens_est: 0,
+        },
+        status,
+        entry: None,
+        tokens: 0,
+        note: note.to_string(),
+    };
+    goal.log.push(log(1, "fs_read", StepStatus::Ran, ""));
+    goal.log.push(log(
+        2,
+        "fs_write",
+        StepStatus::Failed,
+        "no such folder notes",
+    ));
+    goal.log.push(log(3, "fs_trash", StepStatus::Denied, ""));
+    goal.log.push(log(
+        4,
+        "fs_move",
+        StepStatus::Held,
+        "the person said no\nbefore",
+    ));
+    let line = plan_line(goal);
+    assert_eq!(
+        line,
+        "goal: tidy the reports folder\ndone: fs_read\n\
+         not done: fs_move held back: the person said no?before; \
+         fs_trash refused by the person; fs_write failed: no such folder notes"
+    );
+    // What the goal said it plans next is passed on, and only then.
+    goal.plan(3, "move the files");
+    assert!(plan_line(goal).ends_with("\nnext: move the files"));
+}

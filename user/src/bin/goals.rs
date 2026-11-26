@@ -290,23 +290,8 @@ impl Llm for RouteLlm {
 /// The `agent-start act` request that plans `goal`'s next step, without its
 /// command word, which llm puts back from the kind.
 fn plan_request(goal: &Goal) -> Result<String, String> {
-    let done: Vec<&str> = goal
-        .log
-        .iter()
-        .rev()
-        .take(4)
-        .map(|step| step.proposal.row.as_str())
-        .collect();
-    let done = match done.is_empty() {
-        true => String::from("nothing yet"),
-        false => done.join(", "),
-    };
-    let next = match goal.next.is_empty() {
-        true => "the first step",
-        false => goal.next.as_str(),
-    };
     let request = ActRequest {
-        line: format!("goal: {}\ndone: {done}\nnext: {next}", goal.text),
+        line: planner::plan_line(goal),
         state: String::new(),
         timeout_ms: STEP_MS,
         read: None,
