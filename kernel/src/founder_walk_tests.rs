@@ -63,7 +63,7 @@ const READ_ROWS: &str =
 const COUNT_NOTES: &str = "kai-call 1\nfunc app:notes/actions@1.0.0#count\nargs {}\n";
 
 /// The lines the walk types, which the mock model answers
-/// (`xtask/src/mock_llm.rs`), and what their answers show.
+/// (`xtask/src/mock_llm/`), and what their answers show.
 const CPUS_LINE: &str = "show me the cpus please";
 const ABILITIES_LINE: &str = "what can you do with the cpus";
 const CLARIFY_LINE: &str = "do more with the cpus";

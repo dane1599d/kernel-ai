@@ -107,6 +107,10 @@ pub fn calls() -> Vec<u8> {
         (5, Request::AckConfigure { serial: 1 }),
         (4, Request::BufferDestroy),
         (5, Request::ToplevelDestroy),
+        // The window's other objects end too, its role first (H3-27).
+        (6, Request::A11yDestroy),
+        (3, Request::SurfaceDestroy),
+        (2, Request::PoolDestroy),
     ];
     requests
         .iter()

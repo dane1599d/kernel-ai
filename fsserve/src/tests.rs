@@ -710,7 +710,7 @@ fn a_restore_puts_nothing_in_the_volume_root() {
         panic!("{reply:?}");
     };
     assert!(
-        !rows.is_empty() && rows.iter().all(|(_, o)| *o == Outcome::Left),
+        !rows.is_empty() && rows.iter().all(|(_, o)| matches!(o, Outcome::Left { .. })),
         "{rows:?}"
     );
     let at_root = c.server.fs().lookup(ROOT, "planted").unwrap();

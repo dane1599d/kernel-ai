@@ -1478,7 +1478,7 @@ fn outcome(outcome: kaifs::undo::Outcome) -> Outcome {
         O::Moved { name } => Outcome::Moved { name },
         O::Beside { ino, name } => Outcome::Beside { object: ino, name },
         O::Removed => Outcome::Removed,
-        O::Left => Outcome::Left,
+        O::Left { folder } => Outcome::Left { folder },
     }
 }
 

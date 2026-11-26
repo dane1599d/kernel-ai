@@ -25,17 +25,25 @@ impl Ui {
         told.into_iter().filter(|t| *t != Told::Scale).collect()
     }
 
-    /// Asks `desktop` for its greeting before the first window opens, so the
-    /// window is drawn at the scale it prefers from its first picture: the
-    /// events (the theme, the scale) come in the reply to any call.
+    /// Asks `desktop` for its events before a window opens on a connection
+    /// with nothing open there (`Desk::ask_before_open`). The greeting comes
+    /// in the reply to any call, so the first window is drawn at the scale
+    /// it prefers from its first picture; and a `desktop` that forgot the
+    /// connection while nothing was shown greets it now, before the open,
+    /// whose reply carried it and made comphost open every window a second
+    /// time (H3-26).
     pub(super) fn greet_once(&mut self) {
-        if self.desk.greeted() {
+        if !self.desk.ask_before_open() {
             return;
         }
         let Ok(len) = sys::call_route(self.route, &[], &mut self.reply, CALL_MS) else {
             return;
         };
-        let told = self.desk.told(&self.reply[..len.min(self.reply.len())]);
+        let reply = &self.reply[..len.min(self.reply.len())];
+        let (told, anew) = self.desk.told_before_open(reply);
+        if anew {
+            println!("comphost: desktop had forgotten it; its windows open anew");
+        }
         self.later.extend(told);
     }
 }

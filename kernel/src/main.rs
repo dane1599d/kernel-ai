@@ -21,6 +21,7 @@ mod act_tests;
 mod agent_desk_tests;
 mod allow;
 mod apic;
+mod app_build_tests;
 mod app_editor_build_tests;
 mod app_editor_files_tests;
 mod app_editor_tests;
@@ -400,6 +401,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Shell => run_case(shell_tests::check),
         SelfTest::CPrompt => run_case(cc_tests::check),
         SelfTest::CBuild => run_case(cc_build_tests::check),
+        SelfTest::AppBuild { deny } => run_case(|| app_build_tests::check(deny)),
         SelfTest::Scripts => run_case(script_tests::check),
         SelfTest::Act(which) => run_case(|| act_tests::check(which)),
         SelfTest::Live => run_case(live_tests::check),

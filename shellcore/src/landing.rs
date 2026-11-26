@@ -19,6 +19,9 @@ pub(crate) struct Landing {
     lost: Vec<String>,
     /// The last line's result for the panel and the desk.
     line: Option<String>,
+    /// The note's own lines in the last reply, which the panel's history
+    /// leaves out of what the line said.
+    said_note: Vec<String>,
 }
 
 impl Shell {
@@ -41,6 +44,7 @@ impl Shell {
         self.notices.extend(earlier);
         self.landing.lost.clear();
         self.landing.line = None;
+        self.landing.said_note.clear();
     }
 
     /// The line's reply, saying what of its file changes did not land.
@@ -53,28 +57,50 @@ impl Shell {
         let note = notes.join("\n");
         let done = self.done_line.take();
         let rest = done.as_deref().and_then(|line| without_lost(line, &lost));
-        let mut lines: Vec<String> = Vec::new();
-        for line in reply.text.lines() {
-            match done.as_deref() == Some(line) {
-                true => lines.extend(rest.clone()),
-                false => lines.push(String::from(line)),
+        // The done line may hold a line break (a file name's), so it is
+        // swapped in the whole text, not line by line.
+        let mut text = reply.text.clone();
+        if let Some(done) = done.as_deref()
+            && let Some(at) = text.find(done)
+        {
+            let mut end = at + done.len();
+            if rest.is_none() && text[end..].starts_with('\n') {
+                end += 1;
             }
+            text.replace_range(at..end, rest.as_deref().unwrap_or(""));
         }
+        let mut lines: Vec<&str> = text.lines().collect();
         // A question still waiting stays last.
         match reply.confirm {
-            Some(_) => lines.insert(0, note.clone()),
-            None => lines.push(note.clone()),
+            Some(_) => lines.insert(0, &note),
+            None => lines.push(&note),
         }
+        // The row reads "Done: … (was x); #1: …": no full stop before the ";".
         self.landing.line = Some(match &rest {
-            Some(rest) => format!("{}; {note}", crate::panel::without_undo(rest)),
-            None => note,
+            Some(rest) => format!(
+                "{}; {note}",
+                crate::panel::without_undo(rest).trim_end_matches('.')
+            ),
+            None => note.clone(),
         });
+        self.landing.said_note = note.lines().map(String::from).collect();
         self.done_line = rest;
         Reply {
             ok: false,
             text: lines.join("\n"),
             ..reply
         }
+    }
+
+    /// Whether `line` is one of the note's own: the panel's history leaves it
+    /// out of what the line said, but keeps the line's output.
+    pub(crate) fn is_not_landed_note(&self, line: &str) -> bool {
+        self.landing.said_note.iter().any(|n| n == line)
+    }
+
+    /// Whether the last line's file changes did not land.
+    pub(crate) fn line_did_not_land(&self) -> bool {
+        self.landing.line.is_some()
     }
 
     /// A change saved outside a line (the editor's): `Err` with what the log
@@ -96,7 +122,8 @@ impl Shell {
 }
 
 /// A "Done: a; b. undo" line less the changes in `lost`; `None` when none
-/// is left.
+/// is left. Each change goes as a whole item, so a name holding "; " goes
+/// with it.
 pub(crate) fn without_lost(line: &str, lost: &[String]) -> Option<String> {
     let Some((lead, said)) = line.split_once(": ") else {
         return Some(String::from(line));
@@ -105,16 +132,38 @@ pub(crate) fn without_lost(line: &str, lost: &[String]) -> Option<String> {
         Some(said) => (said, ". undo"),
         None => (said, ""),
     };
-    let mut left: Vec<&str> = said.split("; ").collect();
+    let mut left = String::from(said);
     for what in lost {
-        if let Some(at) = left.iter().position(|w| w == what) {
-            left.remove(at);
-        }
+        left = without_item(&left, what);
     }
     match left.is_empty() {
         true => None,
-        false => Some(format!("{lead}: {}{tail}", left.join("; "))),
+        false => Some(format!("{lead}: {left}{tail}")),
     }
+}
+
+/// `list` ("a; b; c") less the item `what`, where it stands whole between
+/// the start, "; " and the end.
+fn without_item(list: &str, what: &str) -> String {
+    let mut from = 0;
+    while let Some(found) = list[from..].find(what) {
+        let (start, end) = (from + found, from + found + what.len());
+        let before = start == 0 || list[..start].ends_with("; ");
+        let after = end == list.len() || list[end..].starts_with("; ");
+        if before && after {
+            let (cut_from, cut_to) = match (start == 0, end == list.len()) {
+                (_, true) if start == 0 => (0, end),
+                (_, true) => (start - 2, end),
+                _ => (start, end + 2),
+            };
+            return format!("{}{}", &list[..cut_from], &list[cut_to..]);
+        }
+        from = start + 1;
+        while !list.is_char_boundary(from) {
+            from += 1;
+        }
+    }
+    String::from(list)
 }
 
 #[cfg(test)]
@@ -133,6 +182,16 @@ mod tests {
             Some(String::from("Done: policy net on (was off). undo"))
         );
         assert_eq!(without_lost("Done: file a.txt written. undo", &lost), None);
+        // A name with "; " in it goes whole.
+        let odd = vec![String::from("file x; y.txt written")];
+        assert_eq!(
+            without_lost("Done: policy net on; file x; y.txt written. undo", &odd),
+            Some(String::from("Done: policy net on. undo"))
+        );
+        assert_eq!(
+            without_lost("Done: file x; y.txt written; policy net on. undo", &odd),
+            Some(String::from("Done: policy net on. undo"))
+        );
         assert_eq!(
             without_lost("Taken as: file b.txt written", &lost).as_deref(),
             Some("Taken as: file b.txt written")

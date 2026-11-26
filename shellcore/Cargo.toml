@@ -12,6 +12,7 @@ agentabi = { path = "../agentabi" }
 appabi = { path = "../appabi" }
 bootslot = { path = "../bootslot" }
 comp-models = { path = "../apps/models" }
+fsproto = { path = "../fsproto" }
 kabi = { path = "../kabi" }
 kaigrants = { path = "../kaigrants" }
 kaiprofile = { path = "../kaiprofile" }

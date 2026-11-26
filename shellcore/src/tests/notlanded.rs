@@ -101,8 +101,8 @@ fn a_line_that_did_not_land_keeps_its_output() {
 
 /// The shell's own rollback is no loss (M1 on 0e4340d6): the failed run's
 /// entry is written to the log on disk, and nothing says `fs` dropped it.
-/// The FakeHost aborts without the shell's `Ledger`; the check of the
-/// ledger itself is `ledger::tests::a_rolled_back_action_is_no_loss_and_its_log_is_written`.
+/// The FakeHost keeps the shell's own `Ledger`, as `Files` does, so this
+/// fails if an abort counts as a loss again.
 #[test]
 fn a_rolled_back_line_is_logged_and_not_called_lost() {
     let throws = r#"{"name":"script","arguments":{"code":"fs_create(\"a.txt\", \"1\");\nfs_create(\"a.txt\", \"2\");"}}"#;
@@ -114,4 +114,31 @@ fn a_rolled_back_line_is_logged_and_not_called_lost() {
     assert!(!reply.text.contains("did not land"), "{}", reply.text);
     let disk = host.log_disk.borrow().clone().unwrap_or_default();
     assert!(disk.contains("nothing changed"), "{disk}");
+}
+
+fn script(code: &str) -> Result<llmproto::act::Call, llmproto::act::ActError> {
+    let json = format!(r#"{{"name":"script","arguments":{{"code":"{code}"}}}}"#);
+    Ok(llmproto::act::parse(&json).unwrap())
+}
+
+/// M7: the panel's history keeps what a script printed, and leaves out the
+/// note; the row says the policy change and that the file did not land.
+#[test]
+fn a_panel_line_that_did_not_land_keeps_what_it_printed() {
+    let code = "print(\\\"hello there\\\");\\nset_policy(\\\"round-robin\\\");\\nfs_write(\\\"a.txt\\\", \\\"one\\\");";
+    let (host, mut shell) = super::act::with_calls(alloc::vec![script(code)]);
+    host.one_action.set(true);
+    host.commit_refused.set(true);
+    let row = shell.eval_panel("set the policy to round robin, print hello there and write a.txt");
+    let said = shell.take_panel_said();
+    assert_eq!(said.as_deref(), Some("hello there"), "{row:?}");
+    match row {
+        PanelResult::Refused(why) => {
+            assert!(why.contains("did not land"), "{why}");
+            assert!(why.contains("policy"), "the policy change stays: {why}");
+            assert!(!why.contains(".;"), "{why}");
+            assert!(!why.contains("file a.txt"), "{why}");
+        }
+        other => panic!("{other:?}"),
+    }
 }
