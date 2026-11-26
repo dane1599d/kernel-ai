@@ -60,6 +60,19 @@ impl Points {
         middle(crate::taskbar::item(l.width, l.height, 0, n))
     }
 
+    /// The middle of taskbar item `i` of the `n` on it (item 0 is the Kai
+    /// button, then the pins).
+    pub const fn taskbar_item(&self, i: i32, n: i32) -> (i32, i32) {
+        let l = &self.layout;
+        middle(crate::taskbar::item(l.width, l.height, i, n))
+    }
+
+    /// The middle of the Kai chip in the tray: a click opens the pane, or
+    /// closes it when it is open.
+    pub const fn kai_chip(&self) -> (i32, i32) {
+        middle(self.layout.tray.chip)
+    }
+
     /// The relative move that pins the pointer to the screen's bottom-right
     /// corner, wherever it was: for a selftest that does not know where the
     /// pointer is. [`Points::pinned`] is where it lands.

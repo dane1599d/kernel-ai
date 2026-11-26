@@ -301,6 +301,10 @@ pub enum SelfTest {
     DeskStart,
     /// `desk-start-esc`: the same with Ctrl+Esc.
     DeskStartEsc,
+    /// `desk-taskbar`: the taskbar by clicks: a pin opens its app, an item
+    /// minimizes and restores, the Kai button opens Start, the chip the pane,
+    /// and a maximized window stops beside the pane.
+    DeskTaskbar,
     /// `scriptrun` through a Job, and spike S01-1's M3 and M5 (P1 task 14).
     Scriptrun,
     /// L2: processes keep their vector state across switches and CPUs, and start clean.

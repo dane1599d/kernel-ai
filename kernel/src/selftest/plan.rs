@@ -94,6 +94,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskReopen
             | SelfTest::DeskStart
             | SelfTest::DeskStartEsc
+            | SelfTest::DeskTaskbar
             | SelfTest::TuneRevert
             | SelfTest::TuneStall
             | SelfTest::Tune
@@ -263,6 +264,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskReopen
             | SelfTest::DeskStart
             | SelfTest::DeskStartEsc
+            | SelfTest::DeskTaskbar
             | SelfTest::DeskStandingRefused
             | SelfTest::DeskSends => {
                 plan.push('\n');
@@ -454,6 +456,7 @@ spin-b program=spinner burst_ms=3600000 unsupervised",
             | SelfTest::DeskReopen
             | SelfTest::DeskStart
             | SelfTest::DeskStartEsc
+            | SelfTest::DeskTaskbar
     ) {
         plan.push('\n');
         plan.push_str(crate::agent_desk_tests::APPS);
