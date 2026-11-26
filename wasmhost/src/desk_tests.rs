@@ -373,6 +373,37 @@ fn a_client_told_the_scale_draws_at_it_and_the_desk_sizes_the_window_in_logical_
     assert_eq!(d.scale(), 120);
 }
 
+/// H3-27: a window opened and closed many times (an app hidden and shown, or
+/// resized) costs `desktop`'s connection nothing: its pool, surface and a11y
+/// end with it, so the 340th open is not refused for a full table.
+#[test]
+fn opening_and_closing_a_window_for_ever_never_fills_the_connection() {
+    let mut screen = Screen::new(1280, 800);
+    let mut client = Client::new(7, "notes-window");
+    let mut d = Desk::new();
+    d.told(&client.take_events(8192));
+    for round in 0..1100 {
+        let Err(open) = d.frame(1, &frame("Notes", 320, 200, "Go")) else {
+            panic!("round {round}: a closed window opens anew");
+        };
+        let needs = serve(&mut client, &mut screen, &open.calls, true);
+        let Some(Need::MapPool { pool, .. }) = needs.first().copied() else {
+            panic!("round {round}: {needs:?}");
+        };
+        client.pool_mapped(pool);
+        let needs = serve(&mut client, &mut screen, &[d.closed(1)], false);
+        assert!(
+            matches!(needs[..], [Need::Closed { .. }]),
+            "round {round}: {needs:?}"
+        );
+        // `desktop` lets an unused pool go (`pools::after_closed`).
+        client.pool_gone(pool);
+        client.take_events(8192);
+    }
+    assert_eq!(client.windows().count(), 0);
+    assert!(screen.windows().is_empty());
+}
+
 /// A window bigger than any buffer `desktop` takes: its buffers are cut to the
 /// most a window may be, never past a u32 (bug hunt 2, H2-11). Before, these
 /// sizes overflowed `w * h * 4` and `BUFFERS * ...` and aborted comphost.
