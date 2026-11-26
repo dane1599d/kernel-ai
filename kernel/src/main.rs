@@ -372,6 +372,13 @@ extern "C" fn boot_continue() -> ! {
             x86_64::registers::model_specific::Msr::new(msr).read()
         });
         log!("vmx-caps: {caps}");
+        // SAFETY: as above; VmxCtls::read reads the TRUE MSRs only when
+        // VMX_BASIC bit 55 says they exist, and PROCBASED_CTLS2 only when
+        // secondary controls are allowed.
+        let ctls = cpufeat::VmxCtls::read(caps.basic, |msr| unsafe {
+            x86_64::registers::model_specific::Msr::new(msr).read()
+        });
+        log!("vmx-ctls: {ctls}");
     }
     // Before the other CPUs start: SetVirtualAddressMap runs on a borrowed PML4.
     if let Err(message) = efi::init() {

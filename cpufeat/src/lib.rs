@@ -518,6 +518,67 @@ impl core::fmt::Display for VmxCaps {
     }
 }
 
+/// The VMX control capability MSRs (Intel SDM vol. 3D, A.3-A.5), raw: each holds
+/// the allowed-0 settings in its low half and the allowed-1 settings in its high
+/// half. The TRUE ones are read only when IA32_VMX_BASIC bit 55 says they exist,
+/// and PROCBASED_CTLS2 only when PROCBASED_CTLS allows secondary controls. For
+/// round 21's `vmx::Controls::adjust()` test (G16's second read).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct VmxCtls {
+    pub pinbased: u64,
+    pub procbased: u64,
+    pub exit: u64,
+    pub entry: u64,
+    pub procbased2: Option<u64>,
+    /// TRUE_PINBASED, TRUE_PROCBASED, TRUE_EXIT and TRUE_ENTRY (0x48D-0x490).
+    pub true_ctls: Option<[u64; 4]>,
+}
+
+pub const IA32_VMX_PINBASED_CTLS: u32 = 0x481;
+pub const IA32_VMX_EXIT_CTLS: u32 = 0x483;
+pub const IA32_VMX_ENTRY_CTLS: u32 = 0x484;
+pub const IA32_VMX_TRUE_PINBASED_CTLS: u32 = 0x48D;
+
+impl VmxCtls {
+    /// Reads the control MSRs through `rdmsr` (ring 0 only), given VMX_BASIC.
+    pub fn read(basic: u64, mut rdmsr: impl FnMut(u32) -> u64) -> Self {
+        let procbased = rdmsr(IA32_VMX_PROCBASED_CTLS);
+        Self {
+            pinbased: rdmsr(IA32_VMX_PINBASED_CTLS),
+            procbased,
+            exit: rdmsr(IA32_VMX_EXIT_CTLS),
+            entry: rdmsr(IA32_VMX_ENTRY_CTLS),
+            procbased2: (procbased & (1 << 63) != 0).then(|| rdmsr(IA32_VMX_PROCBASED_CTLS2)),
+            true_ctls: (basic & (1 << 55) != 0)
+                .then(|| core::array::from_fn(|i| rdmsr(IA32_VMX_TRUE_PINBASED_CTLS + i as u32))),
+        }
+    }
+}
+
+/// `pin=0x.. proc=0x.. exit=0x.. entry=0x.. proc2=0x.. true_pin=0x.. true_proc=0x..
+/// true_exit=0x.. true_entry=0x..`; an MSR that does not exist prints `none`.
+impl core::fmt::Display for VmxCtls {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "pin={:#x} proc={:#x} exit={:#x} entry={:#x}",
+            self.pinbased, self.procbased, self.exit, self.entry
+        )?;
+        match self.procbased2 {
+            Some(v) => write!(f, " proc2={v:#x}")?,
+            None => f.write_str(" proc2=none")?,
+        }
+        let names = ["true_pin", "true_proc", "true_exit", "true_entry"];
+        for (i, name) in names.iter().enumerate() {
+            match self.true_ctls {
+                Some(v) => write!(f, " {name}={:#x}", v[i])?,
+                None => write!(f, " {name}=none")?,
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Whether CPUID says the TSC runs at a constant rate in every power state
 /// (0x80000007 EDX bit 8, "invariant TSC").
 #[cfg(target_arch = "x86_64")]
@@ -667,6 +728,28 @@ mod tests {
         msrs.insert(IA32_VMX_PROCBASED_CTLS2, 1 << 39);
         let caps = VmxCaps::read(|m| msrs[&m]);
         assert!(caps.unrestricted_guest() && !caps.ept() && caps.ept_vpid_cap.is_none());
+    }
+
+    #[test]
+    fn vmx_ctls_read_true_msrs_only_with_basic_bit_55() {
+        let mut read = Vec::new();
+        let ctls = VmxCtls::read(1 << 55, |m| {
+            read.push(m);
+            u64::from(m)
+        });
+        assert_eq!(
+            read,
+            [0x482, 0x481, 0x483, 0x484, 0x48D, 0x48E, 0x48F, 0x490]
+        );
+        assert_eq!(
+            std::format!("{ctls}"),
+            "pin=0x481 proc=0x482 exit=0x483 entry=0x484 proc2=none \
+             true_pin=0x48d true_proc=0x48e true_exit=0x48f true_entry=0x490"
+        );
+        let ctls = VmxCtls::read(0, |m| if m == 0x482 { 1 << 63 } else { u64::from(m) });
+        assert_eq!(ctls.procbased2, Some(0x48B));
+        assert!(ctls.true_ctls.is_none());
+        assert!(std::format!("{ctls}").ends_with("true_entry=none"));
     }
 
     #[test]

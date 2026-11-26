@@ -112,6 +112,8 @@ jobs:
             echo "${accel}_guest=${line:-none}" | tee -a census/host.txt
             caps=$(grep -o 'vmx-caps: .*' "$log" | head -1 | tr -d '\r')
             echo "${accel}_vmx=${caps:-none}" | tee -a census/host.txt
+            ctls=$(grep -o 'vmx-ctls: .*' "$log" | head -1 | tr -d '\r')
+            echo "${accel}_ctls=${ctls:-none}" | tee -a census/host.txt
           done
       - uses: actions/upload-artifact@v4
         if: always()
@@ -178,6 +180,7 @@ jobs:
               echo "$(get runner $f) $(get run $f) kvm: $(get kvm_guest $f)"
               echo "$(get runner $f) $(get run $f) tcg: $(get tcg_guest $f)"
               echo "$(get runner $f) $(get run $f) kvm vmx: $(get kvm_vmx $f)"
+              echo "$(get runner $f) $(get run $f) $(get model $f) kvm ctls: $(get kvm_ctls $f)"
             done
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
