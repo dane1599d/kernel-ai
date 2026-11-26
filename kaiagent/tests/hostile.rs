@@ -142,3 +142,37 @@ fn every_shared_suffix_is_refused_by_name_wherever_and_however_it_is_written() {
         assert!(Manifest::parse(&manifest(&under)).is_ok(), "{under}");
     }
 }
+
+/// An entry `<os row>_*` is an OS group however long its first word's tail: it is held
+/// to the registry, as the row it spells is, never read as a package's group that no
+/// registry checks (G25's finding: `fs_nosuch_*` was read, and `process_stop_*` let an
+/// agent call `process_stop` against a registry that has no such row).
+#[test]
+fn an_os_rows_name_written_as_a_group_is_held_to_the_registry() {
+    let manifest = |actions: &str| {
+        format!(
+            "kai-app 1\nid tidy\nabi 1.0\nagent 1\nclass interactive\nmodel -\n\
+             actions {actions}\nmemory none\nnet none\n"
+        )
+    };
+    assert_eq!(
+        Manifest::parse(&manifest("fs_nosuch_*")),
+        Err(Refusal::GroupWithoutRows("fs_nosuch".into()))
+    );
+    let stop = manifest("process_stop_*");
+    assert!(Manifest::parse(&stop).unwrap().allows("process_stop"));
+    assert_eq!(
+        Manifest::parse_with(&stop, &[]),
+        Err(Refusal::GroupWithoutRows("process_stop".into()))
+    );
+    let mut never = agentabi::ROWS;
+    for row in &mut never {
+        row.min_tier = agentabi::Tier::Never;
+    }
+    assert_eq!(
+        Manifest::parse_with(&stop, &never),
+        Err(Refusal::GroupHoldsNever("process_stop".into()))
+    );
+    // A package's own group is still a package's.
+    assert!(Manifest::parse_with(&manifest("my_tool_*"), &[]).is_ok());
+}
