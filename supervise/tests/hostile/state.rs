@@ -19,23 +19,76 @@ use supervise::{Record, decode, encode, keep};
 pub const ANSWER_PID: u64 = 31;
 
 /// The saved state a supervisor reads at start (`supervise::decode`). A
-/// damaged region gives fewer records, never a panic: each record comes from
-/// one line after the magic, has a name with no space in it, and the state
-/// they re-encode to decodes to exactly them, so no field holds more than the
-/// encoding writes.
+/// damaged region gives fewer records, never a panic, and never a record its
+/// text does not say: each record is tied back, field by field, to its own
+/// line, read here by the state's layout for each version ([`expected`]), so
+/// a decode that set `keep` or `stopped` from a v3 or v4 line, took a flag
+/// from any word but `1`, or kept a line with a bad number, fails.
 pub fn supervisor_state(data: &[u8]) {
     let records = decode(data);
-    if records.is_empty() {
+    let Ok(text) = core::str::from_utf8(data) else {
+        assert!(records.is_empty(), "records from bytes that are not UTF-8");
         return;
-    }
-    let text = core::str::from_utf8(data).expect("records only from UTF-8");
-    assert!(records.len() < text.lines().count(), "{text:?}");
+    };
+    assert_eq!(records, expected(text), "{text:?}");
     for record in &records {
         assert!(!record.name.is_empty(), "{text:?}");
         assert!(!record.name.contains(char::is_whitespace), "{text:?}");
     }
     let again = encode(&records);
     assert_eq!(decode(again.as_bytes()), records, "{text:?}");
+}
+
+/// The records `text` says, line by line, from the layout of each version:
+///
+/// - `supervisor-state 5`: name, restarts, quick failures, gave up, stopped,
+///   keep, pid, started, then the recent restarts;
+/// - `supervisor-state 4`: the same without keep;
+/// - `supervisor-state 3`: the same without stopped or keep.
+///
+/// A flag is set only by the word `1`. A line with a word missing or a number
+/// that does not read is left out; a state with another first line has none.
+pub fn expected(text: &str) -> Vec<Record> {
+    let mut lines = text.lines();
+    let (stopped_at, keep_at) = match lines.next() {
+        Some("supervisor-state 5") => (Some(4), Some(5)),
+        Some("supervisor-state 4") => (Some(4), None),
+        Some("supervisor-state 3") => (None, None),
+        _ => return Vec::new(),
+    };
+    let fixed = 6 + usize::from(stopped_at.is_some()) + usize::from(keep_at.is_some());
+    let mut out = Vec::new();
+    'lines: for line in lines {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        if words.len() < fixed {
+            continue;
+        }
+        let mut numbers = Vec::new();
+        for (i, word) in words.iter().enumerate() {
+            let flag = i == 3 || Some(i) == stopped_at || Some(i) == keep_at;
+            if i == 0 || flag {
+                continue;
+            }
+            match word.parse::<u64>() {
+                Ok(n) => numbers.push((i, n)),
+                Err(_) => continue 'lines,
+            }
+        }
+        let number = |i: usize| numbers.iter().find(|(at, _)| *at == i).unwrap().1;
+        let flag = |at: Option<usize>| at.is_some_and(|i| words[i] == "1");
+        out.push(Record {
+            name: words[0].to_string(),
+            restarts: number(1),
+            quick_failures: number(2),
+            gave_up: words[3] == "1",
+            stopped: flag(stopped_at),
+            keep: flag(keep_at),
+            pid: number(fixed - 2),
+            started_ms: number(fixed - 1),
+            recent: (fixed..words.len()).map(number).collect(),
+        });
+    }
+    out
 }
 
 /// `keep <name> on|off`: taken only as its three words, with a valid name, and
