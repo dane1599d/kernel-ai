@@ -303,8 +303,8 @@ impl Files {
     /// Commits the line's action, if one is open, for its log write:
     /// [`LogFailed::NotLanded`] for an action the line lost on any request
     /// since its last log write (a Commit refused, a held write `fs` dropped
-    /// on the log's own write before the Commit, an abort), not only the one
-    /// just refused.
+    /// on the log's own write before the Commit), not only the one just
+    /// refused. The shell's own abort (a failed run's rollback) is no loss.
     pub fn land(&self) -> Result<(), LogFailed> {
         let committed = self.commit();
         self.with_ledger(|l| l.landed(committed))

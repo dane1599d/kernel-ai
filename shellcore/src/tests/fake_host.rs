@@ -3,6 +3,15 @@
 use super::*;
 use alloc::collections::BTreeSet;
 
+impl FakeHost {
+    fn with_ledger<T>(&self, f: impl FnOnce(&mut crate::ledger::Ledger) -> T) -> T {
+        let mut ledger = self.ledger.get();
+        let out = f(&mut ledger);
+        self.ledger.set(ledger);
+        out
+    }
+}
+
 impl Host for FakeHost {
     fn now_ns(&self) -> u64 {
         self.clock.set(self.clock.get() + self.step_ns.get());
@@ -230,11 +239,25 @@ impl Host for FakeHost {
             self.commit_refused.set(false);
             let (before, _) = self.txns.borrow_mut().remove(open);
             *self.files.borrow_mut() = before;
-            return Err(LogFailed::NotLanded {
-                txn: open as u64 + 1,
-                why: String::from("Dropped(NoSpace)"),
+            let txn = open as u64 + 1;
+            self.with_ledger(|l| {
+                l.take_for_commit();
+                l.commit_refused(txn);
+            });
+            return self.with_ledger(|l| {
+                l.landed(Err(LogFailed::NotLanded {
+                    txn,
+                    why: String::from("Dropped(NoSpace)"),
+                }))
             });
         }
+        // A line that lost its action another way (a drop, never a rollback)
+        // says so, as `Files::land` does.
+        self.with_ledger(|l| l.take_for_commit());
+        if let Some(txn) = self.open_txn.get() {
+            self.with_ledger(|l| l.committed(txn as u64 + 1));
+        }
+        self.with_ledger(|l| l.landed(Ok(())))?;
         *self.log_disk.borrow_mut() = Some(text.into());
         self.log_writes.set(self.log_writes.get() + 1);
         self.open_txn.set(None);
@@ -418,6 +441,7 @@ impl Host for FakeHost {
         txns.push((before, files));
         if self.one_action.get() {
             self.open_txn.set(Some(txns.len() - 1));
+            self.with_ledger(|l| l.begin(txns.len() as u64));
         }
         Ok(txns.len() as u64)
     }
@@ -438,6 +462,7 @@ impl Host for FakeHost {
         // The line's own open transaction is dropped, not restored.
         if self.open_txn.get() == Some(txn as usize - 1) {
             self.open_txn.set(None);
+            self.with_ledger(|l| l.undo(txn));
             *self.files.borrow_mut() = before;
             return Ok(FsUndone {
                 generation: txn,
