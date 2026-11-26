@@ -428,7 +428,7 @@ fn cued_in(words: &[Word], row: &Action, telling_counts: bool) -> Option<bool> {
             {
                 continue;
             }
-            let negated = negated(words, at);
+            let negated = negated_for(words, at, at, Some(row));
             let off = off_counts
                 && words
                     .iter()
@@ -444,17 +444,28 @@ fn cued_in(words: &[Word], row: &Action, telling_counts: bool) -> Option<bool> {
 
 /// Whether a negation before word `at` in its clause turns it off: "don't",
 /// "never", "stop using" and the rest of [`NEGATIONS`], any word ending `n't`
-/// or an auxiliary's `nt` ("didn't", "shouldnt"), "cannot", and "stop" or
-/// "quit" before an -ing word ("stop switching"). A clause made only of
-/// negations and filler words carries its negation into the clause after it:
-/// "never, ever switch" and "don't, under any circumstances, trash it" negate
-/// (bug-hunt-6 H6-1). A bare answer ("no,", "nope.") still ends at its comma.
+/// or an auxiliary's `nt` ("didn't", "shouldnt"), "cannot", "refrain" and
+/// "forbid", and "stop" or "quit" before an action's -ing word ("stop
+/// switching"). A clause made only of negations and filler words carries its
+/// negation into the clause after it, within its sentence: "never, ever
+/// switch" and "don't, under any circumstances, trash it" negate (bug-hunt-6
+/// H6-1). A clause whose only negating words are bare answers ("no,", "ok
+/// no,", "neither.") negates nothing after it.
 fn negated(words: &[Word], at: usize) -> bool {
+    negated_for(words, at, at, None)
+}
+
+/// [`negated`] for a call of `row`, when it is known: "stop" or "quit" that is
+/// one of the row's own cues is its verb, not a negation ("stop running the
+/// miner" stops the miner). Only words before `upto` (at most `at`) negate, so
+/// a name's own words never negate the rest of it ("trash not-mine.txt").
+fn negated_for(words: &[Word], at: usize, upto: usize, row: Option<&Action>) -> bool {
     let clause = words[at].clause;
-    let before = &words[..at];
+    let sentence = words[at].sentence;
+    let before = &words[..upto];
     // All the words, not only those before: "stop" before the cue's own -ing
     // word ("stop trashing it") is read with the word after it.
-    let negates = |i: usize| negation_at(words, i);
+    let negates = |i: usize| negation_at_for(words, i, row);
     if before
         .iter()
         .enumerate()
@@ -462,24 +473,47 @@ fn negated(words: &[Word], at: usize) -> bool {
     {
         return true;
     }
-    // The clauses before this one that hold only negations and filler words,
-    // nearest first: one of them that negates reaches this clause.
+    // The clauses before this one, in its sentence, that hold only negations
+    // and filler words, nearest first: one of them that negates reaches this
+    // clause. "Not again. Switch to round robin." carries nothing.
     let mut carried = clause;
     while carried > 0 {
         carried -= 1;
         let held: Vec<usize> = (0..before.len())
             .filter(|&i| before[i].clause == carried)
             .collect();
-        let only_negation = !held.is_empty()
-            && held
-                .iter()
-                .all(|&i| negates(i) || NEGATION_FILLER.contains(&before[i].text.as_str()));
+        let Some(&first) = held.first() else {
+            return false;
+        };
+        if before[first].sentence != sentence {
+            // A sentence of only negation ("Not.", "Please don't.", "Absolutely
+            // not.") is said of the next one. An answer ("No.", "Ok no.") or a
+            // sigh ("Not again.") carries nothing.
+            let said: Vec<usize> = (0..before.len())
+                .filter(|&i| before[i].sentence == before[first].sentence)
+                .collect();
+            let bare = |i: usize| BARE_ANSWERS.contains(&before[i].text.as_str());
+            let lone = before[first].sentence + 1 == sentence
+                && said.iter().any(|&i| negates(i) && !bare(i))
+                && said.iter().all(|&i| {
+                    let text = before[i].text.as_str();
+                    (negates(i) && !bare(i)) || (text != "again" && NEGATION_FILLER.contains(&text))
+                });
+            return lone;
+        }
+        let only_negation = held
+            .iter()
+            .all(|&i| negates(i) || NEGATION_FILLER.contains(&before[i].text.as_str()));
         if !only_negation {
             return false;
         }
-        let answer = held
-            .iter()
-            .all(|&i| BARE_ANSWERS.contains(&before[i].text.as_str()));
+        // An answer: every word of it is a bare answer or leads one in ("ok
+        // no,", "no really,", "neither."). Anything else that negates carries:
+        // "under no circumstances," is no answer (#1460 review).
+        let answer = held.iter().all(|&i| {
+            let text = before[i].text.as_str();
+            BARE_ANSWERS.contains(&text) || ANSWER_LEAD.contains(&text)
+        });
         if !answer && held.iter().any(|&i| negates(i)) {
             return true;
         }
@@ -487,19 +521,84 @@ fn negated(words: &[Word], at: usize) -> bool {
     false
 }
 
-/// Whether word `i` of `words` negates what follows it in its clause.
-fn negation_at(words: &[Word], i: usize) -> bool {
+/// Whether word `i` of `words` negates what follows it in its clause, for a
+/// call of `row` when it is known ([`stops_an_action`]).
+fn negation_at_for(words: &[Word], i: usize, row: Option<&Action>) -> bool {
     let text = words[i].text.as_str();
-    let gerund = || words.get(i + 1).is_some_and(|n| n.text.ends_with("ing"));
     NEGATIONS.contains(&text)
+        || NEGATION_STARTS.iter().any(|start| text.starts_with(start))
         || text == "cannot"
         || text.ends_with("n't")
         || text
             .strip_suffix("nt")
             .is_some_and(|stem| NT_AUXILIARIES.contains(&stem))
         // "stop using round robin", "quit trashing my files"
-        || (matches!(text, "stop" | "quit") && gerund())
+        || (matches!(text, "stop" | "quit") && stops_an_action(words, i, row))
 }
+
+/// Whether "stop" or "quit" at `i` stops an action, and so negates it: the
+/// next word ends "-ing" and is no noun of [`NOT_GERUNDS`]. It is in the same
+/// clause, or "stop" is a clause of its own ("Stop. Switching to round robin
+/// was a mistake"). "stop everything" and "Stop. Bring up the terminal" stop
+/// none, but "stop anything from switching" and "stop everything that
+/// switches" do. For a `row` that asks anyway (it derives above Run), whose
+/// own cue "stop" is, "stop running" is the row's verb, which changes only its
+/// card's wording: "stop running the miner" asks to stop the miner. Any other
+/// -ing word negates: "stop shutting down build-3" kills nothing, so no
+/// standing rule may run it (#1460 review).
+fn stops_an_action(words: &[Word], i: usize, row: Option<&Action>) -> bool {
+    let clause = words[i].clause;
+    let alone = words.iter().filter(|w| w.clause == clause).all(|w| {
+        matches!(w.text.as_str(), "stop" | "quit") || NEGATION_FILLER.contains(&w.text.as_str())
+    });
+    let Some(next) = words
+        .get(i + 1)
+        .filter(|n| n.clause == clause || (alone && n.clause == clause + 1))
+    else {
+        return false;
+    };
+    if !next.text.ends_with("ing") {
+        return false;
+    }
+    if NOT_GERUNDS.contains(&next.text.as_str()) {
+        // "stop anything from switching", "stop everything that switches".
+        return next.text.ends_with("thing")
+            && words.get(i + 2).is_some_and(|after| {
+                after.clause == next.clause
+                    && (matches!(after.text.as_str(), "from" | "that" | "which" | "who")
+                        || after.text.ends_with("ing"))
+            });
+    }
+    match row {
+        Some(row) if derive(row) != Tier::Run && is_own_cue(row, &words[i].text) => {
+            next.text != "running"
+        }
+        _ => true,
+    }
+}
+
+/// Whether `word` is one of `row`'s one-word cues.
+fn is_own_cue(row: &Action, word: &str) -> bool {
+    row.cues
+        .iter()
+        .any(|cue| !cue.contains([' ', '-']) && word.starts_with(cue))
+}
+
+/// Words ending "-ing" that are no action: "stop everything", "stop. bring".
+const NOT_GERUNDS: &[&str] = &[
+    "everything",
+    "anything",
+    "something",
+    "nothing",
+    "thing",
+    "things",
+    "bring",
+    "string",
+    "morning",
+];
+
+/// Starts of words that negate: refrain, refraining; forbid, forbidden.
+const NEGATION_STARTS: &[&str] = &["refrain", "forbid"];
 
 /// Auxiliaries that, with `nt` and no apostrophe, negate: "didnt", "shouldnt".
 const NT_AUXILIARIES: &[&str] = &[
@@ -534,9 +633,13 @@ const NEGATION_FILLER: &[&str] = &[
     "okay",
 ];
 
-/// A clause of only these is an answer to something said before ("no, switch
-/// to round robin"), and negates nothing after its comma.
-const BARE_ANSWERS: &[&str] = &["no", "nah", "nope"];
+/// A clause whose only negating words are these is an answer to something said
+/// before ("no, switch to round robin", "neither, remove ideas"), and negates
+/// nothing after it.
+const BARE_ANSWERS: &[&str] = &["no", "nah", "nope", "neither"];
+
+/// Words that may lead a bare answer in, or follow it, and keep it one.
+const ANSWER_LEAD: &[&str] = &["ok", "okay", "so", "really", "just", "kai", "please"];
 
 /// The person's own folder: a path under it is named by the rest of it.
 const HOME: &str = "/home/user/";
@@ -554,28 +657,133 @@ fn arguments_in_line(words: &[Word], row: &Action, call: &Call) -> bool {
         }
         // A value counts only where every word of it stands un-negated: in
         // "remove calc, not notes" notes is not asked for (bug-hunt-6 H6-2).
-        let named = |text: &str| names_a_thing(text) && said_unnegated(words, text);
+        let named = |text: &str| {
+            names_a_thing(text)
+                && (said_unnegated(words, text, row) || pointed_back(words, row, text))
+        };
         named(value.text)
             // A file is named by its place under home: "a note called ideas"
             // names /home/user/ideas (files.rs's PATH).
             || value.text.strip_prefix(HOME).is_some_and(named)
             || arg.aliases.iter().any(|(written, means)| {
-                fold_eq(means, value.text) && said_unnegated(words, written)
+                fold_eq(means, value.text) && said_unnegated(words, written, row)
             })
             || (SYMBOLS.contains(&value.text)
                 && (0..words.len()).any(|at| {
-                    POINTERS.contains(&words[at].text.as_str()) && !negated(words, at)
+                    POINTERS.contains(&words[at].text.as_str())
+                        && !negated_for(words, at, at, Some(row))
                 }))
     })
 }
 
-/// Whether `phrase` stands in `words` somewhere none of its words is negated.
-fn said_unnegated(words: &[Word], phrase: &str) -> bool {
+/// Whether `phrase` stands in `words` somewhere none of its words is negated,
+/// for a call of `row`. Only words before the phrase negate it: "no-ads" and
+/// "not-mine.txt" are names.
+fn said_unnegated(words: &[Word], phrase: &str, row: &Action) -> bool {
     let len = self::words(phrase).len();
     matches(words, phrase, false)
         .into_iter()
-        .any(|start| (start..start + len).all(|at| !negated(words, at)))
+        .any(|start| (start..start + len).all(|at| !negated_for(words, at, start, Some(row))))
 }
+
+/// "I don't need calc anymore, remove it": the one name of a clause that only
+/// says the person has no more use for it, taken by a pointer in the next
+/// clause of its sentence, where an un-negated cue of `row` stands with
+/// nothing else but filler. "never touch calc, remove it", "I don't want to
+/// lose calc, remove it" and "I don't need calc or notes, remove it" take
+/// nothing, and ask.
+fn pointed_back(words: &[Word], row: &Action, phrase: &str) -> bool {
+    let len = self::words(phrase).len();
+    matches(words, phrase, false).into_iter().any(|start| {
+        let clause = words[start].clause;
+        let lead: Vec<&str> = words[..start]
+            .iter()
+            .filter(|w| w.clause == clause)
+            .map(|w| w.text.as_str())
+            .collect();
+        let tail_end = (start + len..words.len())
+            .find(|&i| words[i].clause != clause)
+            .unwrap_or(words.len());
+        let tail_ok = words[start + len..tail_end]
+            .iter()
+            .all(|w| NO_USE_TAIL.contains(&w.text.as_str()));
+        tail_ok
+            && no_use(&lead)
+            && tail_end < words.len()
+            && words[tail_end].sentence == words[start].sentence
+            && points_back(words, row, words[tail_end].clause)
+    })
+}
+
+/// Whether a clause's words before its name say only that the person has no
+/// more use for it: "I don't need", "we no longer use the", "I really don't
+/// want my".
+fn no_use(lead: &[&str]) -> bool {
+    let dets = lead
+        .iter()
+        .rev()
+        .take_while(|w| DETERMINERS.contains(w))
+        .count();
+    let Some((verb, before)) = lead[..lead.len() - dets].split_last() else {
+        return false;
+    };
+    NO_USE_VERBS.contains(verb)
+        && before.iter().all(|w| NO_USE_LEAD.contains(w))
+        && before
+            .iter()
+            .any(|w| NEGATIONS.contains(w) || w.ends_with("n't") || w.ends_with("nt"))
+}
+
+/// Whether `clause` is a cue of `row`, un-negated and not a question or a
+/// tell clause, and a pointer after it, with only filler beside them:
+/// "remove it", "so please uninstall it".
+fn points_back(words: &[Word], row: &Action, clause: usize) -> bool {
+    let held: Vec<usize> = (0..words.len())
+        .filter(|&i| words[i].clause == clause)
+        .collect();
+    if held.iter().any(|&i| words[i].question) {
+        return false;
+    }
+    let mut cue_at = None;
+    let mut covered: Vec<usize> = Vec::new();
+    for cue in row.cues {
+        let cue_len = self::words(cue).len();
+        for at in matches(words, cue, true) {
+            if words[at].clause == clause && !negated_for(words, at, at, Some(row)) {
+                cue_at = Some(cue_at.map_or(at, |c: usize| c.min(at)));
+                covered.extend(at..at + cue_len);
+            }
+        }
+    }
+    let Some(cue_at) = cue_at else {
+        return false;
+    };
+    let pointer = held.iter().any(|&i| {
+        i > cue_at
+            && matches!(words[i].text.as_str(), "it" | "that" | "this")
+            && !negated_for(words, i, i, Some(row))
+    });
+    pointer
+        && held.iter().all(|&i| {
+            covered.contains(&i)
+                || matches!(words[i].text.as_str(), "it" | "that" | "this")
+                || POINTER_FILLER.contains(&words[i].text.as_str())
+        })
+}
+
+/// Verbs of a clause that says the person has no more use for a thing.
+const NO_USE_VERBS: &[&str] = &["need", "want", "use"];
+/// Words that may lead such a verb.
+const NO_USE_LEAD: &[&str] = &[
+    "i", "we", "do", "does", "not", "no", "longer", "don't", "dont", "doesn't", "doesnt", "really",
+    "even", "actually", "just",
+];
+/// Words that may follow its name.
+const NO_USE_TAIL: &[&str] = &["anymore", "any", "more", "now", "either", "at", "all"];
+/// Words that may stand beside the cue and the pointer that takes it.
+const POINTER_FILLER: &[&str] = &[
+    "so", "please", "just", "then", "now", "and", "kai", "ok", "okay",
+];
 
 /// Every host argument is grounded (`nethosts::Grounding::decide`): typed in
 /// the line, a host-table word of it, granted before, or the OS's checked
@@ -842,7 +1050,12 @@ fn words(text: &str) -> Vec<Word> {
         if rest[..gap].contains('?') {
             asked_sentences.push(sentence);
         }
-        if !inside && rest[..gap].contains([';', '.', '!', '?']) {
+        // A run of dots ("Don't... remove it") trails off: it ends a clause,
+        // not a sentence.
+        let trails = rest[..gap].contains("..");
+        if !inside
+            && (rest[..gap].contains([';', '!', '?']) || (rest[..gap].contains('.') && !trails))
+        {
             sentence += 1;
         }
         rest = &rest[gap..];
