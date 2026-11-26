@@ -102,8 +102,7 @@ impl Painter {
         if crate::paint::reach(at).intersect(&clip).is_none() {
             return;
         }
-        self.far.draw(c, g(at), g(clip));
-        self.near.draw(c, g(at), g(clip));
+        self.cast(c, at, clip);
         // The pointer over Start, in its own px: what takes the hover fill.
         let p = scene.desk.pointer();
         let hover = at.contains(p).then(|| Point {
