@@ -100,6 +100,34 @@ pub(crate) fn classify(error: &Error) -> Fault {
     Fault::new(reason, error.to_string())
 }
 
+/// Bytes a host function copies or checks for the guest for one fuel: a
+/// quarter of wasmi's own rate for `memory.copy` (64 bytes a fuel), since a
+/// lifted string is copied and checked about four times on its way in.
+pub(crate) const BYTES_PER_FUEL: u64 = 16;
+/// Fuel for each read of the guest's memory in a lift: one value, in a `Vec`
+/// of its own.
+pub(crate) const READ_FUEL: u64 = 2;
+/// Fuel for each byte a window weighs (`uikit` counts 64 a node, and its
+/// text) and each byte of its title, at every commit.
+pub(crate) const WEIGHT_FUEL: u64 = 1;
+
+/// Fuel for `bytes` copied for the guest.
+pub(crate) fn bytes_fuel(bytes: usize) -> u64 {
+    bytes as u64 / BYTES_PER_FUEL
+}
+
+/// Takes `fuel` from what the guest's call has left, for work a host function
+/// did for it, so that a loop over host calls runs out of fuel as a loop of
+/// instructions does (lib.rs): past the last of it the call ends with the
+/// same trap, which [`classify`] makes [`Reason::Fuel`].
+pub(crate) fn charge(caller: &mut Caller<'_, HostState>, fuel: u64) -> Result<(), Error> {
+    let left = caller.get_fuel()?;
+    match left.checked_sub(fuel) {
+        Some(left) => caller.set_fuel(left),
+        None => Err(Error::from(TrapCode::OutOfFuel)),
+    }
+}
+
 /// `kai.log(ptr, len)`: one line from the version, cut to [`MAX_LOG_BYTES`].
 pub(crate) fn log(mut caller: Caller<'_, HostState>, ptr: i32, len: i32) -> Result<(), Error> {
     let memory = caller

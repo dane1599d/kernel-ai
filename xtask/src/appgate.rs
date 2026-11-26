@@ -58,6 +58,36 @@ pub const REQUESTS: [(&str, &str); 20] = [
     ("hello", "an app that says hello to the name I type"),
 ];
 
+/// Change requests (the plan's question 3): an app from [`REQUESTS`], then
+/// what the person asks to change in it.
+pub const CHANGES: [(&str, &str, &str); 5] = [
+    (
+        "timer",
+        "a countdown timer that starts at 60 seconds",
+        "add a reset button",
+    ),
+    (
+        "counter",
+        "a counter with plus and minus buttons",
+        "make it start at 10",
+    ),
+    (
+        "shop",
+        "a shopping list I can clear",
+        "show how many items are on it",
+    ),
+    (
+        "dice",
+        "a dice roller that shows a number from 1 to 6",
+        "roll two dice",
+    ),
+    (
+        "hello",
+        "an app that says hello to the name I type",
+        "say goodbye too",
+    ),
+];
+
 /// One round of the model's: its answer's length in tokens, its time, and
 /// what went wrong, if anything.
 #[derive(Clone, Debug)]
@@ -100,6 +130,16 @@ impl AppHost {
             rounds: RefCell::new(Vec::new()),
             artifact: RefCell::new(None),
         }
+    }
+}
+
+impl AppHost {
+    /// The act model calls `app_build(name, words)` once more: a change.
+    pub fn asks(&self, name: &str, words: &str) {
+        let call = json!({"name": "app_build", "arguments": {"name": name, "request": words}});
+        *self.call.borrow_mut() = llmproto::act::parse(&call.to_string()).ok();
+        self.rounds.borrow_mut().clear();
+        self.artifact.borrow_mut().take();
     }
 }
 
@@ -247,7 +287,39 @@ impl Outcome {
 pub fn attempt(name: &str, words: &str, transport: Transport) -> Outcome {
     let host = Rc::new(AppHost::new(name, words, transport));
     let mut shell = Shell::new(host.clone(), DEFAULT_CONFIG);
-    let reply = shell.eval(&format!("make me an app: {words}"));
+    built_and_clicked(&host, &mut shell, &format!("make me an app: {words}"))
+}
+
+/// Asks for app `name`, then for `change` to it (the plan's question 3: a
+/// change rebuilds the app Kai wrote as a new version), and opens and
+/// clicks the changed app. A first build that fails fails the change.
+pub fn attempt_change(name: &str, words: &str, change: &str, transport: Transport) -> Outcome {
+    let host = Rc::new(AppHost::new(name, words, transport));
+    let mut shell = Shell::new(host.clone(), DEFAULT_CONFIG);
+    let first = built_and_clicked(&host, &mut shell, &format!("make me an app: {words}"));
+    if !first.built {
+        let why = first.failure.unwrap_or_default();
+        return Outcome {
+            failure: Some(format!("the first build failed: {why}")),
+            ..first
+        };
+    }
+    let kept = host.sources.borrow().get(name).cloned();
+    host.asks(name, change);
+    let line = format!("change my {name} app: {change}");
+    let mut changed = built_and_clicked(&host, &mut shell, &line);
+    changed.rounds = host.rounds.borrow().clone();
+    // A change that writes back the same main.c changed nothing: not a pass.
+    let now = host.sources.borrow().get(name).cloned();
+    if changed.failure.is_none() && now == kept {
+        changed.failure = Some(String::from("the change wrote the same main.c back"));
+    }
+    changed
+}
+
+/// `line`'s build, polled as the terminal polls it, then opened and clicked.
+fn built_and_clicked(host: &Rc<AppHost>, shell: &mut Shell, line: &str) -> Outcome {
+    let reply = shell.eval(line);
     // The build goes on between lines, as the terminal polls it.
     let mut ended = None;
     while reply.ok && ended.is_none() && host.answered.borrow().is_some() {
@@ -348,17 +420,30 @@ pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
     let (id, store) = parse(args)?;
     let (engine, line) = engine_local::load(&id, store.as_deref())?;
     println!(
-        "xtask: app gate, {} requests against local: {line}",
-        REQUESTS.len()
+        "xtask: app gate, {} requests and {} changes against local: {line}",
+        REQUESTS.len(),
+        CHANGES.len()
     );
     let started = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_secs());
     let mut lines = vec![json!({"model": id, "engine": line, "started_unix": started}).to_string()];
     let mut passed = 0;
-    for (number, (name, words)) in REQUESTS.iter().enumerate() {
+    let asked = REQUESTS
+        .iter()
+        .map(|(name, words)| (*name, *words, None))
+        .chain(
+            CHANGES
+                .iter()
+                .map(|(name, words, change)| (*name, *words, Some(*change))),
+        );
+    for (number, (name, words, change)) in asked.enumerate() {
         let clock = Instant::now();
-        let outcome = attempt(name, words, transport(engine.clone()));
+        let outcome = match change {
+            None => attempt(name, words, transport(engine.clone())),
+            Some(change) => attempt_change(name, words, change, transport(engine.clone())),
+        };
+        let words = change.unwrap_or(words);
         let ms = clock.elapsed().as_millis();
         passed += usize::from(outcome.passed());
         let tokens: Vec<u32> = outcome.rounds.iter().map(|r| r.tokens).collect();
@@ -381,10 +466,10 @@ pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
     std::fs::write(&file, lines.join("\n") + "\n")
         .map_err(|e| format!("{}: {e}", file.display()))?;
     println!("xtask: runs written to {}", file.display());
-    let percent = passed * 100 / REQUESTS.len();
+    let total = REQUESTS.len() + CHANGES.len();
+    let percent = passed * 100 / total;
     println!(
-        "xtask: app gate: {passed}/{} build, open and take the clicks ({percent}%); gate {GATE}%",
-        REQUESTS.len()
+        "xtask: app gate: {passed}/{total} build, open and take the clicks ({percent}%); gate {GATE}%"
     );
     match percent >= GATE {
         true => Ok(()),
@@ -410,6 +495,48 @@ mod tests {
             summary: String::from("An app."),
             script: String::from(script),
         })
+    }
+
+    #[test]
+    fn a_change_rebuilds_the_app_from_its_kept_main_c() {
+        let (_, main, _) = capp1::EXAMPLES[0];
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let changed = format!("{main}\n/* the count */\n");
+        let answers = RefCell::new(vec![app(main), app(&changed)].into_iter());
+        let log = seen.clone();
+        let transport: Transport = Box::new(move |request: &ScriptRequest| {
+            log.borrow_mut().push(request.clone());
+            let next = answers.borrow_mut().next();
+            (next.unwrap_or(Err(AnswerError::CutOff)), 7)
+        });
+        let outcome = attempt_change("shop", "a shopping list", "show the count", transport);
+        assert!(outcome.passed(), "{outcome:?}");
+        let asked = seen.borrow();
+        assert_eq!(asked.len(), 2);
+        assert_eq!(
+            asked[1].repair.as_ref().map(|(_, why)| why.as_str()),
+            Some(llmproto::app::change("show the count").as_str())
+        );
+    }
+
+    #[test]
+    fn a_change_that_writes_the_same_main_c_back_does_not_pass() {
+        let (_, main, _) = capp1::EXAMPLES[0];
+        let outcome = attempt_change(
+            "shop",
+            "a shopping list",
+            "show the count",
+            canned(vec![app(main), app(main)]),
+        );
+        assert!(!outcome.passed(), "{outcome:?}");
+        assert!(
+            outcome
+                .failure
+                .as_deref()
+                .unwrap_or("")
+                .contains("same main.c"),
+            "{outcome:?}"
+        );
     }
 
     #[test]

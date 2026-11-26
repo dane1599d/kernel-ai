@@ -110,7 +110,9 @@ pub struct TestCase {
     /// keeps it polled.
     pub net_polled: bool,
     /// The case passes by resetting the machine: under `-no-reboot` QEMU then
-    /// exits with status 0 instead of the isa-debug-exit code.
+    /// exits with status 0 instead of the isa-debug-exit code. Status 0 passes
+    /// only if QMP's SHUTDOWN said `guest-reset` (a power-off exits 0 too), and
+    /// the case also forbids [`RESET_FALLBACKS`].
     pub resets: bool,
     /// The case passes only by the guest turning the machine off: QEMU runs
     /// with `-no-shutdown`, so a shutdown pauses it, and once every expected
@@ -140,7 +142,7 @@ pub struct TestCase {
     /// 10): a GGUF file the model manager imports, never the boot model.
     pub import: Option<Fixture>,
     /// Power cuts (P2 task 9, plan section 4.2): boot `n` of `cuts` adds
-    /// `boot=n` to the command line, waits for `files: boot n:` and kills QEMU
+    /// `boot=n` to the command line, waits for [`cut_line`]`(n)` and kills QEMU
     /// a seeded moment later; boot `cuts + 1` adds `last` and must pass.
     pub cuts: u32,
     /// A model put in `kai-data`'s model store before the boot (`xtask fs mkfs`,
@@ -172,6 +174,9 @@ pub struct TestCase {
     /// a download that was stopped can resume from what it had written (P5
     /// task 10); otherwise every boot makes the slots anew from its bundle.
     pub keeps_slot_b: bool,
+    /// The POSTs the HTTPS mock must have taken, each `(path, body)`, in order
+    /// and no others: empty for a case that checks none.
+    pub posts: &'static [(&'static str, &'static str)],
 }
 
 /// What the HTTPS mock serves a case: its hosts are `netcore::fixture`'s
@@ -213,6 +218,35 @@ pub const FORBID: &[&str] = &[
 
 /// The kernel's warning that a plan nearly fills the admission budget.
 pub const ROOM_WARNING: &str = "of the admission budget left for the plan";
+
+/// What the kernel says when a way to reset the machine did not reset it and
+/// it tries the next (`power::reboot`, `efi::reset_now`). Every `resets` case
+/// forbids these besides its own `forbid`: under `-no-reboot` the next way's
+/// reset ends QEMU with status 0 as well, so the reset a case names could
+/// break and the case still pass on the one behind it (bug hunt 5 H5-4). No
+/// case asks for the triple fault (`reboot=fault`).
+pub const RESET_FALLBACKS: &[&str] = &[
+    "did not reset the machine",
+    "ResetSystem returned; resetting another way",
+    "rebooting by a triple fault",
+];
+
+impl TestCase {
+    /// Every text that fails this case wherever it appears: its `forbid`, and
+    /// [`RESET_FALLBACKS`] for a `resets` case.
+    pub fn forbidden(&self) -> Vec<&'static str> {
+        let fallbacks: &[&str] = if self.resets { RESET_FALLBACKS } else { &[] };
+        self.forbid.iter().chain(fallbacks).copied().collect()
+    }
+}
+
+/// The kernel line that arms boot `boot`'s power cut (`files_tests::churn`).
+/// The kernel logs it only once filecheck has marked `churning-<boot>`, after
+/// committing actions on the disk the cut before left, so the cut lands while
+/// filecheck is making actions rather than on an idle disk (bug hunt 5 H5-5).
+pub fn cut_line(boot: u32) -> String {
+    format!("files: boot {boot}: filecheck is making actions")
+}
 
 /// Guest memory every case gets at least, in MiB. The admission budget is half
 /// the memory free once the boot modules are loaded, so on the 512 MiB base the
@@ -284,6 +318,40 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         online: None,
         online_release: None,
         keeps_slot_b: false,
+        posts: &[],
+    }
+}
+
+/// Whether the HTTPS mock served exactly `posts`, each `(path, body)`, as its
+/// POSTs, in order: a case with no `posts` checks nothing.
+pub fn check_posts(
+    posts: &[(&str, &str)],
+    served: &[crate::mock_https::Served],
+) -> Result<(), String> {
+    if posts.is_empty() {
+        return Ok(());
+    }
+    let got: Vec<(String, String)> = served
+        .iter()
+        .filter(|s| s.method == "POST")
+        .map(|s| {
+            let body = s
+                .body
+                .as_deref()
+                .map(String::from_utf8_lossy)
+                .unwrap_or_default();
+            (s.path.clone(), body.into_owned())
+        })
+        .collect();
+    let want: Vec<(String, String)> = posts
+        .iter()
+        .map(|(path, body)| (String::from(*path), String::from(*body)))
+        .collect();
+    match got == want {
+        true => Ok(()),
+        false => Err(format!(
+            "FAIL: the HTTPS mock took POSTs {got:?}, not {want:?}"
+        )),
     }
 }
 
@@ -397,8 +465,6 @@ mod tests {
         assert!(tables.iter().all(|lane| !lane.is_empty()));
     }
 
-    /// A case that expects a forbidden text could never pass: it sets its
-    /// own `forbid` instead.
     /// Every case the tree boots: the lanes, the tour, the soak and the
     /// release boot, and each second boot their `then` chains hold.
     fn every_case() -> Vec<&'static TestCase> {
@@ -444,17 +510,116 @@ mod tests {
         assert!(seen > 0);
     }
 
+    /// A case that expects a forbidden text could never pass: it sets its
+    /// own `forbid` instead.
     #[test]
     fn no_case_expects_a_text_it_forbids() {
         for case in every_case() {
+            let forbidden = case.forbidden();
             for text in case.expect {
                 assert!(
-                    !case.forbid.iter().any(|bad| text.contains(bad)),
+                    !forbidden.iter().any(|bad| text.contains(bad)),
                     "{}: expects {text:?}, which it forbids",
                     case.name
                 );
             }
         }
+    }
+
+    /// Every case forbids the whole base list, the supervisor's death
+    /// included: a case with its own `forbid` copies [`FORBID`] and adds to
+    /// it. `many-processes` once left the death out, so a supervisor killed
+    /// mid-start and restarted still passed it (bug hunt 5 H5-6).
+    #[test]
+    fn every_case_forbids_the_base_list() {
+        for case in every_case() {
+            let forbidden = case.forbidden();
+            for text in FORBID {
+                assert!(
+                    forbidden.contains(text),
+                    "{}: does not forbid {text:?}",
+                    case.name
+                );
+            }
+        }
+    }
+
+    /// Each way the kernel says a reset did not take, as it logs it, fails
+    /// every `resets` case, and each such case gets QMP for the reason QEMU
+    /// stopped: the next way's reset, or a power-off, would otherwise end QEMU
+    /// with status 0 and pass it (bug hunt 5 H5-4).
+    #[test]
+    fn every_reset_case_fails_when_the_reset_it_names_does_not_take() {
+        let kernel = [
+            include_str!("../../../kernel/src/power.rs"),
+            include_str!("../../../kernel/src/efi.rs"),
+        ]
+        .concat();
+        let fell_through = [
+            "power: the reset register did not reset the machine",
+            "power: the 8042 did not reset the machine",
+            "power: rebooting by a triple fault",
+            "efi: ResetSystem returned; resetting another way",
+        ];
+        for line in fell_through {
+            assert!(
+                kernel.contains(&format!("log!(\"{line}\")")),
+                "the kernel no longer logs {line:?}"
+            );
+        }
+        let mut resets = 0;
+        for case in every_case().into_iter().filter(|case| case.resets) {
+            resets += 1;
+            let forbidden = case.forbidden();
+            for line in fell_through {
+                assert!(
+                    forbidden.iter().any(|text| line.contains(text)),
+                    "{}: passes on {line:?}",
+                    case.name
+                );
+            }
+            let (_, qmp) = crate::qemu::input_args(case).unwrap();
+            assert!(qmp.is_some(), "{}: no QMP for its reset verdict", case.name);
+        }
+        // reboot, reboot-8042, panic-reset, fail-reset, efi-reset,
+        // power-reboot, power-fs and the slot boots.
+        assert!(resets > 7, "only {resets} reset cases checked");
+        // A case that does not reset is not judged on them.
+        let plain = case("plain", "test=x");
+        assert!(!plain.forbidden().contains(&RESET_FALLBACKS[0]));
+    }
+
+    /// `fs-powercut` fails a boot whose churn stopped on an error before the
+    /// cut, and its cut is armed only by the line the kernel logs once
+    /// filecheck has committed actions after the cut before, so no cut lands
+    /// on an idle disk (bug hunt 5 H5-5).
+    #[test]
+    fn every_powercut_lands_while_filecheck_makes_actions() {
+        let cases = test_cases();
+        let cut = cases
+            .iter()
+            .find(|case| case.name == "fs-powercut")
+            .unwrap();
+        assert!(cut.cuts > 0);
+        let forbidden = cut.forbidden();
+        let failed = "[filecheck] filecheck: FAIL commit of action 2000005: Error(NoSpace)";
+        assert!(forbidden.iter().any(|text| failed.contains(text)));
+        // The kernel logs the cut's line only after `churning-<boot>`, which
+        // filecheck leaves after its first actions.
+        let kernel = include_str!("../../../kernel/src/files_tests.rs");
+        let churn = kernel.split("pub fn churn(").nth(1).unwrap();
+        let line = cut_line(u32::MAX).replace(&u32::MAX.to_string(), "{boot}");
+        let waited = churn.find("wait_for(&format!(\"churning-{boot}\"))");
+        let logged = churn.find(&format!("log!(\"{line}\")"));
+        assert!(
+            matches!((waited, logged), (Some(w), Some(l)) if w < l),
+            "the kernel's churn does not log {line:?} after churning-<boot>"
+        );
+        let filecheck = include_str!("../../../user/src/bin/filecheck/cut.rs");
+        assert!(filecheck.contains("mark(home, &format!(\"churning-{boot}\"))"));
+        // The last boot, which must pass, shows the line too.
+        let last = cut_line(cut.cuts + 1);
+        assert!(cut.expect.iter().any(|text| text.contains(last.as_str())));
     }
 
     /// The kernel drops an `updated.<key>=` word whose key is not in its

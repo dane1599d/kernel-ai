@@ -243,3 +243,23 @@ fn a_new_address_or_gateway_is_put() {
     assert_eq!(put(&mut rig.iface, unrouted), Ok(false));
     assert!(rig.iface.routes().get_default_ipv4_route().is_none());
 }
+
+/// A renewal that keeps the address and changes only its prefix is a change:
+/// the list holds the address with its prefix, so it is rewritten.
+#[test]
+fn a_renewal_that_changes_only_the_prefix_rewrites_the_address() {
+    let mut rig = Rig::new();
+    let narrower = Static {
+        prefix: 16,
+        ..FALLBACK
+    };
+    assert_eq!(put(&mut rig.iface, narrower), Ok(true));
+    let cidr = IpCidr::new(IpAddress::Ipv4(FALLBACK.address), 16);
+    assert_eq!(rig.iface.ip_addrs(), [cidr]);
+    // The same again changes nothing.
+    assert_eq!(put(&mut rig.iface, narrower), Ok(false));
+    // And back: the prefix alone is enough to rewrite it.
+    assert_eq!(put(&mut rig.iface, FALLBACK), Ok(true));
+    let cidr = IpCidr::new(IpAddress::Ipv4(FALLBACK.address), FALLBACK.prefix);
+    assert_eq!(rig.iface.ip_addrs(), [cidr]);
+}

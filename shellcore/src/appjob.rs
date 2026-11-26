@@ -72,11 +72,14 @@ impl Shell {
                 job.rounds.name
             )));
         }
-        if let Err(why) = self.app_check_source(name) {
-            self.log_app_failed(id, request, name, wanted, how.clone(), &why);
-            return Some(Reply::err(why));
-        }
-        let mut rounds = Rounds::new(name, wanted);
+        let kept = match self.app_check_source(name) {
+            Ok(kept) => kept,
+            Err(why) => {
+                self.log_app_failed(id, request, name, wanted, how.clone(), &why);
+                return Some(Reply::err(why));
+            }
+        };
+        let mut rounds = Rounds::new(name, wanted).changing(kept);
         let ask = rounds.ask(APP_ROUND_MS);
         let ticket = match self.host.script_start(&ask) {
             Started::Inline => return None,

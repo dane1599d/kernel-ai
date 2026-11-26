@@ -32,6 +32,13 @@ const MAX_DAMAGE_PX: u32 = 1 << 20;
 /// the desk keeps.
 pub const MAX_BUFFER_PX: u32 = 16_384;
 
+/// The pages a pool of `size` bytes, as its client states it, must hold:
+/// `desktop` maps the `Shm` only if it holds that many, so a buffer inside the
+/// stated size is never past the pages really mapped (#22 of the bug hunt).
+pub fn pool_pages(size: u32) -> u64 {
+    u64::from(size).div_ceil(surfabi::header::PAGE as u64)
+}
+
 /// The most detents one wheel event carries to a client.
 pub const MAX_DETENTS: i32 = 120;
 

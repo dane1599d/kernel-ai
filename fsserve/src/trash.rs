@@ -2,7 +2,10 @@
 //! [`Request::TrashRestore`] and [`Request::EmptyTrash`]. kaifs keeps one trash
 //! a volume, at `/.trash/<txn>/<n>/`; a `Dir` reaches only the items that were
 //! beneath it, named by their paths relative to it, so the trash never shows a
-//! client more than its `Dir` already could.
+//! client more than its `Dir` already could. An item is matched by the path it
+//! had, and only for a `Dir` made before it was trashed, so a folder made since
+//! at that path sees none of it. One made before and renamed to that path still
+//! does: `info.cbor` names no folder by its id.
 //!
 //! [`Request::TrashList`]: fsproto::Request::TrashList
 //! [`Request::TrashRestore`]: fsproto::Request::TrashRestore
@@ -98,6 +101,12 @@ impl<D: BlockDev> Server<D> {
             .map_err(error)?
             .into_iter()
             .filter_map(|t| {
+                // An item trashed before `dir` was made was never beneath it,
+                // whatever its path says (a new folder at an old one's path):
+                // object ids only grow, and its slot was made as it went.
+                if t.folder <= dir {
+                    return None;
+                }
                 let path = t.info.path.strip_prefix(prefix.as_str())?;
                 let path = String::from(path);
                 (!path.is_empty()).then_some((t, path))

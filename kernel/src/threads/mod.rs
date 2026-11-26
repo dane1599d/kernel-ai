@@ -7,9 +7,12 @@
 //! - Interrupt handlers acknowledge the APIC before they may switch threads.
 //! - Policies never allocate (see the `sched` crate).
 //! - A thread is only migrated or reaped once `ON_CPU` says its registers are saved.
+//! - A `ready()` ([`block_unless`], [`sleep_until_unless`]) runs under a core lock
+//!   and takes no lock that is ever held with interrupts on ([`ready`]).
 
 mod context;
 mod preempt;
+pub mod ready;
 
 pub use context::{enter_address_space, leave_address_space};
 pub use preempt::{
@@ -377,14 +380,15 @@ pub fn sleep_ms(ms: u64) {
 
 /// Sleeps until `deadline_ns`, unless `ready()` is already true, or until a `wake`.
 /// `ready()` is checked under this CPU's core lock, as in [`block_unless`], so a
-/// waker that publishes its condition first and then calls `wake` is never missed.
+/// waker that publishes its condition first and then calls `wake` is never missed,
+/// and keeps the same rule ([`ready`]).
 /// Callers re-check their own conditions: a return says nothing about why.
 pub fn sleep_until_unless(deadline_ns: u64, ready: impl Fn() -> bool) {
     interrupts::without_interrupts(|| {
         let me = percpu::index();
         let (from, to) = {
             let mut guard = CORES[me].lock();
-            if ready() {
+            if ready::run(me, &ready) {
                 return;
             }
             let core = guard.as_mut().expect("threads::init has run");
@@ -414,13 +418,14 @@ pub fn exit() -> ! {
 /// takes. A waker publishes its condition before it locks the core, so either the
 /// check sees the condition, or `wake` sees the thread Blocked and makes it runnable.
 /// Disabling interrupts alone would only exclude wakers on this CPU. `ready()` must
-/// not take a core lock.
+/// not take a core lock, nor any lock that is ever held with interrupts on, and so
+/// must not allocate ([`ready`]): atomics, or a lock only held with interrupts off.
 pub fn block_unless(ready: impl Fn() -> bool) -> bool {
     interrupts::without_interrupts(|| {
         let me = percpu::index();
         let (from, to) = {
             let mut guard = CORES[me].lock();
-            if ready() {
+            if ready::run(me, &ready) {
                 return false;
             }
             let core = guard.as_mut().expect("threads::init has run");

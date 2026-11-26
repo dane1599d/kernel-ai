@@ -302,6 +302,34 @@ const A_IDLE: TestCase = TestCase {
     )
 };
 
+/// `slot-efi-fault` boot 3: R finds kai-a's boot lost, not faulted, and arms
+/// it again with a try spent.
+const R_AFTER_EFI_FAULT: TestCase = boot(
+    "slot-efi-fault (3: R arms kai-a again)",
+    "test=slot panic=reset",
+    &[
+        "slots: booted recovery (record read)",
+        "slots: R arms kai-a (trial)",
+        "slots: next boot kai-a",
+    ],
+);
+/// `slot-efi-fault` boot 2 (bug hunt 4, H4-11): kai-a faults inside a firmware
+/// call. The firmware is not entered again, so the fault is not recorded and
+/// the reset is the FADT's; before, the fault path spun on efi's lock.
+const A_EFI_FAULT: TestCase = TestCase {
+    then: Some(&R_AFTER_EFI_FAULT),
+    ..boot(
+        "slot-efi-fault (2: kai-a faults inside a firmware call)",
+        "test=slot slot-do=efi-fault panic=reset",
+        &[
+            "slots: booted kai-a (record read)",
+            "fault: unexpected CPU exception; resetting the machine",
+            "slots: a fault inside a firmware call; not recorded in kai-a",
+            "power: rebooting through the FADT reset register",
+        ],
+    )
+};
+
 /// A rollback boot of `update-rollback`: slot-disk, on the case's data disk.
 const fn rb(
     name: &'static str,
@@ -473,6 +501,11 @@ pub(super) const CASES: &[TestCase] = &[
     TestCase {
         then: Some(&A_IDLE),
         ..boot("slot-idle", "test=slot panic=reset", INSTALL)
+    },
+    // A fault inside a firmware call still resets, and R boots next.
+    TestCase {
+        then: Some(&A_EFI_FAULT),
+        ..boot("slot-efi-fault", "test=slot panic=reset", INSTALL)
     },
     // An update from the update disk (ADR 0008 §12), checked by kaituf against
     // the slot's root, and the same disk with the image tampered after signing.

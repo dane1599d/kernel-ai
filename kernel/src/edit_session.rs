@@ -40,6 +40,7 @@ static STATE: Mutex<State> = Mutex::new(State {
 });
 
 fn with<R>(f: impl FnOnce(&mut State) -> R) -> R {
+    crate::threads::ready::not_in_ready(&"the edit session");
     threads::preempt_disable();
     let result = f(&mut STATE.lock());
     threads::preempt_enable();

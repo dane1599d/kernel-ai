@@ -3,7 +3,7 @@
 //! it, answer as well as a flat pack that shows every app's lines in full?
 //!
 //! ```text
-//! cargo xtask groups --local ID [--store DIR] [--arm layered,flat] [--limit N] [--gate]
+//! cargo xtask groups --local ID [--store DIR] [--arm layered,flat,described] [--limit N] [--gate]
 //! ```
 //!
 //! - Arm `layered`: what llm ships. The eight stub apps ([`stubs`]) go in the
@@ -15,14 +15,25 @@
 //! - Arm `flat`: every app's full lines in the apps turn
 //!   (`llmproto::local::act::grammar_flat`), each call written in one round,
 //!   at 4,096 positions.
+//! - Arm `described`: layered, but each index row in the apps turn carries a
+//!   short description from its doc (`calendar_day (the events on a day)`,
+//!   `llmproto::local::act::grammar_described`), within the same budget by
+//!   the same count: each description is cut to the most words at which
+//!   every app fits (`pack::apps::described_turn`), and only if none does
+//!   does an app whose described line passes the budget get its plain index
+//!   line. Same grammar and second round as layered, at 3,072
+//!   positions. Spike only: llm ships layered.
 //!
-//! Both answer the 120 [`tasks`] through llm's own `act` on the shipped pack,
-//! with llm's sampler. llm draws with one fixed seed, so a rerun is the same
-//! run: there is no seed option. The gate (`--gate`, both arms in one run):
-//! both arms answer every task with a call (no error and no full context, so
-//! a flat arm that never answered cannot make the comparison pass), layered
-//! scores at least flat less 2 points (of 100), and names the right app on at
-//! least 95% of the single-app tasks. Every task goes to
+//! Each arm answers the 120 [`tasks`] through llm's own `act` on the shipped
+//! pack, with llm's sampler. llm draws with one fixed seed, so a rerun is the
+//! same run: there is no seed option. The gate (`--gate`, flat and at least one
+//! index arm in one run) checks each index arm (layered, described) against
+//! flat: both answer every task with a call (no error and no full context, so
+//! a flat arm that never answered cannot make the comparison pass), the index
+//! arm scores at least flat less 2 points (of 100), and names the right app on
+//! at least 95% of the single-app tasks. Each index arm gets its own verdict;
+//! the gate passes when at least one index arm passes, since the question is
+//! whether the index level in some form holds up. Every task goes to
 //! `target/groups/<arm>.jsonl`, and the figures to the step summary. Real
 //! model runs are for GitHub runners only.
 //!
@@ -57,6 +68,7 @@ const MIN_RIGHT_GROUP: f64 = 0.95;
 enum Arm {
     Layered,
     Flat,
+    Described,
 }
 
 impl Arm {
@@ -64,7 +76,10 @@ impl Arm {
         match text {
             "layered" => Ok(Arm::Layered),
             "flat" => Ok(Arm::Flat),
-            other => Err(format!("unknown groups arm {other} (layered or flat)")),
+            "described" => Ok(Arm::Described),
+            other => Err(format!(
+                "unknown groups arm {other} (layered, flat or described)"
+            )),
         }
     }
 
@@ -72,13 +87,14 @@ impl Arm {
         match self {
             Arm::Layered => "layered",
             Arm::Flat => "flat",
+            Arm::Described => "described",
         }
     }
 
     /// The engine's positions (ADR 0010 S10-2).
     fn context(self) -> usize {
         match self {
-            Arm::Layered => 3072,
+            Arm::Layered | Arm::Described => 3072,
             Arm::Flat => 4096,
         }
     }
@@ -87,6 +103,7 @@ impl Arm {
         match self {
             Arm::Layered => local_act::grammar_with(groups),
             Arm::Flat => local_act::grammar_flat(groups),
+            Arm::Described => local_act::grammar_described(groups),
         }
         .map_err(|e| e.to_string())
     }
@@ -125,8 +142,9 @@ fn parse(args: &[String]) -> Result<Options, String> {
             other => return Err(format!("unknown groups option {other}")),
         }
     }
-    if gate && !(arms.contains(&Arm::Layered) && arms.contains(&Arm::Flat)) {
-        return Err("--gate compares the arms: run layered and flat together".into());
+    let indexed = arms.contains(&Arm::Layered) || arms.contains(&Arm::Described);
+    if gate && !(indexed && arms.contains(&Arm::Flat)) {
+        return Err("--gate compares the arms: run flat with layered or described".into());
     }
     Ok(Options {
         id: id.ok_or("groups needs --local ID")?,
@@ -330,11 +348,13 @@ fn rows(arm: Arm, model: &str, tally: &Tally) -> String {
     text
 }
 
-/// The gate's verdict over both arms, as Markdown, and whether it passes.
-/// Both arms must answer every task with a call: an error counts as a failed
-/// task, so a flat arm that errs throughout (a grammar regression, a turn too
-/// long for its context) would score zero and let any layered score pass.
-fn verdict(layered: &Tally, flat: &Tally) -> (bool, String) {
+/// The gate's verdict on index arm `arm` (layered or described) against
+/// flat, as Markdown, and whether it passes. Both arms must answer every task
+/// with a call: an error counts as a failed task, so a flat arm that errs
+/// throughout (a grammar regression, a turn too long for its context) would
+/// score zero and let any index score pass.
+fn verdict(arm: Arm, layered: &Tally, flat: &Tally) -> (bool, String) {
+    let name = arm.name();
     let trail = flat.points() - layered.points();
     let answered = |tally: &Tally| tally.errors == 0 && tally.context_full == 0;
     let (layered_answered, flat_answered) = (answered(layered), answered(flat));
@@ -342,11 +362,11 @@ fn verdict(layered: &Tally, flat: &Tally) -> (bool, String) {
     let right = layered.right_share() >= MIN_RIGHT_GROUP;
     let mark = |ok: bool| if ok { "pass" } else { "FAIL" };
     let text = format!(
-        "\n### gate\n\n| Check | Value | Bar | |\n|---|---|---|---|\n\
+        "\n### gate: {name}\n\n| Check | Value | Bar | |\n|---|---|---|---|\n\
          | flat: tasks with no call | {} ({} context full) | 0 | {} |\n\
-         | layered: tasks with no call | {} ({} context full) | 0 | {} |\n\
-         | layered against flat | {:+.1} points | >= -{MAX_TRAIL_POINTS} | {} |\n\
-         | layered: right app after the name stop | {:.1}% | >= {:.0}% | {} |\n",
+         | {name}: tasks with no call | {} ({} context full) | 0 | {} |\n\
+         | {name} against flat | {:+.1} points | >= -{MAX_TRAIL_POINTS} | {} |\n\
+         | {name}: right app after the name stop | {:.1}% | >= {:.0}% | {} |\n",
         flat.errors,
         flat.context_full,
         mark(flat_answered),
@@ -391,17 +411,32 @@ pub fn main(args: &[String], target_dir: &Path) -> Result<(), String> {
             tally.right.1
         );
         summary.push_str(&rows(arm, &loaded.line, &tally));
+        if arm == Arm::Described {
+            let turn = apps::described_turn(&groups, apps::estimate);
+            let plain = match turn.plain.is_empty() {
+                true => String::from("none"),
+                false => turn.plain.join(", "),
+            };
+            summary.push_str(&format!(
+                "| descriptions cut to | {} words |\n\
+                 | apps shown without descriptions (over the budget) | {plain} |\n",
+                turn.words
+            ));
+        }
         tallies.push((arm, tally));
     }
     let tally_of = |arm: Arm| tallies.iter().find(|(a, _)| *a == arm).map(|(_, t)| t);
-    let gate = match (tally_of(Arm::Layered), tally_of(Arm::Flat)) {
-        (Some(layered), Some(flat)) => {
-            let (passes, text) = verdict(layered, flat);
-            summary.push_str(&text);
-            Some(passes)
-        }
-        _ => None,
-    };
+    // Each index arm against flat; the gate passes when one of them does.
+    let gate = tally_of(Arm::Flat).and_then(|flat| {
+        [Arm::Layered, Arm::Described]
+            .into_iter()
+            .filter_map(|arm| {
+                let (passes, text) = verdict(arm, tally_of(arm)?, flat);
+                summary.push_str(&text);
+                Some(passes)
+            })
+            .reduce(|a, b| a || b)
+    });
     write_summary(&summary, target_dir)?;
     match (options.gate, gate) {
         (true, Some(false)) => Err("the groups gate fails (see the summary)".into()),
