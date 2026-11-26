@@ -18,18 +18,30 @@ impl Shell {
 
     /// The log `/system/log` holds, so `undo` works across a reboot; a text that
     /// is not `actlog 1` is set aside, and the log starts again.
-    /// The rules `/system/state/rules` holds; a file refused whole is set aside,
-    /// and the shell starts with none.
+    /// The rules `/system/state/rules` holds. A file refused whole is set
+    /// aside: the shell starts with none and never writes over it this run, so
+    /// the next rule change cannot make the loss permanent (#10). A rule whose
+    /// action is not in the registry is set aside alone, and audited.
     pub(crate) fn with_saved_rules(mut self) -> Self {
         let read = self.host.rules_read();
         let Some(text) = self.read_at_start(RULES, read) else {
             return self;
         };
         match rules::Rules::restore(&text) {
-            Ok(rules) => self.rules = rules,
-            Err(why) => self.host.audit(&format!(
-                "the rules on disk were refused ({why}); starting with none"
-            )),
+            Ok((rules, set_aside)) => {
+                self.rules = rules;
+                for why in set_aside {
+                    self.host
+                        .audit(&format!("a rule on disk was set aside: {why}"));
+                }
+            }
+            Err(why) => {
+                self.host.audit(&format!(
+                    "the rules on disk were refused ({why}); starting with none, \
+                     and the file is not written over"
+                ));
+                self.unread.push(RULES);
+            }
         }
         self
     }
@@ -66,17 +78,19 @@ impl Shell {
         }
     }
 
-    /// Writes the rules to `/system/state/rules`; a failure is audited, and the
-    /// rules hold in memory.
-    pub(crate) fn save_rules(&self) {
+    /// Writes the rules to `/system/state/rules`; a failure is audited, and
+    /// returned for a reply that would otherwise say the change holds across a
+    /// reboot. The rules hold in memory either way.
+    pub(crate) fn save_rules(&self) -> Result<(), String> {
         let written = self
             .not_unread(RULES)
             .and_then(|()| self.rules.text())
             .and_then(|text| self.host.rules_write(&text));
-        if let Err(why) = written {
+        if let Err(why) = &written {
             self.host
                 .audit(&format!("the rules were not written: {why}"));
         }
+        written
     }
 
     pub(crate) fn with_saved_log(mut self) -> Self {

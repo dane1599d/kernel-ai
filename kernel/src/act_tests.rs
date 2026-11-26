@@ -677,7 +677,14 @@ fn rule() -> Result<(), &'static str> {
         (reply_to("rules")?, "ok #1 process_stop"),
         (reply_to("rules_remove 1")?, removed),
     ] {
-        if got != want {
+        // A boot with no /system/state saves no rules: the removal holds for
+        // this boot, and its ok reply says a restart may bring it back.
+        let unsaved = want == removed
+            && got.starts_with(
+                "ok Removed rule #1 (process_stop) for this boot: the rules were not saved",
+            )
+            && got.ends_with("so it may come back after a restart");
+        if got != want && !unsaved {
             log!("act-rule: wanted {want:?}, got {got:?}");
             return Err("act-rule: a line got the wrong answer");
         }
