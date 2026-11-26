@@ -3,10 +3,12 @@
 //! through QEMU's user networking and is told about with `dns=`. Tests never
 //! need the internet.
 
-use std::net::UdpSocket;
+use std::collections::HashSet;
+use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
+use std::time::Duration;
 
 pub struct MockDns {
     pub port: u16,
@@ -39,16 +41,41 @@ pub fn start() -> Result<MockDns, String> {
     let counter = Arc::clone(&queries);
     thread::spawn(move || {
         let mut buf = [0u8; 1500];
+        let mut slow_askers = HashSet::new();
         while let Ok((len, from)) = socket.recv_from(&mut buf) {
             counter.fetch_add(1, Ordering::SeqCst);
-            if let Some(reply) = netcore::fixture::answer(&buf[..len])
-                && let Err(error) = socket.send_to(&reply, from)
-            {
-                eprintln!("xtask: mock DNS: {error}");
+            let query = &buf[..len];
+            let Some(reply) = netcore::fixture::answer(query) else {
+                continue;
+            };
+            let delay = netcore::fixture::delay_ms(query);
+            if delay == 0 {
+                send(&socket, &reply, from);
+                continue;
+            }
+            // A slow name is answered once per asking socket, late, from a
+            // thread of its own so the queries after it are not held up.
+            if !slow_askers.insert(from) {
+                continue;
+            }
+            match socket.try_clone() {
+                Ok(late) => {
+                    thread::spawn(move || {
+                        thread::sleep(Duration::from_millis(delay));
+                        send(&late, &reply, from);
+                    });
+                }
+                Err(error) => eprintln!("xtask: mock DNS: {error}"),
             }
         }
     });
     Ok(MockDns { port, queries })
+}
+
+fn send(socket: &UdpSocket, reply: &[u8], to: SocketAddr) {
+    if let Err(error) = socket.send_to(reply, to) {
+        eprintln!("xtask: mock DNS: {error}");
+    }
 }
 
 #[cfg(test)]
@@ -79,5 +106,33 @@ mod tests {
         let words: Vec<&str> = cmdline.split_whitespace().collect();
         assert!(words.contains(&format!("dns=10.0.2.2:{}", server.port).as_str()));
         assert!(words.contains(&"online=test"), "{cmdline}");
+    }
+
+    #[test]
+    fn the_slow_name_is_answered_once_and_late_without_holding_up_others() {
+        use netcore::fixture::{KAI, SLOW, SLOW_ADDRESS, SLOW_DELAY_MS};
+        let server = start().unwrap();
+        let client = UdpSocket::bind(("127.0.0.1", 0)).unwrap();
+        let late = Duration::from_millis(SLOW_DELAY_MS);
+        client.set_read_timeout(Some(late * 2)).unwrap();
+        client.connect(("127.0.0.1", server.port)).unwrap();
+        let started = std::time::Instant::now();
+        client.send(&netcore::dns::query(1, SLOW)).unwrap();
+        client.send(&netcore::dns::query(2, SLOW)).unwrap();
+        client.send(&netcore::dns::query(3, KAI)).unwrap();
+        let mut buf = [0u8; 512];
+        let len = client.recv(&mut buf).unwrap();
+        assert!(netcore::dns::parse_reply(3, KAI, &buf[..len]).is_ok());
+        assert!(started.elapsed() < late);
+        let len = client.recv(&mut buf).unwrap();
+        let slow = netcore::dns::parse_reply(1, SLOW, &buf[..len]).unwrap();
+        assert_eq!(slow.addresses[0].octets(), SLOW_ADDRESS);
+        assert!(started.elapsed() >= late);
+        // The repeat from the same socket is never answered.
+        client
+            .set_read_timeout(Some(Duration::from_millis(1_000)))
+            .unwrap();
+        assert!(client.recv(&mut buf).is_err());
+        assert_eq!(server.queries(), 3);
     }
 }

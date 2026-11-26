@@ -47,9 +47,10 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use goalcore::planner::{JobPlanner, Llm};
 use goalcore::reply::{self, Reply};
 use goalcore::report::Report;
-use goalcore::runner::{Event, Outcome, Parts, Plan, Planner, Runner, Steps};
+use goalcore::runner::{Event, Outcome, Parts, Plan, Runner, Steps};
 use goalcore::{AskKind, Door, Goal, Goals, Presence, State, Step, Tier};
 use llmproto::act::ActRequest;
 use user::{arg, args, println, route, sys};
@@ -102,6 +103,8 @@ fn run() -> i32 {
             steps: &mut agent.steps,
         };
         let events = runner.turn(&mut agent.goals, now, Presence::Here, &mut parts);
+        // A goal that ended with its plan job in flight stops that job in llm.
+        agent.planner.drop_ended(&agent.goals);
         // A card whose goal ended (a cancel) is no longer polled.
         let goals = &agent.goals;
         agent
@@ -130,11 +133,20 @@ fn run() -> i32 {
 }
 
 /// The goals, the planner's llm jobs, and the steps on the person's card.
-#[derive(Default)]
 struct Agent {
     goals: Goals,
-    planner: LlmPlanner,
+    planner: JobPlanner<RouteLlm, String>,
     steps: ShellSteps,
+}
+
+impl Default for Agent {
+    fn default() -> Self {
+        Self {
+            goals: Goals::new(),
+            planner: JobPlanner::new(RouteLlm, plan_request, plan_of),
+            steps: ShellSteps::default(),
+        }
+    }
 }
 
 impl Agent {
@@ -269,42 +281,22 @@ impl Door<String> for InCeiling {
     }
 }
 
-/// Each goal's next step, from llm's agent `act` jobs: one job a goal at a time.
-#[derive(Default)]
-struct LlmPlanner {
-    /// The ticket of each goal's job in flight.
-    jobs: Vec<(u64, String)>,
-}
+/// llm on this agent's route, for the planner (`goalcore::planner`).
+struct RouteLlm;
 
-impl LlmPlanner {
-    fn forget(&mut self, goal: u64) {
-        self.jobs.retain(|(g, _)| *g != goal);
+impl Llm for RouteLlm {
+    fn call(&mut self, text: &str) -> Result<String, String> {
+        call_llm(text)
+    }
+
+    fn note(&mut self, line: &str) {
+        println!("goals: {line}");
     }
 }
 
-impl Planner<String> for LlmPlanner {
-    fn next(&mut self, goal: &Goal, _now: u64) -> (Plan<String>, u64) {
-        let Some(at) = self.jobs.iter().position(|(g, _)| *g == goal.id) else {
-            match start_plan(goal) {
-                Ok(ticket) => self.jobs.push((goal.id, ticket)),
-                Err(why) => println!("goals: goal {} not planned: {why}", goal.id),
-            }
-            return (Plan::Later, 0);
-        };
-        let taken = match call_llm(&format!("agent-take {}", self.jobs[at].1)) {
-            Ok(taken) => taken,
-            Err(why) => return (Plan::Fail(why), 0),
-        };
-        if taken == "pending" {
-            return (Plan::Later, 0);
-        }
-        self.jobs.remove(at);
-        (plan_of(&taken), 0)
-    }
-}
-
-/// Starts the llm job that plans `goal`'s next step: its ticket.
-fn start_plan(goal: &Goal) -> Result<String, String> {
+/// The `agent-start act` request that plans `goal`'s next step, without its
+/// command word, which llm puts back from the kind.
+fn plan_request(goal: &Goal) -> Result<String, String> {
     let done: Vec<&str> = goal
         .log
         .iter()
@@ -328,14 +320,10 @@ fn start_plan(goal: &Goal) -> Result<String, String> {
         apps: String::new(),
     };
     let encoded = request.encode();
-    let body = encoded
+    encoded
         .strip_prefix("act ")
-        .ok_or("an act request without act")?;
-    let started = call_llm(&format!("agent-start act {body}"))?;
-    started
-        .strip_prefix("ok ")
-        .map(|ticket| ticket.trim().to_string())
-        .ok_or(started)
+        .map(String::from)
+        .ok_or_else(|| String::from("an act request without act"))
 }
 
 /// What llm's answer to a planning job says the goal does next.

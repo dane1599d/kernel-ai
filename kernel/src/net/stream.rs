@@ -184,12 +184,10 @@ fn start(
     port: u16,
 ) -> Result<SocketHandle, Error> {
     socket.set_nagle_enabled(false);
+    // Every ephemeral port held: as full as the stream limits (H5-19).
+    let local = next_port(&net.sockets).ok_or(Error::Busy)?;
     socket
-        .connect(
-            net.iface.context(),
-            (IpAddress::Ipv4(addr), port),
-            next_port(),
-        )
+        .connect(net.iface.context(), (IpAddress::Ipv4(addr), port), local)
         .map_err(|_| Error::Invalid)?;
     Ok(net.sockets.add(socket))
 }
@@ -251,6 +249,16 @@ pub fn meter_of(owner: u64, id: u64) -> Option<super::dest::Meter> {
     let streams = STREAMS.lock();
     let stream = streams.open.get(index(id)?)?.as_ref()?;
     (stream.owner == owner).then(|| stream.meter.clone())?
+}
+
+/// The local port `owner`'s stream `id` was given: `test=net-stream`'s look
+/// at port reuse (bug hunt 5's H5-19).
+pub fn local_port(owner: u64, id: u64) -> Option<u16> {
+    with(owner, id, |socket, _| {
+        socket.local_endpoint().map(|end| end.port)
+    })
+    .ok()
+    .flatten()
 }
 
 /// NET_SEND: queues up to [`MAX_CALL`] bytes of `data`; how many it took,

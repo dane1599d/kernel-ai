@@ -267,3 +267,86 @@ fn a_model_is_removed_on_a_disk_filled_to_the_reserve() {
     let info = Request::ModelInfo { name };
     assert_eq!(store(&mut c, ALICE, info), Reply::Failed(Error::Invalid));
 }
+
+/// A change outside any action that fails, and an action that aborts, drop
+/// their own changes but not the GC pass a removal started: it goes on and
+/// the blob's blocks come back (bug hunt 5, H5-7). Before, the pass ended
+/// with them and idle never began another, so they stayed in use.
+#[test]
+fn a_failed_change_or_an_abort_leaves_the_removals_pass_running() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let old = model((4 << 20) + 77, 1);
+    let old_name = import(&mut c, &old);
+    let new_name = import(&mut c, &model((2 << 20) + 5, 2));
+    let hint_new = Request::ModelHint {
+        name: Some(new_name),
+    };
+    assert_eq!(store(&mut c, ALICE, hint_new), Reply::Done);
+    let (free_before, _) = c.server.fs().space();
+    assert_eq!(remove(&mut c, ALICE, &old_name), Reply::Done);
+    // `call` runs no idle: the pass has not stepped yet.
+    assert!(c.server.fs().gc_running());
+    // An Abort with no action open, and a Trash of a missing name: both fail
+    // outside any action.
+    assert_eq!(
+        store(&mut c, ALICE, Request::Abort),
+        Reply::Failed(Error::Invalid)
+    );
+    let trash = Request::Trash {
+        name: "not there".into(),
+    };
+    let trashed = c.call(ALICE, HOME_USER, DIR_RIGHTS, trash).0;
+    assert!(matches!(trashed, Reply::Failed(_)), "{trashed:?}");
+    assert!(c.server.fs().gc_running(), "a failed change ended the pass");
+    // An action begun and aborted.
+    let begin = Request::Begin { action: 9 };
+    assert_eq!(store(&mut c, ALICE, begin), Reply::Done);
+    assert_eq!(store(&mut c, ALICE, Request::Abort), Reply::Done);
+    assert!(c.server.fs().gc_running(), "an abort ended the pass");
+    collect(&mut c);
+    for _ in 0..2 {
+        let sync = c.call(ALICE, HOME_USER, DIR_RIGHTS, Request::Sync).0;
+        assert!(matches!(sync, Reply::Committed { .. }), "{sync:?}");
+    }
+    let (free_after, _) = c.server.fs().space();
+    let blob_blocks = old.len().div_ceil(kaifs::BLOCK) as u64;
+    assert!(
+        free_after >= free_before + blob_blocks,
+        "{free_before} free before, {free_after} after, the blob was {blob_blocks}"
+    );
+}
+
+/// A blob removed while the pass an earlier removal started still runs: that
+/// pass began before the second removal and reaches its blocks, so idle
+/// starts the next pass once it ends, which frees them (bug hunt 5, H5-7).
+#[test]
+fn a_blob_removed_while_a_pass_runs_gets_the_next_pass() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let first = model(300_000, 3);
+    let second = model((4 << 20) + 77, 4);
+    let first_name = import(&mut c, &first);
+    let second_name = import(&mut c, &second);
+    let kept = import(&mut c, &model(100_000, 5));
+    let hint_kept = Request::ModelHint { name: Some(kept) };
+    assert_eq!(store(&mut c, ALICE, hint_kept), Reply::Done);
+    let (free_before, _) = c.server.fs().space();
+    assert_eq!(remove(&mut c, ALICE, &first_name), Reply::Done);
+    assert!(c.server.fs().gc_running());
+    assert_eq!(remove(&mut c, ALICE, &second_name), Reply::Done);
+    // The first pass ends; the next idle starts the second and it runs out.
+    collect(&mut c);
+    c.server.idle(2_000_000_000);
+    collect(&mut c);
+    for _ in 0..2 {
+        let sync = c.call(ALICE, HOME_USER, DIR_RIGHTS, Request::Sync).0;
+        assert!(matches!(sync, Reply::Committed { .. }), "{sync:?}");
+    }
+    let (free_after, _) = c.server.fs().space();
+    let blocks = (first.len() + second.len()).div_ceil(kaifs::BLOCK) as u64;
+    assert!(
+        free_after >= free_before + blocks,
+        "{free_before} free before, {free_after} after, the blobs were {blocks}"
+    );
+}

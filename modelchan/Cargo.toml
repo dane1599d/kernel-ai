@@ -16,3 +16,8 @@ comp-models = { path = "../apps/models" }
 fsproto = { path = "../fsproto" }
 kabi = { path = "../kabi" }
 sha2 = { version = "0.11.1", default-features = false }
+
+# `llm`'s health replies, as the service writes them, for the trial's tests.
+# Not a dependency: the model manager's window builds `modelchan` for wasm.
+[dev-dependencies]
+llmproto = { path = "../llmproto" }

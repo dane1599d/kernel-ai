@@ -417,3 +417,28 @@ fn a_hostile_view_draws_without_panicking() {
     let frame = w.commit(&M);
     assert!(!frame.list.groups.is_empty());
 }
+
+/// A caret cell far past any row (or past i32::MAX) stays between the text's
+/// start and the widest row a view may hold: `cell * cw` does not overflow, and
+/// a u32 cell does not wrap to the left of the text.
+#[test]
+fn a_caret_far_past_the_row_stays_within_the_widest_row() {
+    let cw = code::cell_w(&M);
+    let text_x = CODE_PAD + 4 * cw;
+    let widest = text_x + MAX_CODE_CELLS as i32 * cw;
+    for cell in [1_000_000_000, u32::MAX] {
+        let mut v = view(vec![row("x", "1")]);
+        v.cursor = Some((0, cell));
+        let ops = code::ops(&M, &v, Rect::new(0, 0, 400, 300), true);
+        let caret = ops.iter().find_map(|op| match op {
+            Op::Fill {
+                rect,
+                token: Token::Text,
+                ..
+            } if rect.w == 2 => Some(*rect),
+            _ => None,
+        });
+        let inside = caret.is_some_and(|c| c.x >= text_x && c.x <= widest);
+        assert!(inside, "cell {cell}: {caret:?}");
+    }
+}
