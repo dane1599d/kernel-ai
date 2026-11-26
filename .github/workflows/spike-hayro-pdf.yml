@@ -1,0 +1,77 @@
+name: Spike G13 hayro-pdf
+
+# Spike G13 (P6 groundwork, plan M-3): hayro 0.9 renders 20 varied PDFs to
+# PNG on a GitHub runner, timed and measured beside pdftoppm (poppler), and
+# the pixels compared. Runs on the spike branch only and is never merged
+# (ADR 0000:43); nothing here ships. The PDFs are made by make_corpus.py or
+# fetched from pdf.js's test corpus at a pinned commit, never committed. The
+# figures are on the run's summary page and in its artifact.
+
+on:
+  push:
+    branches: [spike/hayro-pdf]
+    paths:
+      - spikes/p6-pdf/**
+      - .github/workflows/spike-hayro-pdf.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Poppler, qpdf, Noto CJK and the corpus tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq poppler-utils qpdf fonts-noto-cjk
+          pdftoppm -v 2>&1 | head -1
+          qpdf --version | head -1
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install -q reportlab==4.2.5 pillow==11.0.0
+      - name: Toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Build hayro-render and pdfdiff
+        working-directory: spikes/p6-pdf
+        run: cargo build --release --locked
+      - name: Make and fetch the corpus
+        working-directory: spikes/p6-pdf
+        run: |
+          /tmp/venv/bin/python make_corpus.py corpus
+          ls -l corpus
+      - name: Render, time and compare
+        working-directory: spikes/p6-pdf
+        env:
+          KAI_CJK_FONT: /usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc
+        run: |
+          nproc; free -m
+          python3 drive.py corpus out target/release/hayro-render target/release/pdfdiff
+      - name: First pages, side by side
+        if: always()
+        working-directory: spikes/p6-pdf
+        run: |
+          mkdir -p firsts
+          for d in out/hayro/*/; do
+            stem=$(basename "$d")
+            [ -f "$d/page-1.png" ] && cp "$d/page-1.png" "firsts/$stem-hayro.png"
+            first=$(ls out/poppler/$stem/*.png 2>/dev/null | sort | head -1)
+            [ -n "$first" ] && cp "$first" "firsts/$stem-pdftoppm.png"
+          done
+          true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hayro-pdf-results
+          retention-days: 30
+          path: |
+            spikes/p6-pdf/out/results.*
+            spikes/p6-pdf/out/*.diff
+            spikes/p6-pdf/out/hayro/*.log
+            spikes/p6-pdf/out/poppler/*.log
+            spikes/p6-pdf/firsts/

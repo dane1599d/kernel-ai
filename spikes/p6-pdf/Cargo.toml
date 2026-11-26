@@ -1,0 +1,20 @@
+# Spike G13 (P6 groundwork, plan M-3): hayro 0.9 renders PDFs to PNG on a
+# GitHub runner, timed and measured beside pdftoppm. Its own workspace, never
+# part of the main one, and never merged (ADR 0000:43).
+[workspace]
+
+[package]
+name = "p6-pdf"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MPL-2.0"
+
+[dependencies]
+hayro = "=0.9.0"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[profile.release]
+opt-level = 3
+codegen-units = 1
+debug = false
