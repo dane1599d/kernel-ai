@@ -176,6 +176,7 @@ fn each_ceiling_holds_at_its_limit_and_just_past_it() {
             max_frames: s.frames - 1,
             ..ROOMY
         };
+        // A single-frame format has no frame to spare: one past it is 0.
         over(&s, &past, Ceiling::Frames, "past the frame ceiling");
     }
 }
@@ -260,4 +261,93 @@ fn a_file_refused_for_its_size_allocated_next_to_nothing() {
     ] {
         refused_big(&format!("{name} pixels"), &bytes, &tight, Ceiling::Pixels);
     }
+}
+
+/// A `w` x `h` PNG of the sample pattern, made with the encoder.
+fn png_of(w: u32, h: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut out, w, h);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&samples::rgba(w, h, true)).unwrap();
+    }
+    out
+}
+
+/// A `w` x `h` GIF of one frame, two colours in stripes.
+fn gif_of(w: u16, h: u16) -> Vec<u8> {
+    let mut out = Vec::new();
+    {
+        let mut encoder = gif::Encoder::new(&mut out, w, h, &[0, 0, 0, 255, 255, 255]).unwrap();
+        let pixels: Vec<u8> = (0..usize::from(w) * usize::from(h))
+            .map(|n| ((n / usize::from(w)) % 2) as u8)
+            .collect();
+        encoder
+            .write_frame(&gif::Frame::from_indexed_pixels(w, h, pixels, None))
+            .unwrap();
+    }
+    out
+}
+
+#[test]
+fn images_at_the_ceilings_the_case_runs_under_decode() {
+    let side = LIMITS.max_side;
+    // 1024 x 1024: the side and the pixel ceilings both met exactly, in half
+    // the bytes ceiling for a PNG and all of it for a WebP's two canvases.
+    for (name, bytes) in [
+        ("png", png_of(side, side)),
+        (
+            "webp",
+            samples::webp(&samples::rgba(side, side, true), side, side, true),
+        ),
+    ] {
+        let image = body(&format!("{name} {side}x{side}"), &bytes).expect(name);
+        assert_eq!(
+            (image.width, image.height, image.frames.len()),
+            (side, side, 1)
+        );
+        assert_eq!(
+            image.frames[0].rgba.len(),
+            (side * side * 4) as usize,
+            "{name}"
+        );
+    }
+    // A GIF as wide as the side ceiling, half as high (its canvases count).
+    let image = body("gif 1024x512", &gif_of(side as u16, 512)).expect("gif");
+    assert_eq!((image.width, image.height), (side, 512));
+    // And one past the side, on any axis, is refused.
+    for (name, bytes) in [
+        ("png", samples::png_claiming(side + 1, 1)),
+        ("png", samples::png_claiming(1, side + 1)),
+        ("gif", samples::gif_claiming(side as u16 + 1, 1)),
+    ] {
+        refused_big(
+            &format!("{name} past the side"),
+            &bytes,
+            &LIMITS,
+            Ceiling::Side,
+        );
+    }
+    // The frame ceiling: 16 frames decode, a 17th is refused.
+    let frames = LIMITS.max_frames as usize;
+    let image = body("gif of 16 frames", &samples::gif_frames(frames)).expect("gif");
+    assert_eq!(image.frames.len(), frames);
+    refused_big(
+        "gif of 17 frames",
+        &samples::gif_frames(frames + 1),
+        &LIMITS,
+        Ceiling::Frames,
+    );
+    let dot = vec![9u8, 8, 7, 255];
+    let many = |n: usize| samples::webp_animated(1, 1, &vec![(dot.clone(), 10); n]);
+    let image = body("webp of 16 frames", &many(frames)).expect("webp");
+    assert_eq!(image.frames.len(), frames);
+    refused_big(
+        "webp of 17 frames",
+        &many(frames + 1),
+        &LIMITS,
+        Ceiling::Frames,
+    );
 }

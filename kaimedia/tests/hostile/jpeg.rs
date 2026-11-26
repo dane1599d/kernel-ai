@@ -24,8 +24,8 @@ fn jpeg_segments(bytes: &[u8]) -> Vec<(usize, usize)> {
     out
 }
 
-fn jpeg_settles(name: &str, bytes: &[u8]) {
-    settles(name, bytes, Format::Jpeg, samples::W, samples::H);
+fn jpeg_settles(name: &str, bytes: &[u8]) -> bool {
+    settles(name, bytes, Format::Jpeg, samples::W, samples::H)
 }
 
 #[test]
@@ -147,7 +147,7 @@ fn a_jpeg_frame_header_that_cannot_be_right_settles() {
 }
 
 #[test]
-fn a_jpeg_segment_that_lies_about_its_length_settles() {
+fn a_jpeg_segment_that_lies_about_its_length_is_refused_but_for_an_app_marker() {
     let good = samples::jpeg();
     let segments = jpeg_segments(&good);
     assert!(
@@ -155,6 +155,7 @@ fn a_jpeg_segment_that_lies_about_its_length_settles() {
         "the sample has {} segments",
         segments.len()
     );
+    let mut decoded = Vec::new();
     for (at, length) in segments {
         let marker = good[at + 1];
         for claimed in [
@@ -169,15 +170,36 @@ fn a_jpeg_segment_that_lies_about_its_length_settles() {
         ] {
             let mut bytes = good.clone();
             bytes[at + 2..at + 4].copy_from_slice(&(claimed as u16).to_be_bytes());
-            jpeg_settles(&format!("jpeg FF{marker:02X} claims {claimed}"), &bytes);
+            if jpeg_settles(&format!("jpeg FF{marker:02X} claims {claimed}"), &bytes) {
+                decoded.push((marker, claimed));
+            }
         }
     }
-    // The scan header's own length, and its component count.
+    // Only the application segments (JFIF, Exif, Adobe), which a decoder skips
+    // by their length, survive a length that is a byte off or merely short;
+    // the tables, the frame header and every length that runs off are refused.
+    let mut want = vec![
+        (0xE0, 2),
+        (0xE0, 3),
+        (0xE0, 15),
+        (0xE0, 17),
+        (0xE1, 2),
+        (0xE1, 3),
+        (0xE1, 75),
+        (0xE1, 77),
+        (0xED, 2),
+        (0xED, 3),
+        (0xED, 55),
+    ];
+    decoded.sort_unstable();
+    want.sort_unstable();
+    assert_eq!(decoded, want, "the lengths that still decode");
+    // The scan header's own length: every lie is refused.
     let sos = segment(&good, 0xDA);
     for claimed in [0u16, 1, 2, 3, 0xFFFF] {
         let mut bytes = good.clone();
         bytes[sos + 2..sos + 4].copy_from_slice(&claimed.to_be_bytes());
-        jpeg_settles(&format!("jpeg SOS claims {claimed}"), &bytes);
+        refused(&format!("jpeg SOS claims {claimed}"), &bytes, Format::Jpeg);
     }
 }
 

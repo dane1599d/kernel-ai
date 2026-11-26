@@ -98,11 +98,18 @@ pub fn refused_big(name: &str, bytes: &[u8], limits: &Limits, ceiling: Ceiling) 
 
 /// For bytes a lenient decoder may take: a decode must be the `w` x `h` the
 /// case declares (the canvas never moves), and a refusal a bad `format`,
-/// never a ceiling.
-pub fn settles(name: &str, bytes: &[u8], format: Format, w: u32, h: u32) {
+/// never a ceiling. Whether it decoded: a case that must pin which is the
+/// refusal collects these and compares them to the list it expects.
+pub fn settles(name: &str, bytes: &[u8], format: Format, w: u32, h: u32) -> bool {
     match body(name, bytes) {
-        Ok(image) => assert_eq!((image.width, image.height), (w, h), "{name}"),
-        Err(Error::Bad(got, _)) => assert_eq!(got, format, "{name}"),
+        Ok(image) => {
+            assert_eq!((image.width, image.height), (w, h), "{name}");
+            true
+        }
+        Err(Error::Bad(got, _)) => {
+            assert_eq!(got, format, "{name}");
+            false
+        }
         Err(other) => panic!("{name}: {other:?}"),
     }
 }

@@ -64,17 +64,22 @@ fn a_webp_canvas_at_its_extremes_is_refused_before_its_buffer() {
 }
 
 #[test]
-fn a_webp_whose_chunks_lie_settles() {
+fn a_webp_whose_chunks_lie_is_taken_only_where_the_stream_is_whole() {
     let good = samples::webp(&samples::rgba(8, 8, true), 8, 8, true);
-    let settle = |name: &str, bytes: &[u8]| settles(name, bytes, Format::Webp, 8, 8);
-    // RIFF's size, and the first chunk's, at their extremes.
+    // RIFF's size, and the first chunk's, at their extremes. The reader goes by
+    // the chunks, so a RIFF size that lies either way is taken. A chunk size
+    // that is short cuts the bitstream; one past the file's end is clamped to
+    // it (from 2^31 up, at least), which leaves the stream whole.
     for size in [0u32, 4, 5, 0x7FFF_FFFF, 0xFFFF_FFFE, 0xFFFF_FFFF] {
         let mut bytes = good.clone();
         bytes[4..8].copy_from_slice(&size.to_le_bytes());
-        settle(&format!("webp riff size {size}"), &bytes);
+        let name = format!("webp riff size {size}");
+        assert!(settles(&name, &bytes, Format::Webp, 8, 8), "{name}");
         let mut bytes = good.clone();
         bytes[16..20].copy_from_slice(&size.to_le_bytes());
-        settle(&format!("webp chunk size {size}"), &bytes);
+        let name = format!("webp chunk size {size}");
+        let decodes = settles(&name, &bytes, Format::Webp, 8, 8);
+        assert_eq!(decodes, size >= 0x7FFF_FFFF, "{name}");
     }
     // Cut at every byte.
     for cut in 0..good.len() {
@@ -91,7 +96,7 @@ fn a_webp_whose_chunks_lie_settles() {
 }
 
 #[test]
-fn a_webp_frame_off_its_canvas_or_with_a_bad_lossless_header_settles() {
+fn a_webp_frame_off_its_canvas_or_with_a_bad_lossless_header_is_refused() {
     let frames = [(samples::rgba(8, 8, true), 10)];
     let good = samples::webp_animated(8, 8, &frames);
     let anmf = good
@@ -99,17 +104,16 @@ fn a_webp_frame_off_its_canvas_or_with_a_bad_lossless_header_settles() {
         .position(|w| w == b"ANMF")
         .expect("the animated sample has an ANMF chunk");
     // ANMF's body: x, y, width - 1, height - 1 (3 bytes each), duration (3).
+    // Any frame header that is not what the data is, is refused: the frame off
+    // the canvas, or a size that disagrees with its bitstream. Only a 0 where a
+    // 0 already was (x and y) decodes, as it is the same file.
     for at in [anmf + 8, anmf + 11, anmf + 14, anmf + 17] {
         for value in [0u8, 1, 0x7F, 0xFF] {
             let mut bytes = good.clone();
             bytes[at..at + 3].fill(value);
-            settles(
-                &format!("webp anmf field {at} = {value}"),
-                &bytes,
-                Format::Webp,
-                8,
-                8,
-            );
+            let name = format!("webp anmf field +{} = {value}", at - anmf);
+            let decodes = settles(&name, &bytes, Format::Webp, 8, 8);
+            assert_eq!(decodes, at < anmf + 14 && value == 0, "{name}");
         }
     }
     // The lossless header (0x2F, then 14 bits of width - 1 and of height - 1)
@@ -122,11 +126,15 @@ fn a_webp_frame_off_its_canvas_or_with_a_bad_lossless_header_settles() {
     for header in [0u32, 0x3FFF, 0x3FFF << 14, 0x0FFF_FFFF, 0xFFFF_FFFF] {
         let mut bytes = lossless.clone();
         bytes[vp8l + 9..vp8l + 13].copy_from_slice(&header.to_le_bytes());
-        // The canvas is the chunk's own here, so it may be any size in bounds.
-        match body(&format!("webp vp8l header {header:#x}"), &bytes) {
-            Ok(_) => {}
-            Err(Error::Bad(format, _)) => assert_eq!(format, Format::Webp),
-            Err(other) => panic!("webp vp8l header {header:#x}: {other:?}"),
+        let name = format!("webp vp8l header {header:#x}");
+        match (header, body(&name, &bytes)) {
+            // 1 x 1: the pixels the data holds, read as a one-pixel image.
+            (0, Ok(image)) => assert_eq!((image.width, image.height), (1, 1), "{name}"),
+            (0, other) => panic!("{name}: {:?}", other.map(dims)),
+            (_, other) => match other {
+                Err(Error::Bad(format, _)) => assert_eq!(format, Format::Webp, "{name}"),
+                other => panic!("{name}: wanted a refusal, got {:?}", other.map(dims)),
+            },
         }
     }
     for fill in [0x00u8, 0x55, 0xFF] {

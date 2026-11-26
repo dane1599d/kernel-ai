@@ -2,7 +2,7 @@
 
 use super::crafted::*;
 use super::samples;
-use kaimedia::{Ceiling, Error, Format, decode};
+use kaimedia::{Ceiling, Format, decode};
 
 pub const PNG_MAGIC: &[u8] = b"\x89PNG\r\n\x1a\n";
 const IDAT: [u8; 9] = [0x78, 0x9C, 0x63, 0, 0, 0, 1, 0, 1];
@@ -85,8 +85,12 @@ fn a_png_cut_inside_each_chunk_is_refused() {
             let cut = at + inside;
             let name = format!("png cut at {cut}");
             match iend {
-                // IEND closes a file whose pixels are all there: it decodes.
-                true if cut < good.len() => settles(&name, &good[..cut], Format::Png, 64, 48),
+                // IEND closes a file whose pixels are all there: once its
+                // length and name are in, what is cut off is only its CRC.
+                true if cut < good.len() => {
+                    let decodes = settles(&name, &good[..cut], Format::Png, 64, 48);
+                    assert_eq!(decodes, inside >= 8, "{name}");
+                }
                 true => {}
                 false => refused(&name, &good[..cut], Format::Png),
             }
@@ -136,16 +140,14 @@ fn a_flood_of_png_chunks_is_walked_in_bounds() {
     // As many empty chunks as the input ceiling lets in (12 bytes each).
     let count = (LIMITS.max_input - good.len()) / 12;
     let started = std::time::Instant::now();
-    // Ancillary and private chunks are skipped: the image is the same.
+    // Ancillary and private chunks are skipped: the walk gets through every
+    // one of them to the same image.
     for name in [b"tEXt", b"prVt", b"zTXt"] {
         let flooded = png_flooded(count, name);
         assert!(flooded.len() <= LIMITS.max_input);
         let name = format!("png {count} x {}", String::from_utf8_lossy(name));
-        match body(&name, &flooded) {
-            Ok(image) => assert_eq!(image, canvas, "{name}"),
-            Err(Error::Bad(format, _)) => assert_eq!(format, Format::Png, "{name}"),
-            Err(other) => panic!("{name}: {other:?}"),
-        }
+        let image = body(&name, &flooded).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        assert_eq!(image, canvas, "{name}");
     }
     // An unknown critical chunk is refused, however many.
     refused(
@@ -163,7 +165,7 @@ fn a_flood_of_png_chunks_is_walked_in_bounds() {
         Ceiling::Input,
     );
     assert!(
-        started.elapsed().as_secs() < 30,
+        started.elapsed().as_secs() < 3,
         "the floods took {:?}",
         started.elapsed()
     );
