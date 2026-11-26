@@ -1571,7 +1571,7 @@ dependencies = [
  "httparse",
  "kabi",
  "kainet",
- "miniz_oxide",
+ "miniz_oxide 0.9.1",
  "netdest",
  "p256",
  "p384",
