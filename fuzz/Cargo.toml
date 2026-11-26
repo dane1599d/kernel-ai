@@ -19,7 +19,9 @@ publish = false
 # and the shell's records on disk (ADR 0000 P8): `kai-grants 1` with
 # captable's reader of grant references, and `actlog 1` and `2`, in
 # grants_harness.rs and actlog_harness.rs, run by kaigrants's hostile test
-# and shellcore's actlog_hostile test too.
+# and shellcore's actlog_hostile test too; and an agent package's manifest
+# (ADR 0013 section 6), `kai-app 1` with its `agent 1` block, through
+# kaiagent's reader, in agent_harness.rs, run by kaiagent's hostile test too.
 # Outside the workspace: libfuzzer-sys builds libFuzzer's C++, so these run
 # only in .github/workflows/fuzz.yml on a GitHub runner, never on a
 # developer's PC. Their bodies are ../fuzz/harness.rs, which kainet's host
@@ -48,6 +50,10 @@ fsproto = { path = "../fsproto" }
 kaigrants = { path = "../kaigrants" }
 captable = { path = "../captable" }
 shellcore = { path = "../shellcore" }
+kaiagent = { path = "../kaiagent" }
+agentabi = { path = "../agentabi" }
+kabi = { path = "../kabi" }
+netdest = { path = "../netdest" }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
 rustls = { version = "=0.23.46", default-features = false }
 getrandom = "0.3"
@@ -191,6 +197,13 @@ bench = false
 [[bin]]
 name = "actlog"
 path = "fuzz_targets/actlog.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "agent_manifest"
+path = "fuzz_targets/agent_manifest.rs"
 test = false
 doc = false
 bench = false

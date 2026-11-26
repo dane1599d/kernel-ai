@@ -1,7 +1,10 @@
-//! An agent manifest read as hostile (ADR 0013 section 6): cut, mutated or bent at
-//! every byte, it is read or refused, never a panic; what is read allocates no more
-//! than its bytes could hold; and what is read is written back as a manifest that reads
-//! back as the same one, so a package's manifest can be shown, stored and read again.
+//! An agent manifest read as hostile (ADR 0013 section 6): the `agent_manifest` fuzz
+//! target's body (`fuzz/agent_harness.rs`), run here over truncations and mutations so a
+//! harness that cannot build, or that panics on its own, fails the host tests without
+//! libFuzzer. Cut, mutated or bent at every byte, a manifest is read or refused with one
+//! sentence, never a panic; what is read allocates no more than its bytes could hold, is
+//! written back as a manifest that reads back as the same one, and grants no row, scope,
+//! host or budget its text does not name.
 //!
 //! The text is a package's own, so every case here stands for a package an attacker
 //! made: the parser's strictness (every line, once, in order) is what these hit.
@@ -9,17 +12,18 @@
 #[path = "../../testkit/hostile.rs"]
 mod hostile;
 
+#[path = "../../fuzz/agent_harness.rs"]
+mod harness;
+
+use harness::SAMPLES;
 use kaiagent::{Manifest, Refusal};
 
-/// Manifests that parse: the ADR's example, an interactive one with the net line (and
-/// its budget), and one at the limits.
+/// The parse is a few small strings and vectors; the rest grows with the input.
+const ALLOC_PER_BYTE: usize = 32;
+const ALLOC_FLOOR: usize = 64 * 1024;
+
+/// Manifests that parse: the harness's, and one whose hosts are at netdest's limits.
 fn samples() -> Vec<String> {
-    let background = "kai-app 1\nid notes-agent\nabi 1.0\nagent 1\nclass background\n\
-        model tokens/day=50000 kv=1024 pool=64m\nactions fs_list fs_read notes_*\n\
-        memory read write\nnet none\n";
-    let net = "kai-app 1\nid weather\nabi 1.0\nagent 1\nclass interactive\n\
-        model -\nactions fs_list\nmemory read\n\
-        net proto:tcp,ports:443,hosts:api.weather.example bytes/day=64m\n";
     let host = |c: char| {
         let label = c.to_string().repeat(60);
         format!("{label}.{label}.{label}.{label}.example")
@@ -32,36 +36,33 @@ fn samples() -> Vec<String> {
         host('b'),
         host('c')
     );
-    vec![background.into(), net.into(), limits]
+    SAMPLES
+        .iter()
+        .map(|s| s.to_string())
+        .chain([limits])
+        .collect()
 }
 
-/// What one mutant is held to.
+/// What one mutant is held to: the fuzz target's body, and a bound on what one parse
+/// allocates.
 fn read(bytes: &[u8]) {
     let text = String::from_utf8_lossy(bytes);
-    let (parsed, peak) = hostile::peak_alloc(|| Manifest::parse(&text));
+    let (_, peak) = hostile::peak_alloc(|| Manifest::parse(&text));
     assert!(
-        peak <= 64 * 1024 + 32 * bytes.len(),
+        peak <= ALLOC_FLOOR + ALLOC_PER_BYTE * bytes.len(),
         "{peak} bytes for {} bytes",
         bytes.len()
     );
-    if let Ok(manifest) = parsed {
-        // What was read is written as a manifest that reads back as the same one.
-        let written = manifest.format();
-        assert_eq!(
-            Manifest::parse(&written).as_ref(),
-            Ok(&manifest),
-            "{text:?} was read as {manifest:?}, which is written as {written:?}"
-        );
-        // And the written form is the one form: it writes itself.
-        assert_eq!(Manifest::parse(&written).unwrap().format(), written);
-    }
+    harness::manifest(bytes);
+    harness::manifest(text.as_bytes());
 }
 
 #[test]
 fn the_samples_read_and_round_trip() {
     for sample in samples() {
-        let manifest = Manifest::parse(&sample).unwrap();
+        let manifest = harness::read(&sample, &agentabi::ROWS).unwrap();
         assert_eq!(Manifest::parse(&manifest.format()).unwrap(), manifest);
+        harness::manifest(sample.as_bytes());
     }
 }
 

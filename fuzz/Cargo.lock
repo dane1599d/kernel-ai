@@ -865,16 +865,20 @@ dependencies = [
 name = "kainet-fuzz"
 version = "0.0.0"
 dependencies = [
+ "agentabi",
  "captable",
  "deskcore",
  "fsproto",
  "getrandom 0.3.4",
+ "kabi",
+ "kaiagent",
  "kaigrants",
  "kainet",
  "kaipkg",
  "kaituf",
  "libfuzzer-sys",
  "look",
+ "netdest",
  "rustls",
  "serde_json",
  "shellcore",
