@@ -451,8 +451,12 @@ fn cued_in(words: &[Word], row: &Action, telling_counts: bool) -> Option<bool> {
 }
 
 /// Whether the `len` words at `at` sit inside one token with more words than
-/// them: part of a name joined by `-`, `.`, `/` or `_`. A token that is
-/// `row`'s own name ("fs_create" in a C line) names the row, not a thing.
+/// them: part of a name joined by `-`, `.`, `/` or `_`, or quoted ("to
+/// delete"). A token is a name only when one of its words is not `row`'s own
+/// (a word of its cues, of an argument's alias or of an enum value):
+/// "round-robin", "light-mode", "delete/trash" and "re-open" ask for the row,
+/// "to-delete.txt" names a file. A token that is `row`'s own name
+/// ("fs_create" in a C line) names the row, not a thing.
 fn inside_a_name(words: &[Word], at: usize, len: usize, row: &Action) -> bool {
     let token = words[at].token;
     let span = &words[at..at + len];
@@ -465,7 +469,32 @@ fn inside_a_name(words: &[Word], at: usize, len: usize, row: &Action) -> bool {
         .iter()
         .map(|w| w.text.as_str())
         .eq(whole.iter().copied());
-    span.iter().all(|w| w.token == token) && whole.len() > len && !own_name
+    span.iter().all(|w| w.token == token)
+        && whole.len() > len
+        && !own_name
+        && !whole.iter().all(|word| own_word(row, word))
+}
+
+/// Whether `word` is one of `row`'s own: a word of one of its cues (or one
+/// starting with a one-word cue stem, "polic" in "policy"), of an argument's
+/// alias, or of an enum value it takes. "re" too, which only says again
+/// ("re-open", "re-start").
+fn own_word(row: &Action, word: &str) -> bool {
+    let in_phrase = |phrase: &str| self::words(phrase).iter().any(|w| w.text == word);
+    word == "re"
+        || row
+            .cues
+            .iter()
+            .any(|cue| in_phrase(cue) || (!cue.contains([' ', '-']) && word.starts_with(cue)))
+        || row.args.iter().any(|arg| {
+            arg.aliases
+                .iter()
+                .any(|(said, value)| in_phrase(said) || in_phrase(value))
+                || match arg.ty {
+                    ArgType::Enum(values) => values.iter().any(|v| in_phrase(v)),
+                    _ => false,
+                }
+        })
 }
 
 /// Whether a negation before word `at` in its clause turns it off: "don't",
@@ -1031,6 +1060,9 @@ struct Word {
     token: usize,
 }
 
+/// Marks that open or close a quoted span: straight and curly double quotes.
+const QUOTES: [char; 3] = ['"', '\u{201C}', '\u{201D}'];
+
 /// The line's words: letters, digits and apostrophes, lower case. Everything else
 /// separates, so "round-robin", "round robin" and "Round Robin." read alike.
 fn words(text: &str) -> Vec<Word> {
@@ -1049,6 +1081,7 @@ fn words(text: &str) -> Vec<Word> {
     let mut clause = 0;
     let mut sentence = 0;
     let mut token = 0;
+    let mut quoted = false;
     let mut asked_sentences: Vec<usize> = Vec::new();
     let mut out: Vec<Word> = Vec::new();
     let mut asked = Vec::new();
@@ -1092,10 +1125,15 @@ fn words(text: &str) -> Vec<Word> {
         {
             sentence += 1;
         }
+        // A quoted span ("to delete") is one token, as a joined name is.
+        let quotes = rest[..gap].matches(QUOTES).count();
+        let opens = quotes % 2 == 1 && !quoted && rest[gap..].contains(QUOTES);
+        let closes = quotes % 2 == 1 && quoted;
         let joined = had_word && gap < rest.len() && matches!(&rest[..gap], "-" | "." | "/" | "_");
-        if !joined {
+        if !(joined || (quoted && !closes)) {
             token += 1;
         }
+        quoted = (quoted && !closes) || opens;
         rest = &rest[gap..];
     }
     for c in 0..=clause {

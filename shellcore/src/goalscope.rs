@@ -47,15 +47,19 @@ pub(crate) fn scope(
         .filter(|w| !w.contains('/'))
         .collect();
     let words = words.join(" ");
-    let plain_words = plain(&words);
     let mut rows: Vec<String> = Vec::new();
     for row in agentabi::ROWS.iter().filter(|row| considered(row)) {
         // Named by a whole cue ("go" is not in "good"); negated as consent
         // reads the line ("never move").
+        // A joined name ("do-not-delete") is the name's words, not the
+        // row's: its cue names no row and its "not" negates none, as consent
+        // reads it (bug-hunt-6 H6-3).
+        let row_words = outside_names(&words, row);
+        let plain_words = plain(&row_words);
         let Some(cue) = row.cues.iter().find(|cue| names(&plain_words, cue)) else {
             continue;
         };
-        let negated = agentabi::consent::named_in(&words, row) == Some(true);
+        let negated = agentabi::consent::named_in(&row_words, row) == Some(true);
         if negated {
             return Err(format!(
                 "\"{cue}\" is said not to happen; say only what the goal does"
@@ -132,6 +136,29 @@ fn plain(text: &str) -> String {
         out.push(' ');
     }
     out
+}
+
+/// `words` without the names joined by `-`, `.` or `_` that hold a word none
+/// of `row`'s cues has: "do-not-delete" goes for `fs_trash`, "re-sort" or a
+/// cue's own "round-robin" stays.
+fn outside_names(words: &str, row: &Action) -> String {
+    let own = |part: &str| {
+        part == "re"
+            || row.cues.iter().any(|cue| {
+                plain(cue)
+                    .split(' ')
+                    .any(|w| !w.is_empty() && part.starts_with(w))
+            })
+    };
+    let kept: Vec<&str> = words
+        .split_whitespace()
+        .filter(|word| {
+            let word = word.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+            !word.contains(['-', '.', '_'])
+                || plain(word).split(' ').filter(|p| !p.is_empty()).all(own)
+        })
+        .collect();
+    kept.join(" ")
 }
 
 /// Whether cue `cue` is words of `words` ([`plain`]'s form), whole, or with a

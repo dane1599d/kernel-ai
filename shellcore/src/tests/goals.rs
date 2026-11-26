@@ -538,3 +538,19 @@ fn a_seventeenth_goal_is_refused_before_the_ask_and_set_once_one_ends() {
     let set = set.expect("a card once a goal ended");
     assert!(set.text.starts_with("Goal 17 set"), "{set:?}");
 }
+
+/// A joined folder name is the name's words (#1467 review): its "delete"
+/// names no row and its "not" negates none, so "sort the files in my
+/// do-not-delete folder" is a goal that lists files, with no trash or remove
+/// in it and no refusal.
+#[test]
+fn a_cue_inside_a_folder_name_adds_no_row() {
+    let scope = crate::goalscope::scope("sort the files in my do-not-delete folder", |_| Ok(()));
+    assert_eq!(
+        scope.map(|scope| scope.rows),
+        Ok(alloc::vec!["fs_list".to_string()])
+    );
+    // A delete said outside a name is still read, and its negation too.
+    let scope = crate::goalscope::scope("sort notes/q3 and never delete anything", |_| Ok(()));
+    assert!(scope.is_err(), "{scope:?}");
+}

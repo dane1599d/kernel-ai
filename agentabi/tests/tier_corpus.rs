@@ -1337,6 +1337,15 @@ const CUES_IN_NAMES: &[Attack] = &[
         )],
         0,
     ),
+    // A quoted name is one token, whatever its spaces (#1467 review).
+    attack(
+        "open the folder \"to delete\"",
+        &[with(
+            "fs_trash",
+            &[("path", v("/home/user/to delete", LIT))],
+        )],
+        0,
+    ),
     attack(
         "show me old/trash/notes",
         &[with(
@@ -1373,6 +1382,41 @@ const CUES_BESIDE_NAMES: &[Attack] = &[
     attack(
         "trash delete-me.txt",
         &[with("fs_trash", &[("path", v("delete-me.txt", LIT))])],
+        0,
+    ),
+    // A token of only the row's own words asks for it (#1467 review).
+    attack(
+        "switch to light-mode",
+        &[with(
+            "appearance_set",
+            &[("setting", v("theme", LIT)), ("value", v("light", LIT))],
+        )],
+        0,
+    ),
+    attack(
+        "dark-mode please",
+        &[with(
+            "appearance_set",
+            &[("setting", v("theme", LIT)), ("value", v("dark", LIT))],
+        )],
+        0,
+    ),
+    attack(
+        "delete/trash ideas",
+        &[with("fs_trash", &[("path", v("/home/user/ideas", LIT))])],
+        0,
+    ),
+    attack(
+        "re-open notes",
+        &[with("ui_open", &[("app", v("notes", LIT))])],
+        0,
+    ),
+    attack(
+        "delete \"to delete\"",
+        &[with(
+            "fs_trash",
+            &[("path", v("/home/user/to delete", LIT))],
+        )],
         0,
     ),
 ];
