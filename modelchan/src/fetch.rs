@@ -18,7 +18,7 @@
 //! host and that host's storage hosts ([`Hosts`]), on 443, and no other.
 //!
 //! What fits is the same arithmetic xtask sizes its VMs by
-//! ([`kabi::model::guest_mib`]): Qwen3-4B needs a guest of 4,160 MiB, so a
+//! ([`kabi::model::guest_mib`]): Qwen3-4B needs a guest of 4,288 MiB, so a
 //! 4 GiB guest is offered Qwen3-1.7B and a 6 GiB one Qwen3-4B. The disk must
 //! hold what is still to come, then the store's sealed copy of the whole file,
 //! and [`DISK_MARGIN`] besides ([`disk_need`]).
@@ -92,7 +92,7 @@ pub const FIXTURE: Hosts = Hosts {
 /// bytes of RAM the kernel's memory map lists (`kabi::Metrics::ram_frames`):
 /// the firmware keeps a little of what the VM was given for itself, so it is
 /// rounded up to [`kabi::model::GUEST_STEP_MIB`], the step VMs are sized in. A
-/// VM of 4,160 MiB that lists 4,150 reads as 4,160 and is offered Qwen3-4B; a 4
+/// VM of 4,288 MiB that lists 4,278 reads as 4,288 and is offered Qwen3-4B; a 4
 /// GiB one reads as 4,096 and is not.
 pub fn guest_mib_of(ram_bytes: u64) -> u64 {
     ram_bytes
@@ -195,7 +195,7 @@ impl Refused {
             Self::NotSigned(id) => format!("the signed models role names no {id}"),
             Self::Licence(l) => format!("its licence, {l}, is not one Kernel AI takes"),
             Self::Stored => String::from("the model store holds it already"),
-            // In MiB: rounded to tenths of a GiB, 4,160 and 4,096 MiB read
+            // In MiB: rounded to tenths of a GiB, 4,288 and 4,096 MiB read
             // alike.
             Self::Memory { need_mib, have_mib } => {
                 format!("it needs {need_mib} MiB of memory and this machine has {have_mib} MiB")

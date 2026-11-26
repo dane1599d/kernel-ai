@@ -113,21 +113,61 @@ pub const ENGINE_OTHER_BYTES: u64 = 32 << 20;
 /// Pages the llm plan line adds for the engine when a model is loaded.
 pub const ENGINE_PAGES: u64 = (KV_BYTES + ENGINE_OTHER_BYTES) / 4096;
 
+/// Pages the llm service gets besides the engine's.
+pub const HOLDER_PAGES: u64 = 1024;
+
+/// Pages the llm service gets with a model loaded: its own, its workers' stacks
+/// and the engine's KV cache and tokenizer. The model's window is the kernel's.
+pub const fn holder_pages() -> u64 {
+    HOLDER_PAGES + crate::thread::POOL_PAGES + ENGINE_PAGES
+}
+
+/// Frames the kernel keeps free after copying a model, or it refuses the model
+/// (`kernel/src/model.rs`): processes may hold half of what is free, so twice
+/// what llm and the system plan's other services ask for
+/// ([`crate::plan::system::OTHER_SERVICES_PAGES`]). [`guest_mib`] is sized from
+/// this same constant, so a VM xtask sizes, and a machine Models says fits,
+/// always has it.
+pub const RESERVE_PAGES: u64 = 2 * (crate::plan::system::OTHER_SERVICES_PAGES + holder_pages());
+
+/// Bytes of one run of the kernel's copy of the model (`mm::window::RUN_BYTES`,
+/// which the kernel checks is the same).
+pub const RUN_BYTES: u64 = 2 << 20;
+
 /// Guest memory with no model, in MiB.
 pub const GUEST_BASE_MIB: u64 = 512;
 /// A model's share of guest memory is rounded up to a multiple of this, in MiB.
 pub const GUEST_STEP_MIB: u64 = 64;
+/// Guest memory, in MiB, that is not free once the kernel is up, before any
+/// model is copied or service started: the firmware's, the kernel's image, heap
+/// and tables, and the boot modules. Run 45742601599's observe boot, a
+/// 1,792 MiB guest with a 4 KiB model, had 1,478 MiB free: 314 kept. 384
+/// leaves 70 MiB for the image and its modules to grow.
+pub const GUEST_KERNEL_MIB: u64 = 384;
 
-/// The guest memory, in MiB, a model file of `len` bytes needs: the usual
-/// amount, room for the copy the kernel keeps, and twice the pages llm's
-/// engine gets with a model, since processes may hold half of what is free; so
-/// every other service gets as much as without it. xtask sizes its VMs by it,
+/// MiB the kernel's copy of a model file of `len` bytes takes: whole 2 MiB runs,
+/// and 1 MiB for the window's tables (a frame a GiB and one more, under 1 MiB
+/// for any file below 1 TiB).
+pub const fn model_copy_mib(len: u64) -> u64 {
+    len.div_ceil(RUN_BYTES) * (RUN_BYTES >> 20) + 1
+}
+
+/// The guest memory, in MiB, a model file of `len` bytes needs: what the
+/// kernel keeps for itself ([`GUEST_KERNEL_MIB`]), and on top of it the
+/// model's copy and the [`RESERVE_PAGES`] the kernel must still find free
+/// after it, rounded up to [`GUEST_STEP_MIB`]; never less than
+/// [`GUEST_BASE_MIB`]. It is the kernel's own check with the kernel's own
+/// reserve, so a bigger system plan moves both. xtask sizes its VMs by it,
 /// and the OS's Models says by it which models this machine can run (P5 task 9).
 pub const fn guest_mib(len: u64) -> u64 {
-    const MIB: u64 = 1024 * 1024;
-    let engine_mib = ENGINE_PAGES * 4096 / MIB;
-    let extra = len.div_ceil(MIB) + 2 * engine_mib;
-    GUEST_BASE_MIB + extra.next_multiple_of(GUEST_STEP_MIB)
+    let reserve_mib = (RESERVE_PAGES * 4096).div_ceil(1 << 20);
+    let model = (model_copy_mib(len) + reserve_mib).next_multiple_of(GUEST_STEP_MIB);
+    let guest = GUEST_KERNEL_MIB + model;
+    if guest < GUEST_BASE_MIB {
+        GUEST_BASE_MIB
+    } else {
+        guest
+    }
 }
 
 /// **Interim** (S10-3; removed at P2 task 10): llm's KV slots saved in the
@@ -316,6 +356,49 @@ pub fn shape(text: &str) -> alloc::string::String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// The kernel's check (`kernel/src/model.rs`): the copy's runs and tables
+    /// and the reserve must fit in what is free, in frames.
+    fn kernel_takes(len: u64, free_mib: u64) -> bool {
+        let runs = len.div_ceil(RUN_BYTES);
+        let tables = if runs == 0 { 0 } else { runs.div_ceil(512) + 1 };
+        runs * (RUN_BYTES / 4096) + tables + RESERVE_PAGES <= free_mib * 256
+    }
+
+    #[test]
+    fn a_tiny_model_fits_the_guest_sized_for_it() {
+        // Run 45742601599: a 4 KiB kai.model on 1,792 MiB, the old size, was
+        // refused with 1,478 MiB free (314 kept) and 1,481 reserved.
+        const KEPT_MIB: u64 = 1792 - 1478;
+        assert!(!kernel_takes(4096, 1792 - KEPT_MIB));
+        assert!(kernel_takes(4096, guest_mib(4096) - KEPT_MIB));
+        const _: () = assert!(KEPT_MIB + 64 <= GUEST_KERNEL_MIB);
+    }
+
+    #[test]
+    fn every_size_leaves_the_reserve_beside_its_copy() {
+        const MIB: u64 = 1 << 20;
+        for len in [
+            0,
+            1,
+            4096,
+            2 * MIB,
+            2 * MIB + 1,
+            639_446_688,
+            2_497_281_120,
+            8 << 30,
+        ] {
+            let guest = guest_mib(len);
+            assert!(kernel_takes(len, guest - GUEST_KERNEL_MIB), "{len}");
+            assert!(
+                guest >= GUEST_BASE_MIB && guest.is_multiple_of(GUEST_STEP_MIB),
+                "{len}"
+            );
+        }
+        assert!(guest_mib(MIB) < guest_mib(64 * MIB + 1));
+    }
+
     #[test]
     fn a_switch_names_its_model_by_a_whole_lowercase_sha256() {
         let sha = "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597";
@@ -411,8 +494,6 @@ mod tests {
             assert_eq!(super::max_pages(name, program, per_process), per_process);
         }
     }
-
-    use super::*;
 
     #[test]
     fn fnv1a_matches_the_published_vectors() {

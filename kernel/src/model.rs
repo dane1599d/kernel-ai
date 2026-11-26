@@ -39,23 +39,23 @@ use spin::Once;
 /// The one service, and program, that may map the model.
 pub const HOLDER: &str = kabi::model::HOLDER;
 /// Pages the llm service gets besides the engine's.
-pub const HOLDER_PAGES: u64 = 1024;
+pub const HOLDER_PAGES: u64 = kabi::model::HOLDER_PAGES;
 
-/// Pages the llm service gets with a model loaded: its own, its workers' stacks
-/// and the engine's KV cache and tokenizer. The model's window is the kernel's.
+/// Pages the llm service gets with a model loaded (`kabi::model::holder_pages`).
 pub const fn holder_pages() -> u64 {
-    HOLDER_PAGES + kabi::thread::POOL_PAGES + kabi::model::ENGINE_PAGES
+    kabi::model::holder_pages()
 }
 
 // What the plan line grants llm must fit what its holder may hold.
 const _: () = assert!(holder_pages() <= kabi::model::MAX_PAGES_HOLDER);
 
-/// Pages the default plan's other services ask for, with room to spare.
-const OTHER_SERVICES_PAGES: u64 = kabi::plan::system::OTHER_SERVICES_PAGES;
-
 /// Frames that must stay free after copying the model. Processes may hold half of
-/// what is free, so twice what llm and the other services ask for.
-const RESERVE_FRAMES: u64 = 2 * (OTHER_SERVICES_PAGES + holder_pages());
+/// what is free, so twice what llm and the system plan's other services ask
+/// for. `kabi::model::guest_mib` sizes guests from this same constant.
+const RESERVE_FRAMES: u64 = kabi::model::RESERVE_PAGES;
+
+// `kabi::model::model_copy_mib` counts the copy in these runs.
+const _: () = assert!(RUN_BYTES == kabi::model::RUN_BYTES);
 
 pub struct Model {
     len: u64,

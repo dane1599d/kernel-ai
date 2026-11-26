@@ -32,7 +32,7 @@ use manage::{CONTROLLER, step, vm};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Guest memory: Qwen3-4B needs a 4,160 MiB guest; 6 GiB leaves room.
+/// Guest memory: Qwen3-4B needs a 4,288 MiB guest; 6 GiB leaves room.
 const MEMORY_MIB: u64 = 6144;
 const OS_DISK: &str = "kai-os.vdi";
 const MODEL_DISK: &str = "kai-model.vmdk";

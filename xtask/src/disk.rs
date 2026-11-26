@@ -115,10 +115,9 @@ impl ModelDisk {
         )
     }
 
-    /// Guest memory for a VM with this disk: the usual amount, room for the copy
-    /// the kernel keeps, and twice the pages llm's engine gets with a model, since
-    /// processes may hold half of what is free; so every other service gets as
-    /// much as without it.
+    /// Guest memory for a VM with this disk: what the guest keeps for itself,
+    /// the copy the kernel keeps, and the kernel's reserve for llm and the
+    /// other services beside it (`kabi::model::guest_mib`).
     pub fn memory_mib(&self) -> u64 {
         memory_mib_for(self.len)
     }
@@ -368,21 +367,24 @@ mod tests {
 
     #[test]
     fn memory_grows_with_the_model_and_the_engine() {
-        // The engine's 608 MiB (two KV slots of 2,048 f16 positions, S02-2),
-        // twice: 1,216 MiB on top of the model. Qwen3-4B takes a guest of
-        // 4,160 MiB (3,840 with one slot, approved 2026-10-22), Qwen3-0.6B one of
-        // 2,368 MiB.
+        // The engine's 608 MiB (two KV slots of 2,048 f16 positions, S02-2)
+        // and llm's own pages, with the system plan's other services, twice:
+        // the kernel's reserve of 1,482 MiB beside the model's copy, on the
+        // 384 MiB the guest keeps for itself. Qwen3-4B takes a guest of
+        // 4,288 MiB (4,160 until the reserve grew with #1038 and the kernel
+        // refused the 4B there), Qwen3-0.6B one of 2,496 MiB.
         assert_eq!(kabi::model::ENGINE_PAGES * 4096 / MIB, 608);
-        assert_eq!(windows_disk("D:/m.gguf", 2_497_281_120).memory_mib(), 4160);
+        assert_eq!(kabi::model::RESERVE_PAGES.div_ceil(256), 1482);
+        assert_eq!(windows_disk("D:/m.gguf", 2_497_281_120).memory_mib(), 4288);
         assert_eq!(
             windows_disk("D:/m.gguf", 639_446_688).memory_mib(),
-            512 + 1856
+            384 + 2112
         );
         assert_eq!(
             windows_disk("D:/m.gguf", 3 * MIB + 777).memory_mib(),
-            512 + 1280
+            384 + 1536
         );
-        assert_eq!(windows_disk("D:/m.gguf", 1).memory_mib(), 512 + 1280);
+        assert_eq!(windows_disk("D:/m.gguf", 1).memory_mib(), 384 + 1536);
     }
 
     #[test]
