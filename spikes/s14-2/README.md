@@ -64,3 +64,22 @@ plan; the figures come from the `wasmtime-nostd` boot case's log (KVM).
    MEM_EXEC takes a flag: 1 read-execute, 0 read-write.
 8. The Pulley run needs `memory_init_cow(false)` for the same reason (first boot:
    "virtual memory disabled at compile time -- cannot enable CoW").
+
+## Figures (boot case `wasmtime-nostd`, KVM runner, debug kernel and program; CI run of `ef91f803`)
+
+All three shards passed. Signature check: a flipped bit is refused before the
+module loads. `mix(20,000,000)` is a 20 M-round integer loop; its answer matched.
+
+| | native x86-64 | Pulley |
+|---|---|---|
+| `.cwasm` size | 10,816 B | 3,528 B |
+| ed25519 verify | 134 us | 189 us |
+| deserialize (engine + module) | 202 us | 108 us |
+| instantiate | 97 us | 176 us |
+| `mix(20 M)` | 34.7 ms | 248.4 ms (7x slower) |
+| mapped memory, peak | 12 KiB | 12 KiB |
+| heap growth | 128 KiB | 576 KiB |
+
+Native code ran from pages MEM_EXEC made read-execute. Not measured here: a
+Wasmtime-on-host comparison, the component model, floating point, traps and
+multiple instances.
