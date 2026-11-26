@@ -677,8 +677,9 @@ pub fn decode_reply(bytes: &[u8]) -> Result<Reply, Error> {
 /// person what was not undone, and they are the shortest, so they come
 /// first, after one row that is not Left, which shows something came back.
 pub fn restored(rows: Vec<(u64, Outcome)>, generation: u64) -> Reply {
-    let (left, mut rest): (Vec<_>, Vec<_>) =
-        rows.into_iter().partition(|(_, o)| *o == Outcome::Left);
+    let (left, mut rest): (Vec<_>, Vec<_>) = rows
+        .into_iter()
+        .partition(|(_, o)| matches!(o, Outcome::Left { .. }));
     let first = (!rest.is_empty()).then(|| rest.remove(0));
     let empty = Reply::Restored {
         rows: Vec::new(),

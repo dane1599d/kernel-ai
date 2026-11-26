@@ -239,7 +239,7 @@ fn a_restored_reply_fits_one_message_whatever_the_names() {
         )
     };
     let mut rows: Vec<(u64, Outcome)> = (0..u64::from(MAX_ROWS)).map(beside).collect();
-    rows.push((u64::MAX, Outcome::Left));
+    rows.push((u64::MAX, Outcome::Left { folder: true }));
     let bytes = encode_reply(&restored(rows, u64::MAX));
     assert!(bytes.len() <= MAX_MESSAGE, "{} bytes", bytes.len());
     let Ok(Reply::Restored { rows, generation }) = decode_reply(&bytes) else {
@@ -247,7 +247,7 @@ fn a_restored_reply_fits_one_message_whatever_the_names() {
     };
     assert_eq!(generation, u64::MAX);
     assert_eq!(rows[0], beside(0));
-    assert_eq!(rows[1], (u64::MAX, Outcome::Left));
+    assert_eq!(rows[1], (u64::MAX, Outcome::Left { folder: true }));
     assert!(
         rows.len() > 20 && rows.len() < MAX_ROWS as usize,
         "{}",
