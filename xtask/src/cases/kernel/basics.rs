@@ -165,19 +165,13 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
         expect: &["proc-usage: each process's pages and CPU time came through METRICS"],
         ..case("proc-usage", "test=proc-usage")
     },
-    // P3 task 4: the raised table limits hold 40 processes at once.
+    // P3 task 4: the raised table limits hold 40 processes at once. The base
+    // FORBID's "supervision: supervisor died" is what caught the supervisor
+    // killed as a runaway while it started this 45-service plan (#874, fixed by
+    // its START_SLICE_MS slicing): a restarted supervisor reattaches the 40
+    // and the case's own check still passes (bug hunt 5 H5-6).
     TestCase {
         expect: &["many-processes: 40 idle processes ran at once beside the shell and llm"],
-        // The supervisor is killed for running 2 s without blocking here
-        // (founder test 2's log); lane K is fixing it. Until then this case
-        // forbids the rest of the base list. Put FORBID back with K's fix.
-        forbid: &[
-            "pkg: FAIL",
-            "cannot ask yet",
-            "dropped a result",
-            "did not reach the app",
-            super::ROOM_WARNING,
-        ],
         ..case("many-processes", "test=many-processes")
     },
 ];

@@ -70,25 +70,88 @@ fn create_never_overwrites() {
     assert_eq!(host.files.borrow()["a.txt"], "kept");
 }
 
+/// `fs` never restores over a later change, so an undo whose every file
+/// changed since is refused, with no "put back anyway" (which no yes could
+/// do), and the later change is kept.
 #[test]
-fn undo_over_a_later_change_asks_and_its_redo_restores_the_restore() {
+fn undo_over_a_later_change_is_refused_and_keeps_it() {
     let host = FakeHost::new();
     let ran = run(&host, "fs_write(\"a.txt\", \"mine\");");
     let inverse = ran.done[0].inverse.unwrap();
-    // A later change to the same files: restoring would undo it too.
+    // A later change to the same file: restoring would undo it too.
     host.files
         .borrow_mut()
         .insert("a.txt".into(), "later".into());
-    assert_eq!(
-        undo::revert(host.as_ref(), inverse, false, ids()).map(|_| ()),
-        Err(Refused::Moved(String::from("a later change touched them")))
+    let refused = undo::revert(host.as_ref(), inverse, true, ids()).map(|_| ());
+    assert!(
+        matches!(&refused, Err(Refused::Failed(why)) if why.contains("never restores over a later change")),
+        "{refused:?}"
     );
-    // Put back anyway, then redo: the restore was a transaction of its own.
-    let (text, redo) = undo::revert(host.as_ref(), inverse, true, ids()).unwrap();
+    assert_eq!(host.files.borrow()["a.txt"], "later");
+}
+
+/// A file a later change touched keeps that change, and its old text lands
+/// beside it; the restore is still a transaction its redo undoes.
+#[test]
+fn undo_keeps_a_later_change_and_writes_the_old_text_beside_it() {
+    let host = FakeHost::new();
+    host.files
+        .borrow_mut()
+        .insert("a.txt".into(), "orig".into());
+    let ran = run(&host, "fs_write(\"a.txt\", \"mine\");");
+    let inverse = ran.done[0].inverse.unwrap();
+    host.files
+        .borrow_mut()
+        .insert("a.txt".into(), "later".into());
+    let (text, redo) = undo::revert(host.as_ref(), inverse, false, ids()).unwrap();
     assert_eq!(text, "files back as they were");
-    assert!(host.files.borrow().is_empty());
+    assert_eq!(host.files.borrow()["a.txt"], "later");
+    assert_eq!(host.files.borrow()["a.txt (restored)"], "orig");
     undo::revert(host.as_ref(), redo, false, ids()).unwrap();
     assert_eq!(host.files.borrow()["a.txt"], "later");
+    assert!(!host.files.borrow().contains_key("a.txt (restored)"));
+}
+
+/// bug-hunt-6 H6-22: an undo `fs` restores only in part landed: it is logged,
+/// with a redo that puts back what it restored, and says what it left. Before,
+/// it was reported as not done and never logged, so the restored half had no
+/// redo and each retry restored the transaction again.
+#[test]
+fn an_undo_fs_restores_in_part_is_logged_with_its_redo() {
+    let call = |json: &str| Ok(llmproto::act::parse(json).unwrap());
+    let two = r#"{"name":"script","arguments":{"code":"fs_create(\"a.txt\", \"1\");\nfs_create(\"b.txt\", \"2\");"}}"#;
+    let (host, mut shell) = super::act::with_calls(alloc::vec![call(two)]);
+    host.one_action.set(true);
+    let reply = shell.eval("create a.txt and b.txt");
+    assert!(reply.ok, "{}", reply.text);
+    let made = shell.log.newest_live().expect("the create is logged");
+    // b.txt is edited after, outside the log.
+    host.files
+        .borrow_mut()
+        .insert("b.txt".into(), "edited".into());
+    let undone = shell.eval("undo");
+    assert_eq!(
+        undone,
+        ok("Undone: files back as they were, but 1 changed since stay as they are now")
+    );
+    assert!(!host.files.borrow().contains_key("a.txt"));
+    assert_eq!(host.files.borrow()["b.txt"], "edited");
+    let undo = shell.log.newest_live().expect("the undo is logged");
+    assert_eq!(shell.log.get(undo).unwrap().of, Some(made));
+    assert!(
+        matches!(
+            shell.log.get(undo).unwrap().changes[0].inverse,
+            Some(Inverse::Fs { .. })
+        ),
+        "{:?}",
+        shell.log.get(undo)
+    );
+    // `undo` again is the redo: a.txt is back, b.txt keeps its edit, and
+    // nothing piles up beside them.
+    assert_eq!(shell.eval("undo"), ok("Undone: files back as they were"));
+    assert_eq!(host.files.borrow()["a.txt"], "1");
+    assert_eq!(host.files.borrow()["b.txt"], "edited");
+    assert_eq!(host.files.borrow().len(), 2, "{:?}", host.files.borrow());
 }
 
 #[test]

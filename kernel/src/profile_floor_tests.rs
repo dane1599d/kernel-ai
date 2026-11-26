@@ -100,13 +100,8 @@ fn floored(shell: u64, pid: u64) -> Result<bool, &'static str> {
 
 /// What the admission budget still has room for.
 fn room() -> u64 {
-    let committed: u64 = process::with_table(|t| {
-        t.iter()
-            .filter(|p| p.live())
-            .map(|p| p.limits.max_pages)
-            .sum()
-    });
-    process::page_budget().saturating_sub(committed)
+    // As admission counts it (H5-17): a quota, or what is held past it.
+    process::page_budget().saturating_sub(process::committed_pages())
 }
 
 pub fn check() -> Result<(), &'static str> {

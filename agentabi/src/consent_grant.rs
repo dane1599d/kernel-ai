@@ -104,12 +104,6 @@ const NEGATING_STARTS: &[&str] = &["avoid", "forbid", "prohibit"];
 /// "I'm disconnected", "airplane mode".
 const OFFLINE_WORDS: &[&str] = &["disconnected", "unplugged", "airplane", "aeroplane"];
 
-/// Auxiliaries that, with `nt` and no apostrophe, negate: "dont", "isnt".
-const AUXILIARIES: &[&str] = &[
-    "do", "does", "did", "is", "are", "was", "were", "has", "have", "had", "ca", "wo", "should",
-    "could", "would", "must", "need", "ai", "might", "dare",
-];
-
 /// A word that negates, for a grant.
 fn negating(text: &str) -> bool {
     super::NEGATIONS.contains(&text)
@@ -119,7 +113,7 @@ fn negating(text: &str) -> bool {
         || text.ends_with("n't")
         || text
             .strip_suffix("nt")
-            .is_some_and(|stem| AUXILIARIES.contains(&stem))
+            .is_some_and(|stem| super::NT_AUXILIARIES.contains(&stem))
 }
 
 /// A word in a clause that negates, for a grant.

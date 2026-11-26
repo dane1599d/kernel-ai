@@ -7,8 +7,9 @@
 //! - `agent-start <act|script|ask> <request>`: `ok <ticket>` once the scheduler
 //!   takes it, or `err <why>` in the ADR's words (`Over quota: goals used 100000
 //!   tokens today`, too long, too many waiting, not an agent);
-//! - `agent-take <ticket>`: `pending`, the answer as its own request's reply, or
-//!   `ended <why>`;
+//! - `agent-take <ticket>`: `pending`, the answer as its own request's reply
+//!   (after `used <n> ` when llm charged the job `n` tokens, so the agent can
+//!   charge its own budget, a goal's tokens), or `ended <why>`;
 //! - `agent-stop <ticket>`: `ok`, the request dropped.
 //!
 //! **Only the route's badge names an agent** ([`Caller`]): the kernel puts it
@@ -168,6 +169,8 @@ pub struct Job {
     pub queued: Option<RequestId>,
     /// Its reply, once done.
     pub done: Option<String>,
+    /// The tokens it was charged ([`Jobs::charge`]), told with its answer.
+    pub used: u32,
 }
 
 /// Agents' jobs and the scheduler they wait in.
@@ -216,9 +219,10 @@ impl Jobs {
             .map(|(ticket, job)| (*ticket, job))
     }
 
-    /// Counts what job `ticket` spent against its agent's day.
+    /// Counts what job `ticket` spent against its agent's day, and keeps it.
     pub fn charge(&mut self, ticket: u64, tokens: u32, now: Now) {
-        if let Some(job) = self.jobs.get(&ticket) {
+        if let Some(job) = self.jobs.get_mut(&ticket) {
+            job.used = job.used.saturating_add(tokens);
             let agent = AgentId(job.badge as u32);
             self.sched.charge_whole(agent, tokens, now);
         }
@@ -291,6 +295,7 @@ impl Jobs {
                         request: String::from(request),
                         queued: Some(id),
                         done: None,
+                        used: 0,
                     },
                 );
                 format!("ok {ticket}")
@@ -311,7 +316,10 @@ impl Jobs {
             Some(true) => self
                 .jobs
                 .remove(&ticket)
-                .and_then(|job| job.done)
+                .and_then(|job| match job.used {
+                    0 => job.done,
+                    used => job.done.map(|done| format!("used {used} {done}")),
+                })
                 .unwrap_or_default(),
         }
     }

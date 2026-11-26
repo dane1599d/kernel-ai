@@ -8,6 +8,8 @@
 //! (c) `classes` with the build jobs labelled runs every window, and its verdict
 //!     is `sched::judge` on its own windows;
 //! (d) a person's policy switch during a trial cancels it and wins;
+//! (e) so does POLICY for the policy already installed, in a baseline window;
+//! (f) POLICY for the installed policy clears a watchdog ejection of it;
 //! and no workload process is killed as a runaway meanwhile.
 
 use crate::sched_control::trial::{self, Candidate, Request};
@@ -90,6 +92,26 @@ impl SchedPolicy for Refusing {
 
 pub(crate) fn refusing() -> Box<dyn SchedPolicy> {
     Box::new(Refusing)
+}
+
+/// [`Refusing`] under the default policy's name: the Core ejects it at once,
+/// and while the watchdog runs round-robin in its place the CPU's installed
+/// policy is still called `interactive`.
+struct RefusingInteractive;
+
+impl SchedPolicy for RefusingInteractive {
+    fn name(&self) -> &'static str {
+        "interactive"
+    }
+    fn enqueue(&mut self, _: Tid, _: EnqueueReason) {}
+    fn dequeue(&mut self, _: Tid) {}
+    fn pick_next(&mut self) -> Option<Tid> {
+        None
+    }
+    fn tick(&mut self, _: Tid, _: u64) -> bool {
+        true
+    }
+    fn reset(&mut self) {}
 }
 
 /// Every CPU runs `name`, installed and running, none on the fallback.
@@ -302,6 +324,55 @@ pub fn revert_check() -> Result<(), &'static str> {
     }
     sched_control::set_policy(PolicySpec::DEFAULT).map_err(|_| "tune: cannot reset")?;
     log!("tune-revert: (d) a policy switch cancelled the trial and won");
+
+    // (e) POLICY for the installed policy, in the first baseline window (the
+    // installed spec is still interactive there), ends the trial too.
+    let id = run(
+        spec(PolicyKind::Classes, Preset::Firm),
+        editor,
+        Vec::new(),
+        3_000,
+        2,
+    )?;
+    threads::sleep_ms(500);
+    sched_control::calls::policy(kabi::policy::INTERACTIVE, 0)
+        .map_err(|_| "tune: POLICY for the installed policy failed")?;
+    let status = finished(id)?;
+    if status.reason != reason::CANCELLED || !running_everywhere("interactive") {
+        return Err("tune: POLICY for the installed policy did not end the trial");
+    }
+    log!("tune-revert: (e) POLICY for the installed policy during a trial cancelled it");
+
+    // (f) POLICY for the installed policy clears a watchdog ejection of it. The
+    // last CPU gets a policy named interactive that picks nothing, and a spinner
+    // pinned there makes its Core eject it to round-robin at once.
+    let cpu = crate::smp::online() - 1;
+    let stub: Box<dyn SchedPolicy> = Box::new(RefusingInteractive);
+    let old = threads::with_core(cpu, |core, _| core.set_policy(stub));
+    drop(old);
+    SPINNING.store(true, Ordering::SeqCst);
+    threads::spawn_pinned(cpu, "tune-spinner", spin, 0)?;
+    let ejected = || threads::with_core(cpu, |core, _| core.on_fallback()) == Some(true);
+    for _ in 0..100 {
+        if ejected() {
+            break;
+        }
+        threads::sleep_ms(10);
+    }
+    let was_ejected = ejected();
+    // Past the 100 ms between switches that (e)'s POLICY started.
+    threads::sleep_ms(sched_control::calls::MIN_POLICY_INTERVAL_NS / 1_000_000 + 50);
+    let chosen = sched_control::calls::policy(kabi::policy::INTERACTIVE, 0);
+    let cleared = running_everywhere("interactive");
+    SPINNING.store(false, Ordering::SeqCst);
+    sched_control::set_policy(PolicySpec::DEFAULT).map_err(|_| "tune: cannot reset")?;
+    if !was_ejected {
+        return Err("tune: the refusing policy was never ejected");
+    }
+    if chosen.is_err() || !cleared {
+        return Err("tune: POLICY for the installed policy left a CPU on the watchdog's fallback");
+    }
+    log!("tune-revert: (f) POLICY for the installed policy cleared a watchdog ejection");
 
     if sched_control::runaways() != runaways {
         return Err("tune: a workload process was killed as a runaway during the trials");

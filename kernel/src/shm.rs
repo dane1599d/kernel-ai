@@ -17,6 +17,9 @@
 //!   every page of the mapping at that zero page and shoots the range down on
 //!   every CPU: the holder keeps running but sees and shares nothing. Spike S01-1
 //!   M6 measures it; nothing is allocated on that path.
+//! - The page tables a mapping adds count against the mapper's quota, as every
+//!   frame its space takes does: SHM_MAP is refused past it, and SHM_UNMAP
+//!   frees the tables it leaves empty after its shootdown (bug hunt 5 H5-16).
 //!
 //! Lock order: OBJECTS, then a process's SPACE, then HANDLES, then MEMORY.
 
@@ -41,6 +44,13 @@ pub const MAX_PAGES: u64 = SHM_SLOT / PAGE_SIZE;
 pub const MAX_PER_PROCESS: usize = 16;
 /// Free slots only [`create_kernel_object`] may take.
 const KERNEL_RESERVED: usize = 1;
+
+/// The most page tables mapping `pages` pages at a slot's base adds: a leaf
+/// for each 2 MiB, the slot's directory and the directory-pointer table the
+/// slots share.
+const fn map_tables(pages: u64) -> u64 {
+    pages.div_ceil(512) + 2
+}
 
 /// What SHM_CREATE's handle carries.
 pub fn created_rights() -> Rights {
@@ -115,6 +125,7 @@ static OBJECTS: Mutex<Objects> = Mutex::new(Objects {
 });
 
 fn with<R>(f: impl FnOnce(&mut Objects) -> R) -> R {
+    crate::threads::ready::not_in_ready(&"the shared objects");
     threads::preempt_disable();
     let result = f(&mut OBJECTS.lock());
     threads::preempt_enable();
@@ -302,7 +313,8 @@ fn pages_of(entry: &Entry) -> Result<u64, Error> {
 /// Maps the object `entry` names, for a holder whose handle was already checked.
 pub fn map_entry(slot: usize, entry: &Entry, write: bool) -> Result<u64, Error> {
     let (index, generation) = unpack(entry.object);
-    let pid = process::identity(slot).pid;
+    let me = process::identity(slot);
+    let (pid, max_pages) = (me.pid, me.limits.max_pages);
     let address = with(|objects| {
         let object = objects
             .objects
@@ -317,6 +329,12 @@ pub fn map_entry(slot: usize, entry: &Entry, write: bool) -> Result<u64, Error> 
         let (mapped, cr3) = {
             let mut space = process::lock_space(slot);
             let space = space.as_mut().ok_or(Error::Dead)?;
+            // The tables it adds count against the quota, as every frame the
+            // space takes does: refused before any is taken.
+            let tables = map_tables(object.frames.len() as u64);
+            if space.frames().saturating_add(tables) > max_pages {
+                return Err(Error::NoMemory);
+            }
             let mapped = memory::with(|m| -> Result<Result<u64, u64>, Error> {
                 let zero = m.allocate_zeroed_frame().ok_or(Error::NoMemory)?;
                 for (n, &frame) in object.frames.iter().enumerate() {
@@ -378,7 +396,8 @@ pub fn info(slot: usize, raw: u64) -> Result<u64, Error> {
     })
 }
 
-/// SHM_UNMAP: removes `slot`'s mapping that starts at `address`.
+/// SHM_UNMAP: removes `slot`'s mapping that starts at `address`, and the page
+/// tables it leaves empty.
 pub fn unmap(slot: usize, address: u64) -> Result<u64, Error> {
     let offset = address.checked_sub(SHM_BASE).ok_or(Error::Invalid)?;
     if !offset.is_multiple_of(SHM_SLOT) {
@@ -386,6 +405,10 @@ pub fn unmap(slot: usize, address: u64) -> Result<u64, Error> {
     }
     let index = usize::try_from(offset / SHM_SLOT).map_err(|_| Error::Invalid)?;
     let pid = process::identity(slot).pid;
+    // Room for the tables before any lock, so none is allocated under one.
+    // Without it they stay, counted, until the process ends.
+    let mut tables = Vec::new();
+    let _ = tables.try_reserve_exact(map_tables(MAX_PAGES) as usize);
     let zero = with(|objects| {
         let object = objects
             .objects
@@ -399,17 +422,18 @@ pub fn unmap(slot: usize, address: u64) -> Result<u64, Error> {
             .ok_or(Error::NotFound)?;
         let pages = object.frames.len() as u64;
         let cr3 = {
-            let space = process::lock_space(slot);
-            let space = space.as_ref().ok_or(Error::Dead)?;
-            memory::with(|m| {
-                let _ = m.set_shared_range(space, address, pages, None);
-            });
+            let mut space = process::lock_space(slot);
+            let space = space.as_mut().ok_or(Error::Dead)?;
+            memory::with(|m| m.take_shared_range(space, address, pages, &mut tables));
             space.cr3()
         };
         // With no lock but OBJECTS held, so a CPU that faults meanwhile can go on.
         smp::tlb_shootdown_range(&[cr3], address, pages);
         Ok::<_, Error>(object.mappings.remove(at).zero)
     })?;
+    // The tables only now: a CPU's paging-structure caches may have held them
+    // until the shootdown.
+    memory::with(|m| m.free_user_frames(&tables));
     free_frames(&[zero]);
     collect();
     Ok(0)

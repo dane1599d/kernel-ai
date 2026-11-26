@@ -12,6 +12,8 @@
 //!   tree and waking calls).
 //! - The timings are recorded, not judged (M6 proposes p99 at most 100 us under
 //!   KVM); the case fails only if a byte crosses after a revoke.
+//! - Bug hunt 5 H5-16: SHM_UNMAP gives back the page tables SHM_MAP added, and
+//!   SHM_MAP refuses tables that would take the holder past its quota.
 
 use crate::fpu_tests::wait_exit;
 use crate::handle::grant as grants;
@@ -52,6 +54,7 @@ pub fn check() -> Result<(), &'static str> {
     }
     let result = rounds(pids)
         .and_then(|()| refund_rule(pids[0]))
+        .and_then(|()| map_tables_counted(pids[0]))
         .and_then(|()| failed_map_shoots_down(pids[0]));
     for name in HOLDERS {
         let _ = ipc::call(name, b"exit", 5_000);
@@ -267,6 +270,77 @@ fn refund_rule(pid: u64) -> Result<(), &'static str> {
     }
     log!(
         "shm: a refund for another pid leaves a slot's count; one for its own pid comes off by its pages"
+    );
+    Ok(())
+}
+
+/// Bug hunt 5 H5-16: the page tables an SHM_MAP adds count against the
+/// holder's quota and go with SHM_UNMAP. A 513-page kernel object needs two
+/// leaf tables and a directory, and the directory-pointer table when nothing
+/// else is mapped there: after a map and an unmap the holder counts no more
+/// frames than before. Then, one frame under its quota, a map of it is refused
+/// with NoMemory and takes nothing.
+fn map_tables_counted(pid: u64) -> Result<(), &'static str> {
+    const PAGES: u64 = 513;
+    let slot = slot_of(pid).ok_or("shm: no slot for the holder")?;
+    let frames =
+        || process::with_space(slot, |space| space.frames()).ok_or("shm: the holder has no space");
+    let phys = memory::with(|m| m.allocate_contiguous(PAGES)).ok_or("shm: no frames")?;
+    let Ok(object) = shm::create_kernel_object(phys, PAGES) else {
+        let _ = memory::with(|m| m.free_contiguous(phys, PAGES));
+        return Err("shm: no object");
+    };
+    let base = shm::base((object & 0xFFFF_FFFF) as usize);
+    let entry = Entry::new(Kind::Shm, Rights::MAP | Rights::READ, object);
+    let mut filled = 0;
+    let result = (|| {
+        let before = frames()?;
+        shm::map_entry(slot, &entry, false).map_err(|_| "shm: cannot map the object")?;
+        let mapped = frames()?;
+        shm::unmap(slot, base).map_err(|_| "shm: cannot unmap the object")?;
+        let after = frames()?;
+        if after > before {
+            log!(
+                "shm: SHM_MAP added {} frames of tables and SHM_UNMAP left {} of them counted",
+                mapped - before,
+                after - before
+            );
+            return Err("shm: SHM_UNMAP left the mapping's page tables counted against the holder");
+        }
+        let max_pages = process::identity(slot).limits.max_pages;
+        filled = max_pages
+            .checked_sub(after + 1)
+            .ok_or("shm: the holder is at its quota already")?;
+        let charged = process::lock_space(slot)
+            .as_mut()
+            .is_some_and(|space| space.try_charge(filled, max_pages));
+        if !charged {
+            filled = 0;
+            return Err("shm: the holder could not be charged");
+        }
+        let again = shm::map_entry(slot, &entry, false);
+        let now = frames()?;
+        match again {
+            Err(kabi::Error::NoMemory) if now == max_pages - 1 => Ok(()),
+            Err(_) => Err("shm: a refused SHM_MAP took frames, or failed for another reason"),
+            Ok(_) => {
+                log!("shm: SHM_MAP took the holder to {now} frames, past its {max_pages}");
+                let _ = shm::unmap(slot, base);
+                Err("shm: SHM_MAP took the holder past its page quota")
+            }
+        }
+    })();
+    if filled > 0
+        && let Some(space) = process::lock_space(slot).as_mut()
+    {
+        space.refund(filled);
+    }
+    shm::settle(object);
+    shm::collect();
+    let _ = memory::with(|m| m.free_contiguous(phys, PAGES));
+    result?;
+    log!(
+        "shm: SHM_UNMAP gave back the page tables SHM_MAP added, and a map past the quota was refused"
     );
     Ok(())
 }

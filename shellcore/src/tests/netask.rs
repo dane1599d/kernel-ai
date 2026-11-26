@@ -211,6 +211,37 @@ fn always_lasts_a_restart_and_allow_does_not() {
     ));
 }
 
+/// bug-hunt-3 H3-24: the log read back after a restart has `_` for the
+/// spaces of `weather's network to …`; `undo` of an Always still takes the
+/// grant back, as its reply promised.
+#[test]
+fn undo_takes_an_always_grant_back_after_a_restart() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    let maps = "maps.weather.example";
+    assert_eq!(
+        shell.net_connect("weather", maps, CEILING),
+        NetConnect::Asked
+    );
+    let menu = card(&mut shell);
+    let once = host.mint(menu.id, menu.call());
+    let always = shell.eval_console(&format!("answer {} always-target once={once}", menu.id));
+    assert!(always.text.contains("(always)"), "{always:?}");
+    let mut again = super::shell(&host);
+    let undone = again.eval("undo");
+    assert!(
+        undone.ok
+            && undone
+                .text
+                .contains("weather may not connect to maps.weather.example"),
+        "{undone:?}"
+    );
+    assert_eq!(
+        again.net_connect("weather", maps, CEILING),
+        NetConnect::Asked
+    );
+}
+
 #[test]
 fn settings_lists_and_revokes_and_undo_puts_it_back() {
     let host = FakeHost::new();

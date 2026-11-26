@@ -180,7 +180,13 @@ pub(super) fn draw(state: &mut State, screen: &Screen) {
         // The Apps sheet is the scene's: under the ask card, never over it.
         state.painter.paint(&mut frame, clip, &scene, &mut content);
         if state.draws_cursor {
-            state.painter.cursor(&mut frame, clip, state.desk.pointer());
+            state.painter.cursor(&mut frame, clip, desk.pointer());
+        }
+        // The outline, taskbar, pane, Start, tooltip, card and arrow were
+        // drawn after every window: no window's px there, so `present` puts
+        // no client's own px on them, whatever colour they were drawn in.
+        for &r in state.painter.covered() {
+            deskcore::overlay::mark(mask, width, height, r, 0);
         }
     }
     let rendered = if timed { sys::time_ns() } else { 0 };
@@ -269,8 +275,10 @@ const BAND_WIDTH: usize = 88;
 pub(super) const WHEEL_PICTURES: usize = 4;
 
 /// What `draw` fills a window's content with while the client's own pixels
-/// are to go in it: the window colour with the blue bit flipped, which no
-/// token is (`deskcore::overlay::overlay` replaces only a px of exactly this).
+/// are to go in it: the window colour with the blue bit flipped
+/// (`deskcore::overlay::overlay` replaces only a px of exactly this). A
+/// theme may hold a token of this colour: what the painter draws over the
+/// windows is kept from clients by the mask, not by its colour.
 fn hole(state: &State) -> u32 {
     state.painter.content_fallback() ^ 1
 }

@@ -102,6 +102,13 @@ pub struct Change {
 /// one app overlap, whichever rows made them.
 pub const APP_RES: &str = "app ";
 
+/// Whether `a` and `b` name one resource. The log on disk keeps a resource
+/// as one word, `_` for each space, so one read back after a restart is
+/// compared in that form (bug-hunt-3 H3-24).
+pub fn same_res(a: &str, b: &str) -> bool {
+    a == b || text::word(a) == text::word(b)
+}
+
 impl Change {
     /// `policy round-robin (was interactive)`, as the result line says it; with
     /// no value before, no "(was …)". An app's change says itself in `after`
@@ -115,6 +122,11 @@ impl Change {
             true => said,
             false => format!("{said} (was {})", self.before),
         }
+    }
+
+    /// Whether this change and `other` changed one resource ([`same_res`]).
+    pub fn overlaps(&self, other: &Change) -> bool {
+        same_res(&self.res, &other.res)
     }
 }
 
@@ -318,7 +330,7 @@ impl ActLog {
                 e.changes
                     .iter()
                     .filter(sent)
-                    .any(|c| entry.changes.iter().filter(sent).any(|d| d.res == c.res))
+                    .any(|c| entry.changes.iter().filter(sent).any(|d| d.overlaps(c)))
             })
             .map(|e| e.id)
             .collect()

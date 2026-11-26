@@ -124,9 +124,13 @@ fn extents(runs: impl IntoIterator<Item = Run>) -> Vec<(u64, u64)> {
     out
 }
 
-/// `runs`, which may overlap, as sorted, disjoint `[start, end)` spans.
+/// `runs`, which may overlap, as sorted, disjoint `[start, end)` spans. A run
+/// that would end past the last address there is holds no block of the disk:
+/// repair claims a hostile pointer's run before it reads it (bug hunt 5,
+/// H5-15), so it is left out, and no end overflows or wraps to 0.
 fn joined(runs: &[Run]) -> Vec<(u64, u64)> {
-    let mut spans: Vec<(u64, u64)> = runs.iter().map(|r| (r.addr, r.end())).collect();
+    let end = |r: &Run| Some((r.addr, r.addr.checked_add(r.blocks())?));
+    let mut spans: Vec<(u64, u64)> = runs.iter().filter_map(end).collect();
     spans.sort_unstable();
     let mut out: Vec<(u64, u64)> = Vec::with_capacity(spans.len());
     for (s, e) in spans {
@@ -678,6 +682,34 @@ mod tests {
         let loaded = Allocator::load(&mut disk, CsumKind::Seahash64, &head, 2).unwrap();
         assert_eq!(loaded.state(), alloc.state());
         assert_eq!(alloc.claim(&used), 0);
+    }
+
+    /// Runs at the last addresses there are, as a hostile node or chain
+    /// pointer names (bug hunt 5, H5-15): claim takes nothing for them and
+    /// does not overflow, and a run beside them still takes the pending run
+    /// it overlaps.
+    #[test]
+    fn claim_leaves_out_runs_past_the_last_address() {
+        let mut alloc = Allocator::new(format::data_area(1 << 12));
+        let past = [
+            Run {
+                addr: u64::MAX,
+                level: 0,
+            },
+            Run {
+                addr: u64::MAX - 1,
+                level: 1,
+            },
+        ];
+        assert_eq!(alloc.claim(&past), 0);
+        let a = alloc.alloc(2).unwrap();
+        alloc.free_later(1, a);
+        let at = Run {
+            addr: a.addr,
+            level: 0,
+        };
+        assert_eq!(alloc.claim(&[past[0], at, past[1]]), 4);
+        assert!(!alloc.any_unused(a.addr, a.addr + 4));
     }
 
     #[test]

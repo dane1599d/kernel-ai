@@ -7,6 +7,7 @@ use super::hal::{DEVICE, KernelHal};
 use super::split::{self, SplitTransport};
 use crate::devices::{Outcome, error};
 use crate::{log, memory};
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::vec::Vec;
@@ -224,14 +225,21 @@ fn bind(
                 let name = format!("{at}");
                 match driver {
                     "nvme" => {
-                        found
-                            .nvme
-                            .push(crate::nvme::Function { name, bar, bar_len });
+                        let access = *access;
+                        found.nvme.push(crate::nvme::Function {
+                            name,
+                            bar,
+                            bar_len,
+                            bus_master_off: Box::new(move || {
+                                let mut root = PciRoot::new(access);
+                                let (_, command) = root.get_status_command(at);
+                                root.set_command(at, command - Command::BUS_MASTER);
+                            }),
+                        });
                         Some(Outcome::Running(None))
                     }
                     _ => {
-                        let address = pci::PciAddress::new(0, at.bus, at.device, at.function);
-                        let vector = match enable_msix(access, address, crate::usb::on_interrupt) {
+                        let vector = match enable_msix(root, access, at, crate::usb::on_interrupt) {
                             Ok(vector) => Some(vector),
                             Err(why) => {
                                 log!("pci: {driver} at {at}: {why}; polled from the timer");
@@ -287,9 +295,8 @@ fn bind(
         return Some(Outcome::Failed(error::TRANSPORT));
     };
     let split = match kind {
-        DeviceType::Network => split_transport(access, at, transport).map(|mut split| {
-            let address = pci::PciAddress::new(0, at.bus, at.device, at.function);
-            match enable_msix(access, address, crate::net::on_interrupt) {
+        DeviceType::Network => split_transport(root, access, at, transport).map(|mut split| {
+            match enable_msix(root, access, at, crate::net::on_interrupt) {
                 Ok(vector) => {
                     split.route_queue(crate::net::RECEIVE_QUEUE, 0);
                     found.net_vector = Some(vector);
@@ -298,7 +305,7 @@ fn bind(
             }
             split
         }),
-        DeviceType::GPU => split_transport(access, at, transport),
+        DeviceType::GPU => split_transport(root, access, at, transport),
         DeviceType::EntropySource => {
             found.rng = Some(transport);
             return Some(Outcome::Running(None));
@@ -327,15 +334,20 @@ fn bind(
 /// boot CPU, and turns MSI-X on with legacy INTx off. The device then raises
 /// that vector, and `handler` runs for it.
 fn enable_msix(
+    root: &mut PciRoot<EcamAccess>,
     access: &EcamAccess,
-    address: pci::PciAddress,
+    function: DeviceFunction,
     handler: crate::irq::Handler,
 ) -> Result<u8, &'static str> {
     use pci::msix::{self, ENTRY_BYTES};
+    let address = pci::PciAddress::new(0, function.bus, function.device, function.function);
     let msix = msix::msix(access, address).ok_or("no MSI-X")?;
-    let bar = msix::bar_address(access, address, msix.table_bar)
+    let (base, size) = memory_bar(root, function, msix.table_bar)
         .ok_or("its MSI-X table is not in a memory BAR")?;
-    let table = memory::map_physical(bar + u64::from(msix.table_offset), ENTRY_BYTES, DEVICE)?;
+    // The table's offset is the device's to give: keep it inside the BAR.
+    let entry = pci::bar_range(base, size, u64::from(msix.table_offset), ENTRY_BYTES)
+        .ok_or("its MSI-X table lies outside its BAR")?;
+    let table = memory::map_physical(entry, ENTRY_BYTES, DEVICE)?;
     let vector = crate::irq::allocate(handler).ok_or("no free interrupt vector")?;
     let boot_apic = crate::percpu::get(0)
         .lapic_id
@@ -362,11 +374,18 @@ fn enable_msix(
 /// A transport with its queue addresses written in halves (the network card's
 /// and the GPU's).
 fn split_transport(
+    root: &mut PciRoot<EcamAccess>,
     access: &EcamAccess,
     function: DeviceFunction,
     transport: PciTransport,
 ) -> Result<SplitTransport, &'static str> {
-    let phys = split::common_cfg(access, function).ok_or("no common configuration found")?;
+    let (bar, offset) =
+        split::common_cfg(access, function).ok_or("no common configuration found")?;
+    let (base, size) =
+        memory_bar(root, function, bar).ok_or("its common configuration is not in a memory BAR")?;
+    // The offset is the device's to give: keep it inside the BAR.
+    let phys = pci::bar_range(base, size, offset, split::COMMON_CFG_BYTES)
+        .ok_or("its common configuration lies outside its BAR")?;
     let common = memory::map_physical(phys, split::COMMON_CFG_BYTES, DEVICE)?;
     Ok(SplitTransport::new(transport, common))
 }
@@ -380,16 +399,30 @@ fn memory_bar0(
     let (_, command) = root.get_status_command(function);
     // Sizing a BAR rewrites it: keep decoding off meanwhile.
     root.set_command(function, command - Command::MEMORY_SPACE);
-    let bar = root.bar_info(function, 0);
+    let bar = memory_bar(root, function, 0);
     root.set_command(
         function,
         command | Command::MEMORY_SPACE | Command::BUS_MASTER,
     );
-    match bar {
+    bar.ok_or("BAR0 is not an assigned memory BAR")
+}
+
+/// Memory BAR `index` (0-5) of `function`: its address and size, as firmware
+/// assigned them. Sizing rewrites the BAR (`bar_info` turns decoding off
+/// meanwhile), so this is only for a function being bound, before its driver
+/// starts.
+fn memory_bar(
+    root: &mut PciRoot<EcamAccess>,
+    function: DeviceFunction,
+    index: u8,
+) -> Option<(u64, u64)> {
+    if index > 5 {
+        return None;
+    }
+    match root.bar_info(function, index) {
         Ok(Some(BarInfo::Memory { address, size, .. })) if address != 0 && size != 0 => {
-            Ok((address, size))
+            Some((address, size))
         }
-        Ok(_) => Err("BAR0 is not an assigned memory BAR"),
-        Err(_) => Err("BAR0 cannot be read"),
+        _ => None,
     }
 }
