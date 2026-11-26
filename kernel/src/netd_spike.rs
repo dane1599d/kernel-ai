@@ -43,7 +43,10 @@ const LIMITS: Limits = Limits {
     max_pages: 16_384,
     max_burst_ms: 60_000,
     caps: 0,
-    stack_pages: 0,
+    // 1 MiB: `netd` builds its two 256-entry queues on the stack, as the
+    // kernel's `net::init` does, which overflows the default 64 KiB (run
+    // 45865284498: a page fault in VirtioNet::new).
+    stack_pages: 256,
 };
 
 /// Where the card's virtio structures are: its BAR and their offsets in it.
