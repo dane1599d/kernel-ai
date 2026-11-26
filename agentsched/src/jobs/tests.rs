@@ -363,6 +363,39 @@ fn only_the_person_gets_the_persons_commands() {
     }
 }
 
+/// Bug hunt #19: a running job stops only for the person and for its own
+/// agent's `agent-stop`; every poll that came while it ran stopped it before.
+#[test]
+fn a_running_job_stops_only_for_the_person_or_its_own_stop() {
+    let running = (7 << 32) | 1;
+    let answer = |badge: u64, text: &str| while_job(badge, text, running, GOALS);
+    // The planner's own poll, every runner turn, and its other commands.
+    assert_eq!(
+        answer(GOALS, &format!("agent-take {running}")),
+        WhileJob::Answer
+    );
+    assert_eq!(answer(GOALS, "agent-take 12"), WhileJob::Answer);
+    assert_eq!(answer(GOALS, "agent-stop 12"), WhileJob::Answer);
+    assert_eq!(answer(GOALS, "agent-start act {}"), WhileJob::Answer);
+    assert_eq!(
+        answer(INDEX, &format!("agent-stop {running}")),
+        WhileJob::Answer
+    );
+    assert_eq!(answer(GOALS, "agent-take x"), WhileJob::Answer);
+    // The Monitor's health, the panel's warm, and what an agent may not send.
+    assert_eq!(answer(NO_AGENT, "health"), WhileJob::Answer);
+    assert_eq!(answer(KAI, "warm"), WhileJob::Answer);
+    assert_eq!(answer(GOALS, "act {}"), WhileJob::Answer);
+    // Its own stop, and the person's requests, stop it.
+    assert_eq!(
+        answer(GOALS, &format!("agent-stop {running}")),
+        WhileJob::Stop
+    );
+    assert_eq!(answer(KAI, "act {}"), WhileJob::Stop);
+    assert_eq!(answer(KAI, "ask why"), WhileJob::Stop);
+    assert_eq!(answer(NO_AGENT, "model"), WhileJob::Stop);
+}
+
 /// bug-hunt-4 H4-15: what a job used comes back with its answer, so the agent
 /// can charge its own budget; a job that used nothing reads as before.
 #[test]

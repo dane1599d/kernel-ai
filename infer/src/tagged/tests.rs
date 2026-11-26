@@ -371,3 +371,51 @@ fn the_mask_on_many_workers_answers_as_on_one() {
         );
     }
 }
+
+/// One row with an int argument of `min..=max`, as an app may declare it.
+fn wide(min: i64, max: i64) -> Vec<Action<'static>> {
+    let kind: &'static [Arg<'static>] = alloc::vec![arg("n", Kind::Int { min, max })].leak();
+    alloc::vec![Action {
+        name: "notes_set",
+        args: kind
+    }]
+}
+
+const WIDE_START: &str = r#"{"name":"notes_set","arguments":{"n":"#;
+
+/// Bug hunt #20: a digit past i64 is masked, not an overflow (a debug build's
+/// panic, aborting llm).
+#[test]
+fn an_int_range_as_wide_as_i64_masks_digits_past_it() {
+    let acts = wide(0, i64::MAX);
+    let g = Tagged::new(&acts).unwrap();
+    let state = takes(&g, &format!("{WIDE_START}999999999999999999")).unwrap();
+    for b in b'0'..=b'9' {
+        assert!(
+            matches!(g.step(state, b), Err(Stop::Masked)),
+            "{}",
+            b as char
+        );
+    }
+    let mut out = Vec::new();
+    g.forced(&state, &mut out);
+    // i64::MAX itself is a value; one more is not.
+    let state = takes(&g, &format!("{WIDE_START}922337203685477580")).unwrap();
+    let max = g.step(state, b'7').unwrap();
+    assert!(g.is_done(&g.advance(max, b"}}").unwrap()));
+    assert!(matches!(g.step(state, b'8'), Err(Stop::Masked)));
+}
+
+/// Bug hunt #20: a range near i64's top does not overflow while it checks
+/// whether a prefix can still reach it.
+#[test]
+fn an_int_range_near_i64s_top_takes_its_value() {
+    let n = 9_000_000_000_000_000_001;
+    let acts = wide(n, n);
+    let g = Tagged::new(&acts).unwrap();
+    let state = takes(&g, WIDE_START).unwrap();
+    assert!(g.step(state, b'9').is_ok());
+    assert!(g.step(state, b'8').is_err());
+    assert!(whole(&g, &format!("{WIDE_START}{n}}}}}")));
+    assert!(!whole(&g, &format!("{WIDE_START}{}}}}}", n - 1)));
+}
