@@ -248,7 +248,8 @@ fn int_prefix(num: i64, count: u8, min: i64, max: i64) -> bool {
         if low > max {
             return false;
         }
-        if low + span > min && !(num == 0 && span > 1) {
+        // Past i64 the numbers from `low` reach beyond any `min`.
+        if low.checked_add(span).is_none_or(|end| end > min) && !(num == 0 && span > 1) {
             return true;
         }
         match (low.checked_mul(10), span.checked_mul(10)) {
@@ -329,7 +330,14 @@ fn scalar(ty: &Kind<'_>, s: Scalar, b: u8) -> Result<Took, Stop> {
     match ty {
         Kind::Int { min, max } => {
             if b.is_ascii_digit() {
-                let num = s.num * 10 + i64::from(b - b'0');
+                // A digit that takes the number past i64 is past every max.
+                let Some(num) = s
+                    .num
+                    .checked_mul(10)
+                    .and_then(|n| n.checked_add(i64::from(b - b'0')))
+                else {
+                    return Err(Stop::Masked);
+                };
                 let count = s.digits + 1;
                 return match count <= 19 && int_prefix(num, count, *min, *max) {
                     true => Ok(Took::Into(Scalar {
