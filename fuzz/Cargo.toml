@@ -12,8 +12,12 @@ publish = false
 # those crates' hostile tests too; and `desktop`'s readers of other processes'
 # bytes (plan p3-desktop §9, P8), deskcore's: the client calls through the desk
 # and the shell's and apps' text wires, in desk_harness.rs, run by
-# deskcore/tests/hostile.rs too. Outside the workspace: libfuzzer-sys builds libFuzzer's C++, so these
-# run only in .github/workflows/fuzz.yml on a GitHub runner, never on a
+# deskcore/tests/hostile.rs too; and what `pkg` and `updated` read from a
+# repository and `fs`'s wire (ADR 0000 P8): kaipkg's `.kpkg` reader, kaituf's
+# TUF metadata and fsproto's requests and replies, in pkg_harness.rs and
+# fsproto_harness.rs, run by kaipkg's and fsproto's fuzz_harness tests too.
+# Outside the workspace: libfuzzer-sys builds libFuzzer's C++, so these run
+# only in .github/workflows/fuzz.yml on a GitHub runner, never on a
 # developer's PC. Their bodies are ../fuzz/harness.rs, which kainet's host
 # tests also run (kainet/tests/fuzz_harness.rs).
 #
@@ -21,6 +25,8 @@ publish = false
 # its one dependency the workspace lacks is listed here (C's review of #677):
 # libfuzzer-sys is "(MIT OR Apache-2.0) AND NCSA", NCSA being libFuzzer's own
 # BSD-style licence. It is a test tool on a GitHub runner and never ships.
+# serde_json (MIT OR Apache-2.0) is the workspace's, at its version, for
+# pkg_harness.rs's index fields and canonical JSON check.
 [package.metadata]
 cargo-fuzz = true
 
@@ -32,6 +38,10 @@ kainet = { path = "../kainet", features = ["testca"] }
 surfabi = { path = "../surfabi" }
 deskcore = { path = "../deskcore" }
 look = { path = "../look" }
+kaipkg = { path = "../kaipkg" }
+kaituf = { path = "../kaituf" }
+fsproto = { path = "../fsproto" }
+serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
 rustls = { version = "=0.23.46", default-features = false }
 getrandom = "0.3"
 
@@ -132,6 +142,34 @@ bench = false
 [[bin]]
 name = "desk_agent"
 path = "fuzz_targets/desk_agent.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kpkg"
+path = "fuzz_targets/kpkg.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tuf_metadata"
+path = "fuzz_targets/tuf_metadata.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fsproto_request"
+path = "fuzz_targets/fsproto_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fsproto_reply"
+path = "fuzz_targets/fsproto_reply.rs"
 test = false
 doc = false
 bench = false
