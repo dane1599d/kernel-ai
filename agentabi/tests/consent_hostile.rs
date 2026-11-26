@@ -415,12 +415,46 @@ fn one(name: &'static str, arg: &'static str, text: &'static str) -> [Call<'stat
 fn stop_negates_only_an_action_in_its_clause() {
     // The row's own verb: asked for, so it asks once as a change with no undo,
     // not as one the model added.
-    for (line, name) in [
-        ("stop running the miner", "miner"),
-        ("stop tracking", "tracking"),
+    let decision = decide(
+        "stop running the miner",
+        &one("service_stop", "name", "miner"),
+        &ROWS,
+    )[0];
+    assert_eq!(decision.why, Why::NoUndo, "{decision:?}");
+    // The #1460 review: only "running" is the row's own verb. Any other -ing
+    // word after it negates, so the call is one the model added and no
+    // standing rule ("Always allow process_stop") runs it without a card.
+    for (line, call) in [
+        (
+            "stop shutting down build-3",
+            one("process_stop", "name", "build-3"),
+        ),
+        (
+            "stop terminating the miner",
+            one("service_stop", "name", "miner"),
+        ),
+        (
+            "stop ending the miner",
+            one("service_stop", "name", "miner"),
+        ),
+        (
+            "stop updating the miner",
+            one("service_stop", "name", "miner"),
+        ),
+        ("stop tracking", one("service_stop", "name", "tracking")),
     ] {
-        let decision = decide(line, &one("service_stop", "name", name), &ROWS)[0];
-        assert_eq!(decision.why, Why::NoUndo, "{line:?}: {decision:?}");
+        let decision = decide(line, &call, &ROWS)[0];
+        assert_eq!(decision.why, Why::Added, "{line:?}: {decision:?}");
+    }
+    // "Stop." on its own stops the -ing word that opens the next sentence,
+    // and a "-thing" word stops what follows it.
+    for line in [
+        "Stop. Switching to round robin is a mistake",
+        "stop anything from switching to round robin",
+        "stop everything that switches to round robin",
+    ] {
+        let decision = decide(line, &switch(), &ROWS)[0];
+        assert_ne!(decision.tier, Tier::Run, "{line:?}: {decision:?}");
     }
     // Not an action's -ing word, or past the clause's end: nothing negated.
     let decision = decide(
@@ -599,7 +633,13 @@ fn carry_stops_at_an_answer_and_at_a_sentence_end() {
     )[0];
     assert_ne!(decision.tier, Tier::Run, "{decision:?}");
     let calc = one("pkg_remove", "name", "calc");
-    for line in ["Don't... remove calc", "Do. Not. Remove. Calc."] {
+    for line in [
+        "Don't... remove calc",
+        "Do. Not. Remove. Calc.",
+        // The #1460 review: a sentence of negation and its filler carries too.
+        "Please don't. Remove calc.",
+        "Absolutely not. Remove calc.",
+    ] {
         let decision = decide(line, &calc, &ROWS)[0];
         assert_ne!(decision.tier, Tier::Run, "{line:?}: {decision:?}");
     }

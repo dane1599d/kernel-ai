@@ -486,12 +486,19 @@ fn negated_for(words: &[Word], at: usize, upto: usize, row: Option<&Action>) -> 
             return false;
         };
         if before[first].sentence != sentence {
-            // A sentence of only negating words ("Not.", "Don't.") is said of
-            // the next one; any other ("Not again.", "No.") carries nothing.
+            // A sentence of only negation ("Not.", "Please don't.", "Absolutely
+            // not.") is said of the next one. An answer ("No.", "Ok no.") or a
+            // sigh ("Not again.") carries nothing.
+            let said: Vec<usize> = (0..before.len())
+                .filter(|&i| before[i].sentence == before[first].sentence)
+                .collect();
+            let bare = |i: usize| BARE_ANSWERS.contains(&before[i].text.as_str());
             let lone = before[first].sentence + 1 == sentence
-                && (0..before.len())
-                    .filter(|&i| before[i].sentence == before[first].sentence)
-                    .all(|i| negates(i) && !BARE_ANSWERS.contains(&before[i].text.as_str()));
+                && said.iter().any(|&i| negates(i) && !bare(i))
+                && said.iter().all(|&i| {
+                    let text = before[i].text.as_str();
+                    (negates(i) && !bare(i)) || (text != "again" && NEGATION_FILLER.contains(&text))
+                });
             return lone;
         }
         let only_negation = held
@@ -530,37 +537,44 @@ fn negation_at_for(words: &[Word], i: usize, row: Option<&Action>) -> bool {
 }
 
 /// Whether "stop" or "quit" at `i` stops an action, and so negates it: the
-/// next word, in the same clause, ends "-ing" and is no noun of
-/// [`NOT_GERUNDS`]. "stop everything" and "Stop. Bring up the terminal" stop
-/// none. For a `row` that asks anyway (it derives above Run), when "stop" is
-/// one of its own cues and the -ing word is none of them, "stop" is the row's
-/// verb, which changes only its card's wording: "stop running the miner" asks
-/// to stop the miner, "stop killing build-3" kills nothing. A row that would
-/// run ("timer_stop" with an undo) keeps the negation (#1460 review).
+/// next word ends "-ing" and is no noun of [`NOT_GERUNDS`]. It is in the same
+/// clause, or "stop" is a clause of its own ("Stop. Switching to round robin
+/// was a mistake"). "stop everything" and "Stop. Bring up the terminal" stop
+/// none, but "stop anything from switching" and "stop everything that
+/// switches" do. For a `row` that asks anyway (it derives above Run), whose
+/// own cue "stop" is, "stop running" is the row's verb, which changes only its
+/// card's wording: "stop running the miner" asks to stop the miner. Any other
+/// -ing word negates: "stop shutting down build-3" kills nothing, so no
+/// standing rule may run it (#1460 review).
 fn stops_an_action(words: &[Word], i: usize, row: Option<&Action>) -> bool {
-    let Some(next) = words.get(i + 1).filter(|n| n.clause == words[i].clause) else {
+    let clause = words[i].clause;
+    let alone = words.iter().filter(|w| w.clause == clause).all(|w| {
+        matches!(w.text.as_str(), "stop" | "quit") || NEGATION_FILLER.contains(&w.text.as_str())
+    });
+    let Some(next) = words
+        .get(i + 1)
+        .filter(|n| n.clause == clause || (alone && n.clause == clause + 1))
+    else {
         return false;
     };
-    let Some(stem) = next.text.strip_suffix("ing") else {
+    if !next.text.ends_with("ing") {
         return false;
-    };
+    }
     if NOT_GERUNDS.contains(&next.text.as_str()) {
-        return false;
+        // "stop anything from switching", "stop everything that switches".
+        return next.text.ends_with("thing")
+            && words.get(i + 2).is_some_and(|after| {
+                after.clause == next.clause
+                    && (matches!(after.text.as_str(), "from" | "that" | "which" | "who")
+                        || after.text.ends_with("ing"))
+            });
     }
     match row {
         Some(row) if derive(row) != Tier::Run && is_own_cue(row, &words[i].text) => {
-            row.cues.iter().any(|cue| gerund_of(&next.text, stem, cue))
+            next.text != "running"
         }
         _ => true,
     }
-}
-
-/// Whether `word` (ending -ing, `stem` without it) is the -ing form of `cue`'s
-/// first word: "switching" of "switch", "running" of "run", "using" of
-/// "use", "scheduling" of "schedul".
-fn gerund_of(word: &str, stem: &str, cue: &str) -> bool {
-    let verb = cue.split([' ', '-']).next().unwrap_or(cue);
-    !verb.is_empty() && (word.starts_with(verb) || verb.strip_suffix('e') == Some(stem))
 }
 
 /// Whether `word` is one of `row`'s one-word cues.
@@ -1036,8 +1050,8 @@ fn words(text: &str) -> Vec<Word> {
         if rest[..gap].contains('?') {
             asked_sentences.push(sentence);
         }
-        // A run of dots ("Don't... remove it") trails off, as "…" does: it
-        // ends a clause, not a sentence.
+        // A run of dots ("Don't... remove it") trails off: it ends a clause,
+        // not a sentence.
         let trails = rest[..gap].contains("..");
         if !inside
             && (rest[..gap].contains([';', '!', '?']) || (rest[..gap].contains('.') && !trails))
