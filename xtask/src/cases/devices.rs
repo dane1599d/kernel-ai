@@ -1,6 +1,6 @@
 //! D and the display: input, disks, the boot image and the screen.
 
-use super::{KAI, TestCase, case};
+use super::{KAI, ROOM_WARNING, TestCase, case};
 use crate::disk::Fixture;
 
 /// One detent of the wheel toward the person (scroll down), through QMP: the
@@ -179,7 +179,7 @@ pub(super) const CASES: &[TestCase] = &[
             "power: the console has the screen back from the desktop",
             "power: it is now safe to switch off the computer",
         ],
-        forbid: &["efi: turning off through ResetSystem"],
+        forbid: FALLBACK_FORBID,
         ..case("power-off-fallback", "test=power-off poweroff=fallback")
     },
     // ADR 0007 section 3: a record per bound device, read by DEV_LIST from ring 3.
@@ -308,4 +308,16 @@ pub(super) const CASES: &[TestCase] = &[
         }),
         ..case("display-gop", "test=display")
     },
+];
+
+/// `power-off-fallback`'s forbid: the base list and the ResetSystem path it
+/// must not take.
+const FALLBACK_FORBID: &[&str] = &[
+    "pkg: FAIL",
+    "cannot ask yet",
+    "dropped a result",
+    "did not reach the app",
+    "supervision: supervisor died",
+    ROOM_WARNING,
+    "efi: turning off through ResetSystem",
 ];

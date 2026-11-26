@@ -10,7 +10,8 @@
 //!   kinds (create, overwrite, rename, trash, and every tenth a restore of the
 //!   last trash), with each commit's latency for ADR 0002's typing-to-done table.
 //! - `step=churn boot=N` (`fs-powercut`): checks every file, leaves
-//!   `verified-N`, then makes actions until xtask cuts the power. `boot=0`
+//!   `verified-N`, then makes actions until xtask cuts the power, leaving
+//!   `churning-N` after the first ten, which the cut waits for. `boot=0`
 //!   (`xtask vbox --powercut`, where the command line is the same every boot)
 //!   counts the `verified-*` marks already there instead.
 
@@ -27,6 +28,10 @@ pub const ACTIONS: u64 = 200;
 /// Every trash is restored nine actions later, and retention gives back what
 /// undo held, so twenty boots of churn stay inside the 64 MiB `kai-data`.
 const MAX_LIVE: usize = 160;
+/// Actions a churn boot commits before it leaves `churning-N`: ten are each
+/// kind at least once (create, overwrite, rename, trash) and the restore of
+/// that trash, all on the disk the cut before left.
+const CHURNED: u64 = 10;
 /// The folder under `/home/user` the files live in.
 const DIR: &str = "cut";
 const HEADER: &str = "kai-cut";
@@ -80,10 +85,18 @@ pub fn churn(home: Handle, boot: u64) -> Result<(), String> {
         live: listing(dir)?.into_iter().map(|name| (name, 0, 0)).collect(),
         ..State::default()
     };
-    let mut i = boot * 1_000_000;
+    let first = boot * 1_000_000;
+    let mut i = first;
     loop {
         step(dir, i, &mut state)?;
         i += 1;
+        if i - first == CHURNED {
+            // The kernel arms the cut only once it sees this mark, so the cut
+            // lands while actions are being made. Said before the mark, which
+            // can end the last boot.
+            println!("filecheck: boot {boot}: {CHURNED} actions committed after the cut");
+            mark(home, &format!("churning-{boot}"))?;
+        }
     }
 }
 
