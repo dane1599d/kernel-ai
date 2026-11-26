@@ -1512,3 +1512,61 @@ fn the_model_store_hands_over_a_sealed_models_runs() {
     // A plain file of that name is not the model.
     assert_eq!(c.server.model_extents(&[0x11; 32]), Ok(None));
 }
+
+/// H3-7, H3-10: a restore that keeps 40 long-named old versions beside their
+/// files has committed before it answers, so its answer fits one message:
+/// as many rows as fit, and every copy is on the disk.
+#[test]
+fn a_restore_with_long_names_still_answers_in_one_message() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let names: Vec<String> = (0..40)
+        .map(|i| format!("{}{i:02}", "x".repeat(240)))
+        .collect();
+    let files: Vec<Mint> = names
+        .iter()
+        .map(|name| c.open(name, How::CreateFile).unwrap())
+        .collect();
+    // Action `txn` changes every file and a later one changes each again, so
+    // the restore keeps each old version beside it as `<name> (restored)`.
+    let act = |c: &mut Client<'_>, action: u64, data: &[u8]| {
+        assert_eq!(c.home(Request::Begin { action }).0, Reply::Done);
+        for file in &files {
+            assert_eq!(c.write(file, 0, data), Reply::Done);
+        }
+        match c.home(Request::Commit).0 {
+            Reply::Committed { generation } => generation,
+            other => panic!("{other:?}"),
+        }
+    };
+    let txn = act(&mut c, 1, b"one");
+    act(&mut c, 2, b"two");
+    let before = c.server.generation();
+    let request = encode_request(&Request::Restore { txn, action: 3 });
+    let answer = c.server.call(&Call {
+        caller: ALICE,
+        badge: HOME_USER,
+        rights: DIR_RIGHTS,
+        request: &request,
+        now: c.now + 1_000,
+    });
+    let len = answer.reply.len();
+    assert!(len <= fsproto::MAX_MESSAGE, "{len} bytes");
+    let Ok(Reply::Restored { rows, generation }) = decode_reply(&answer.reply) else {
+        panic!("not a Restored reply");
+    };
+    assert!(generation > before);
+    assert!(
+        !rows.is_empty() && rows.len() < names.len(),
+        "{}",
+        rows.len()
+    );
+    assert!(
+        rows.iter()
+            .all(|(_, o)| matches!(o, Outcome::Beside { .. }))
+    );
+    for name in &names {
+        let beside = format!("{name} (restored)");
+        assert!(c.open(&beside, How::Existing).is_ok(), "{beside}");
+    }
+}

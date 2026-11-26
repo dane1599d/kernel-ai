@@ -326,7 +326,11 @@ impl Shell {
             return;
         };
         let declined = word == termcore::menu::Answer::Deny.word();
-        let (ran, line) = match (lapsed, declined, reply.ok) {
+        // A yes the shell then refused (its rule not kept, its Allow not
+        // checked) is logged as declined and replies ok: it ran nothing, so
+        // where the line was typed it is no "Done." (#17).
+        let refused = !declined && self.log.get(id).is_some_and(|e| e.outcome == "declined");
+        let (ran, line) = match (lapsed, declined, reply.ok && !refused) {
             (true, _, _) => (false, UNANSWERED),
             (false, true, _) => (false, DECLINED),
             (false, false, true) => (true, ""),

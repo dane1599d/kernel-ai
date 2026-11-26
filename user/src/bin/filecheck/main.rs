@@ -315,6 +315,20 @@ fn restart(home: Handle) -> Result<(), String> {
         return Err(String::from("restart.txt is not what was committed"));
     }
     println!("filecheck: the File handle opened before fs restarted reads what was committed");
+    // This client ran before the restarted fs: its first change is told that
+    // any action it had is gone, and lands nothing; the next lands (H3-11).
+    let write = Request::Write {
+        off: 0,
+        data: b"v2".to_vec(),
+    };
+    match ask(file, write)? {
+        (Reply::Failed(Error::Dropped(_)), _) => {}
+        (other, _) => return Err(format!("the first change after the restart gave {other:?}")),
+    }
+    if read_all(file, 2)? != b"v1" {
+        return Err(String::from("the change refused after the restart landed"));
+    }
+    println!("filecheck: its first change after fs restarted was told its action is gone");
     mark(home, "restart.ok")?;
     Ok(())
 }

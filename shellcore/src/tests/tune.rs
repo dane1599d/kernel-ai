@@ -7,9 +7,9 @@ use kabi::sched::{SchedStats, ThreadRecord, TrialRequest, reason, state};
 use llmproto::chat::Completion;
 use llmproto::tune::{CARD_MAX_COLUMNS, CARD_MAX_LINES, TuneRequest};
 
-const NAMES: [&str; 11] = [
+const NAMES: [&str; 12] = [
     "shell", "llm", "editor", "build-1", "build-2", "build-3", "build-4", "indexer", "hog-1",
-    "hog-2", "notes",
+    "hog-2", "notes", "desktop",
 ];
 
 /// How the trial the host runs ends.
@@ -191,10 +191,18 @@ fn a_good_pick_is_proposed_tried_after_yes_and_kept() {
     assert!(card.text.contains("Plan: try classes/firm"));
     let asked = host.asked.borrow()[0].clone();
     assert!(asked.text.contains("make typing snappier"));
-    // The protected services are never offered for a label, nor the target.
-    for name in ["shell", "llm", "editor"] {
+    // The protected services are never offered for a label, nor the target;
+    // desktop is shown, marked protected (the kernel's floor refuses it).
+    for name in ["shell", "llm", "editor", "desktop"] {
         assert!(!asked.labelable.iter().any(|n| n == name), "{asked:?}");
     }
+    assert!(
+        asked
+            .text
+            .lines()
+            .any(|l| l.starts_with("\"desktop\"") && l.ends_with(" protected")),
+        "{asked:?}"
+    );
     let verdict = shell.eval("answer 1 yes");
     assert!(
         verdict.ok && verdict.text.starts_with("Kept classes/firm"),
