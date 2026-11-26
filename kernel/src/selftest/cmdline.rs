@@ -172,6 +172,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=scriptrun" => Some(SelfTest::Scriptrun),
             "test=fpu" => Some(SelfTest::Fpu),
             "test=probe" => Some(SelfTest::Probe),
+            "test=audio-virtio" => Some(SelfTest::AudioVirtio),
             "test=handles" => Some(SelfTest::Handles),
             "test=ipc-rtt" => Some(SelfTest::IpcRtt),
             "test=shell-interrupt" => Some(SelfTest::ShellInterrupt),

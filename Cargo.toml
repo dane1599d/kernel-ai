@@ -85,6 +85,7 @@ members = [
     "searchcore",
     "semindex",
     "shellcore",
+    "spikes/p6-s1",
     "spikes/rhai",
     "spikes/wasmi",
     "supervise",

@@ -41,6 +41,16 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
     case("storm", "test=storm"),
     case("fpu", "test=fpu"),
     case("probe", "test=probe"),
+    // P6-S1 (spike): 60 s of 48 kHz stereo through virtio-sound on QEMU's null
+    // audio backend, which drains in real time. KVM only: a TCG guest may not
+    // keep up.
+    TestCase {
+        expect: &["audio-virtio: 3000 periods played with no underrun"],
+        audio: true,
+        kvm_only: true,
+        min_timeout: Some(std::time::Duration::from_secs(240)),
+        ..case("audio-virtio", "test=audio-virtio")
+    },
     // P1 tasks 5, 12 and 13: handle tables, startup handles and need() on handles,
     // from the kernel and from ring 3; handle IPC through a route; grant nodes,
     // revoke and ONCE; spike S01-1's M1 and M2.

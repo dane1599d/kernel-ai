@@ -307,6 +307,8 @@ pub enum SelfTest {
     Fpu,
     /// L2: the isolation probe; ops 0-2 complete and every other op is stopped.
     Probe,
+    /// P6-S1 (spike): 60 s of 48 kHz stereo through virtio-sound, no underrun.
+    AudioVirtio,
     /// P1: handle tables, startup handles and need() on handles.
     Handles,
     /// IPC round trips timed: 0 B, 1 KiB and 7 KiB, kernel to ring 3 and ring 3
