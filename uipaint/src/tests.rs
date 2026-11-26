@@ -2,7 +2,7 @@
 //! SHA-256 of the buffer (`UIPAINT_BLESS=1` rewrites them; check the PPM it
 //! leaves in target/ before committing), and checks a golden cannot make.
 
-use crate::{Measured, Painter, Scale};
+use crate::{Measured, Painter, SCALE_ONE, Scale};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -717,9 +717,10 @@ fn a_rect_straddling_the_right_edge_paints_on_the_bottom_row() {
     let mut p = Painter {
         palette,
         text: &mut t,
-        scale: Scale::of(120),
+        scale: Scale::of(SCALE_ONE * 6 / 5),
     };
     p.paint(&mut img.canvas(), &list, bounds);
-    // At 1.2x the rect starts at x 108, right of the 100 px canvas.
+    // SCALE_ONE is 1x, so this is 1.2x: the rect starts at x 108, right of
+    // the 100 px canvas.
     assert!(img.px.iter().all(|&px| px == window));
 }
