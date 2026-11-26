@@ -264,10 +264,12 @@ pub const SHM_CREATE: u64 = 53;
 /// for an object with fewer, so a server mapping a client's `Shm` never faults
 /// past a short one (`shm_map_least`).
 /// Once the grant node its handle came through is revoked, every page reads as
-/// zero and writes reach no one.
+/// zero and writes reach no one. The page tables the mapping adds count against
+/// the caller's page quota: NoMemory when they would pass it.
 pub const SHM_MAP: u64 = 54;
-/// `shm_unmap(address) -> 0`: removes the mapping that starts at `address`. The
-/// pages are freed when no mapping and no handle is left.
+/// `shm_unmap(address) -> 0`: removes the mapping that starts at `address`, and
+/// the page tables it leaves empty. The pages are freed when no mapping and no
+/// handle is left.
 pub const SHM_UNMAP: u64 = 55;
 /// `job_spawn(job, &JobSpawn) -> pid`: starts the program the Job names
 /// (`scriptrun`) as the caller's child, with no capability bits and only the
