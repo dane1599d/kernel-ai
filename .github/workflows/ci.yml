@@ -32,7 +32,7 @@ jobs:
           fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
       # What this run checks: everything on main and on a merge batch
       # (`batch/...`), and on a pull request unless it changes only docs (files
-      # under docs/ or ending in .md, none of them read by Rust code), which
+      # under docs/ or ending in .md, none of them named by Rust code), which
       # needs only DCO and the decision rows. Batches and main keep every gate.
       - name: What this run checks
         id: scope
@@ -47,15 +47,20 @@ jobs:
             changed=$(git diff --name-only "$BASE" "$HEAD")
             if ! grep -qvE '^docs/|\.md$' <<<"$changed"; then
               code=false
-              # A doc that Rust code reads at build time (include_str! or
-              # include_bytes!, e.g. a test over a runbook) is code: its test
-              # guards it. Matched by file name, so a doubt builds.
+              # A doc that Rust code may read is code: its test guards it,
+              # whether through include_str!/include_bytes! or at run time
+              # (look's tests read_to_string ADR 0005's colour table). Any .rs
+              # file that names the doc's file name, as a fixed string (as
+              # scripts/batch/noboot.sh's readers()), makes it code, so a doubt
+              # builds; so does an error from git grep.
               for f in $changed; do
-                name=$(basename "$f" | sed 's/[.[\*^$]/\\&/g')
-                if grep -rqE --include='*.rs' "include_(str|bytes)!\([^)]*$name\"" .; then
-                  echo "$f is read by Rust code"
-                  code=true
-                fi
+                name=$(basename "$f")
+                git grep -qF -e "$name" -- '*.rs' && rc=0 || rc=$?
+                case $rc in
+                  0) echo "$f is named by Rust code"; code=true ;;
+                  1) ;;
+                  *) echo "git grep failed ($rc) on $f's name"; code=true ;;
+                esac
               done
             fi
           fi

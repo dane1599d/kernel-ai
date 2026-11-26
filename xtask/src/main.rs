@@ -94,6 +94,8 @@ mod userbuild;
 mod vbox;
 mod wit;
 mod wit_tables;
+#[cfg(test)]
+mod workflow_lint;
 mod wsl;
 
 use options::{Accel, Options, Task, parse_args};

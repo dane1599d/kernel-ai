@@ -36,13 +36,24 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # The same key as release.yml's `sign` job, so either can fill it.
       - name: Reuse the model files from an earlier run
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: model-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ${{ runner.temp }}/kai-models
           key: model-chunks-${{ hashFiles('xtask/models.json') }}
       - name: Download every pinned model and check its SHA-256
         run: python3 -I .github/release/fetch_models.py "$RUNNER_TEMP/kai-models"
+      # About 4 GB: saved from main only, which only a run by hand from main is
+      # (no push to main runs this, on purpose: the store has a 10 GB cap). A
+      # pull request's entry would serve only that pull request.
+      - name: Keep the models for later runs, saved from main only
+        if: github.ref == 'refs/heads/main' && steps.model-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/kai-models
+          key: model-chunks-${{ hashFiles('xtask/models.json') }}
       - name: Install pinned toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - name: The committed lists are the files' own
