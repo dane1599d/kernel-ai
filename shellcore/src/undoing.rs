@@ -2,6 +2,8 @@
 //!
 //! - `undo` reverts the newest live entry, its changes newest first. The undo is
 //!   an entry of its own, so `undo` again redoes.
+//! - An undo that stopped partway (a question, or a revert that failed) goes
+//!   on at the next `undo`, and its undo entry takes in the rest.
 //! - `undo N` reverts entry N, but only if no later live entry changed the same
 //!   resource; otherwise it names those entries.
 //! - `tune undo` is `undo` of the newest kept trial.
@@ -36,7 +38,7 @@ impl Shell {
             if let Some(why) = self.bare_unknown_refusal() {
                 return Reply::err(why);
             }
-            return match self.log.newest_live() {
+            return match self.log.undo_target() {
                 Some(id) => self.revert_entry(id, false),
                 None => Reply::err("nothing to undo"),
             };
@@ -378,14 +380,33 @@ impl Shell {
     /// The undo of `entry` as an entry: what it put back, and what of `entry` is
     /// still to undo.
     fn log_undo(&mut self, entry: &Entry, left: Vec<Change>, redo: Vec<Change>) {
-        let id = self.next_id;
-        self.next_id += 1;
+        // The undo an earlier `undo` of `entry` left partway, when it is the
+        // newest live entry: this one goes on with it (bug-hunt-3 H3-22). Only
+        // when all it put back can be put back again: a change with no inverse
+        // would make the joined undo entry not live, and its first half's redo
+        // would be lost, so that undo is an entry of its own, as before.
+        let redoable = redo.iter().all(|c| c.inverse.is_some_and(|i| i.is_read()));
+        let earlier = self
+            .log
+            .newest_live()
+            .filter(|_| redoable)
+            .filter(|&u| self.log.get(u).is_some_and(|e| e.of == Some(entry.id)));
         if let Some(original) = self.log.get_mut(entry.id) {
             original.changes = left;
             if original.changes.is_empty() {
                 original.state = State::Undone;
             }
         }
+        if let Some(earlier) = earlier {
+            self.host
+                .audit(&format!("undo #{earlier}: undid more of #{}", entry.id));
+            if let Some(undo) = self.log.get_mut(earlier) {
+                undo.changes.extend(redo);
+            }
+            return;
+        }
+        let id = self.next_id;
+        self.next_id += 1;
         self.host.audit(&format!("undo #{id}: undid #{}", entry.id));
         self.log.push(Entry {
             agent: agentid::Name::kai(),

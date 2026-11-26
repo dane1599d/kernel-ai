@@ -1,6 +1,7 @@
-//! A power-off case's verdict: the reason in QMP's SHUTDOWN event. Under
-//! -no-reboot and -no-shutdown a reset or a triple fault also leaves QEMU
-//! paused in `shutdown`, so only the reason tells a power-off
+//! A power-off or reset case's verdict: the reason in QMP's SHUTDOWN event.
+//! Under -no-reboot and -no-shutdown a reset or a triple fault also leaves
+//! QEMU paused in `shutdown`, and under -no-reboot alone a power-off ends QEMU
+//! with status 0 as a reset does, so only the reason tells a power-off
 //! (`guest-shutdown`) from them (`guest-reset`).
 
 use std::io::{BufRead, BufReader, Write};
@@ -11,6 +12,9 @@ use std::time::{Duration, Instant};
 
 /// The reason QEMU gives when the guest turned the machine off.
 pub const GUEST_SHUTDOWN: &str = "guest-shutdown";
+/// The reason QEMU gives when the guest reset the machine: the FADT register,
+/// the 8042, a triple fault and ResetSystem all give it.
+pub const GUEST_RESET: &str = "guest-reset";
 /// How long the listener keeps trying to reach QMP once QEMU has started.
 const CONNECT_WITHIN: Duration = Duration::from_secs(30);
 const CONNECT_RETRY: Duration = Duration::from_millis(100);
@@ -79,7 +83,7 @@ mod tests {
     #[test]
     fn a_shutdown_event_gives_its_reason() {
         assert_eq!(shutdown_reason(OFF).as_deref(), Some(GUEST_SHUTDOWN));
-        assert_eq!(shutdown_reason(RESET).as_deref(), Some("guest-reset"));
+        assert_eq!(shutdown_reason(RESET).as_deref(), Some(GUEST_RESET));
     }
 
     #[test]

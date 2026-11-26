@@ -20,7 +20,7 @@
 //!   undo, so that undo works until the shell restarts, as a profile's does.
 
 use crate::actions::{How, Pending};
-use crate::actlog::{Change, Entry, Form, State};
+use crate::actlog::{Change, Entry, Form, State, same_res};
 use crate::netgrant::{Ask, Decision, NetGrants};
 use crate::script::Checked;
 use crate::tiers::Tier;
@@ -580,7 +580,7 @@ impl Shell {
             .revoke(id)
             .ok_or_else(|| format!("there is no network grant #{id}"))?;
         if let Some(logged) = logged
-            && grant_res(&grant.app, &grant.object) != logged
+            && !same_res(&grant_res(&grant.app, &grant.object), logged)
         {
             return Err(format!("network grant #{id} is no longer {logged}"));
         }
@@ -602,7 +602,7 @@ impl Shell {
     /// entry whose inverse gives the row back (a withhold undone, or an undo of
     /// a restore undone) is the person's, never Kai's.
     pub(crate) fn kai_undo_refusal(&self) -> Option<String> {
-        let entry = self.log.get(self.log.newest_live()?)?;
+        let entry = self.log.get(self.log.undo_target()?)?;
         let widens = |inverse: &Option<Inverse>| match inverse {
             Some(Inverse::NetGrant { held: false, .. }) => Some("a network grant"),
             Some(Inverse::Grant {
@@ -634,7 +634,7 @@ impl Shell {
         let at = self
             .net_revoked
             .iter()
-            .rposition(|g| g.id == id && grant_res(&g.app, &g.object) == res)
+            .rposition(|g| g.id == id && same_res(&grant_res(&g.app, &g.object), res))
             .ok_or_else(|| format!("network grant #{id} ({res}) is no longer kept to put back"))?;
         let mut grants = self.net_store()?;
         let grant = self.net_revoked[at].clone();

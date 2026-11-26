@@ -5,10 +5,13 @@
 #
 # Both arms answer the same 120 tasks on eight stub apps through llm's own
 # `act`: `layered` (index lines, the name stop, then the app's lines, at 3,072
-# positions) and `flat` (every app's lines in full, one round, at 4,096). With
-# gate on, the job fails unless both arms answer every task with a call, layered
-# is at most 2 points under flat, and layered names the right app on at least
-# 95% of single-app tasks. The figures go to the job summary; each arm's jsonl
+# positions) and `flat` (every app's lines in full, one round, at 4,096). Arm
+# `described` (spike only) is layered with a short description from each row's
+# doc on its index line, within the same apps budget. With gate on, each index
+# arm run (layered, described) is checked against flat: both answer every task
+# with a call, the index arm is at most 2 points under flat and names the right
+# app on at least 95% of single-app tasks. The job fails unless at least one
+# index arm passes. The figures go to the job summary; each arm's jsonl
 # and summary.md are uploaded.
 #
 # llm samples with one fixed seed, so there is no seed input: a rerun is the
@@ -20,7 +23,7 @@ on:
   workflow_dispatch:
     inputs:
       arms:
-        description: "Arms, comma-separated: layered, flat (the gate needs both)"
+        description: "Arms, comma-separated: layered, flat, described (the gate needs flat and an index arm: layered or described)"
         default: "layered,flat"
       limit:
         description: "Only the first N tasks of each category (empty for all 120)"

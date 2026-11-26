@@ -23,6 +23,7 @@ pub mod status;
 mod theme;
 
 use crate::display::Surface;
+use crate::log;
 use crate::serial::{self, Serial};
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -32,6 +33,7 @@ use layout::Layout;
 use limine::framebuffer::Framebuffer;
 use spin::Mutex;
 use termcore::grid::{Grid, MAX_ROWS};
+use termcore::hold::{Hold, Released};
 use termcore::mirror::{self, Full};
 use termcore::plain::Plainly;
 use termcore::style::Kind;
@@ -76,7 +78,13 @@ struct Console {
     sign: Option<usize>,
     /// What changed for TERM_READ's readers, kept apart from `painted`.
     log: mirror::Log,
+    /// Other threads' lines while the terminal asks a question ([`hold_others`]).
+    hold: Hold<HOLD_BYTES>,
 }
+
+/// Bytes of other threads' lines kept while a question is asked: a screen's
+/// worth and more. Past that they go to the log book (`:log`).
+const HOLD_BYTES: usize = 4096;
 
 // SAFETY: the framebuffer pointer is only used under the CONSOLE mutex.
 unsafe impl Send for Console {}
@@ -88,6 +96,7 @@ static CONSOLE: Mutex<Console> = Mutex::new(Console {
     painted: [UNKNOWN; MAX_ROWS],
     sign: None,
     log: mirror::Log::new(),
+    hold: Hold::new(),
 });
 static SCREENLOG: AtomicBool = AtomicBool::new(false);
 /// Text columns and rows of the framebuffer console; 0 when there is none.
@@ -228,8 +237,47 @@ pub fn configure(cmdline: &str) {
 /// serial still gets the text.
 pub fn print(args: fmt::Arguments) {
     if let Some(mut console) = CONSOLE.try_lock() {
+        // While a question is asked, another thread's line waits for the
+        // answer; a fatal report never does.
+        if console.hold.is_open()
+            && console.hold.holds(crate::threads::current_tid())
+            && !crate::smp::reporting()
+        {
+            let _ = Plainly(&mut console.hold).write_fmt(args);
+            if console.hold.is_full() {
+                crate::logbook::record(args);
+            }
+            return;
+        }
         let _ = Plainly(&mut console.grid).write_fmt(args);
         console.flush();
+    }
+}
+
+/// Opens the hold for the calling thread, about to ask a question (bug hunt
+/// 6, H6-10): until [`release_held`], every other thread's line is kept off
+/// the screen, so none lands among the question's rows or scrolls its top
+/// away. Serial gets every line at once, as ever.
+pub fn hold_others() {
+    serial::with_line(|| {
+        if let Some(mut console) = CONSOLE.try_lock() {
+            console.hold.open(crate::threads::current_tid());
+        }
+    });
+}
+
+/// Closes the hold once the question is answered, and prints what it kept.
+pub fn release_held() {
+    let lost = serial::with_line(|| {
+        let mut guard = CONSOLE.try_lock()?;
+        let console = &mut *guard;
+        let Released { text, lost } = console.hold.close();
+        console.grid.log(text);
+        console.flush();
+        Some(lost)
+    });
+    if let Some(lost) = lost.filter(|&lost| lost > 0) {
+        log!("console: {lost} lines logged while a question was asked are in :log");
     }
 }
 

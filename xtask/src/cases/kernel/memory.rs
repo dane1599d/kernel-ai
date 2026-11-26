@@ -7,6 +7,8 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
     TestCase {
         expect: &[
             "profile: a quota stopped a commit, a class showed in SCHED_STATS, and the floors held",
+            // Bug hunt 5 H5-17: a lowered quota still counts what is held past it.
+            "profile: a quota lowered under what its process holds freed no admission budget",
         ],
         ..case("profile", "test=profile")
     },
@@ -16,6 +18,9 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
             "shm: M6: revoke a 256-page Shm",
             // #1155's review: a refund lands only on the pid it was charged to.
             "shm: a refund for another pid leaves a slot's count; one for its own pid comes off by its pages",
+            "shm: a failed SHM_MAP took back the pages it had mapped and shot them down",
+            // Bug hunt 5 H5-16: SHM_MAP's page tables are counted, and go with SHM_UNMAP.
+            "shm: SHM_UNMAP gave back the page tables SHM_MAP added, and a map past the quota was refused",
             "shm: SHM_CREATE, MAP and UNMAP work, and a revoke leaves holders sharing nothing",
         ],
         ..case("shm", "test=shm")

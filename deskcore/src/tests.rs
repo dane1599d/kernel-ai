@@ -400,6 +400,74 @@ fn pointer_enters_and_leaves_content() {
     assert_eq!(desk.pointer(), Point { x: 0, y: H - 1 });
 }
 
+/// A press in content holds the pointer for that window: its motion out of the
+/// content and its release there still go to it, in its content's px, and the
+/// `Leave` comes after (#24 of the bug hunt: a slider kept dragging).
+#[test]
+fn a_press_in_content_hears_its_release_outside_it() {
+    let (mut desk, ids) = desk_with(1);
+    let c = desk.window(ids[0]).unwrap().content();
+    let window = ids[0];
+    desk.input(at((c.x + 3, c.y + 4)));
+    let press = |down| Input::Button {
+        button: Button::Left,
+        down,
+    };
+    assert!(desk.input(press(true)).contains(&Effect::Button {
+        window,
+        at: Point { x: 3, y: 4 },
+        button: Button::Left,
+        down: true,
+    }));
+    // Onto the title bar, then the empty desk: still the window's.
+    assert_eq!(
+        desk.input(at((c.x + 3, c.y - 10))),
+        [Effect::Pointer {
+            window,
+            at: Point { x: 3, y: -10 }
+        }]
+    );
+    let off = (c.right() + 50, c.y + 4);
+    desk.input(at(off));
+    assert_eq!(
+        desk.input(press(false)),
+        [
+            Effect::Button {
+                window,
+                at: Point {
+                    x: off.0 - c.x,
+                    y: 4
+                },
+                button: Button::Left,
+                down: false,
+            },
+            Effect::Leave { window },
+        ]
+    );
+    // Let go: motion off the content is no longer the window's.
+    assert_eq!(desk.input(at((off.0, off.1 + 1))), []);
+}
+
+/// A window closed while a button is held in it holds nothing after.
+#[test]
+fn a_press_ends_with_its_window() {
+    let (mut desk, ids) = desk_with(2);
+    let c = desk.window(ids[1]).unwrap().content();
+    desk.input(at((c.x + 3, c.y + 4)));
+    desk.input(Input::Button {
+        button: Button::Left,
+        down: true,
+    });
+    desk.close(ids[1]);
+    let off = (c.right() + 50, c.y + 4);
+    assert!(
+        !desk
+            .input(at(off))
+            .iter()
+            .any(|e| matches!(e, Effect::Pointer { window, .. } if *window == ids[1]))
+    );
+}
+
 #[test]
 fn the_scale_follows_the_edid_or_the_width() {
     assert_eq!(scale::for_screen(1920, 0), 120);

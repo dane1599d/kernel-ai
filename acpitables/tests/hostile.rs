@@ -175,14 +175,15 @@ fn the_sample_parses() {
 #[test]
 fn every_prefix_of_memory() {
     let mem = machine(&tables());
-    let ends = [madt().len(), hpet().len(), mcfg().len()];
+    let ends = [madt().len(), hpet().len()];
     hostile::truncations(&mem, |cut, prefix| {
         let result = check(&flat(prefix.to_vec()));
-        // The MADT must be whole; a table whose signature is cut off is skipped,
-        // and one cut after its signature is unreadable.
+        // The MADT must be whole; an HPET whose signature is cut off is skipped,
+        // and one cut after its signature is unreadable. An MCFG cut anywhere is
+        // left out, as if absent.
         let whole = |i: usize| cut >= TABLES_AT[i] + ends[i];
         let skipped = |i: usize| cut < TABLES_AT[i] + 4;
-        let expected = whole(0) && (1..3).all(|i| whole(i) || skipped(i));
+        let expected = whole(0) && (whole(1) || skipped(1));
         assert_eq!(result.is_ok(), expected, "cut at {cut}: {result:?}");
     });
 }
@@ -356,4 +357,42 @@ fn mutated_fadts_with_good_checksums() {
         }
     }
     assert!(parsed > 1000, "{parsed} of 4000 parsed");
+}
+
+/// Bug hunt 3 H3-4: a damaged FADT or MCFG is left out, as if absent, and the
+/// other tables are kept. A damaged MADT or HPET still stops the parse.
+#[test]
+fn a_damaged_fadt_or_mcfg_is_left_out() {
+    let bad = Error::BadChecksum("system description table");
+    // Bodies changed after their checksums were set: the FADT, then the MCFG.
+    let mut mem = with_fadt(fadt());
+    mem[TABLES_AT[3] + 40] ^= 0xFF;
+    let platform = check(&flat(mem)).unwrap();
+    assert_eq!(platform.cpus, [0, 1]);
+    assert_eq!(platform.hpet, Some(0xFED0_0000));
+    assert_eq!(platform.ecam.len(), 2);
+    assert_eq!((platform.reset, platform.no_8042), (None, false));
+    assert_eq!(platform.ignored, [("FACP", bad)]);
+    let mut mem = machine(&tables());
+    mem[TABLES_AT[2] + 50] ^= 0xFF;
+    let platform = check(&flat(mem)).unwrap();
+    assert_eq!(platform.cpus, [0, 1]);
+    assert_eq!(platform.hpet, Some(0xFED0_0000));
+    assert!(platform.ecam.is_empty());
+    assert_eq!(platform.ignored, [("MCFG", bad)]);
+    // An MCFG longer than the limit, and a FADT shorter than a header.
+    let mut long_mcfg = mcfg();
+    long_mcfg[4..8].copy_from_slice(&(MAX_TABLE_LEN as u32 + 1).to_le_bytes());
+    let mut short_fadt = fadt();
+    short_fadt[4..8].copy_from_slice(&20u32.to_le_bytes());
+    let damaged = [madt(), hpet(), long_mcfg, short_fadt];
+    let platform = check(&flat(machine(&damaged))).unwrap();
+    let short = Error::BadChecksum("table length");
+    let ignored = [("MCFG", Error::TableTooLong), ("FACP", short)];
+    assert_eq!(platform.ignored, ignored);
+    for which in [0, 1] {
+        let mut mem = machine(&tables());
+        mem[TABLES_AT[which] + 40] ^= 0xFF;
+        assert_eq!(check(&flat(mem)), Err(bad), "table {which}");
+    }
 }

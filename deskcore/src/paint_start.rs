@@ -112,6 +112,7 @@ impl Painter {
         });
         let layer = self.start_layer(at, start, scene, hover);
         c.draw_window(&layer, (at.x, at.y), g(clip), RADIUS, true);
+        self.cover(at, RADIUS, clip);
     }
 
     fn start_layer(

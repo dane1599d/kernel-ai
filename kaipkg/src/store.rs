@@ -258,6 +258,39 @@ fn object_header(bytes: &[u8]) -> Result<Header, String> {
     Header::parse(header)
 }
 
+/// An entry for each package of `installed` whose object `index` does not
+/// list, made from its own stored header, for [`resolve::resolve_stored`]: an
+/// install or a remove with another repository's index, as `local`'s after a
+/// mirror install, keeps what the kept packages depend on (H3-13). Only its
+/// name, version, hash, size, dependencies and grants are filled in: it is
+/// never fetched.
+fn stored_entries(
+    vol: &mut dyn Volume,
+    installed: &[Installed],
+    index: &[Entry],
+) -> Result<Vec<Entry>, String> {
+    let mut stored = Vec::new();
+    for p in installed
+        .iter()
+        .filter(|p| !index.iter().any(|e| e.sha == p.sha))
+    {
+        let bytes = vol.read(&object_path(&p.sha))?.ok_or_else(|| {
+            alloc::format!("{} is installed but its object is not stored", p.name)
+        })?;
+        stored.push(Entry {
+            name: p.name.clone(),
+            version: p.version,
+            sha: p.sha,
+            size: bytes.len() as u64,
+            depends: object_header(&bytes)?.depends,
+            grants: p.grants.clone(),
+            effects: Vec::new(),
+            yanked: false,
+        });
+    }
+    Ok(stored)
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Store {
     pub policy: Policy,
@@ -438,7 +471,8 @@ impl Store {
             name: w.name,
             range: w.range,
         }));
-        let picks = resolve::resolve(index, provided, &now.packages, &all)
+        let stored = stored_entries(cx.vol, &now.packages, index)?;
+        let picks = resolve::resolve_stored(index, &stored, provided, &now.packages, &all)
             .map_err(|why| Error::Refused(Refused::Unresolved(why)))?;
         let bad = failed(cx.vol)?;
         if let Some(p) = picks
@@ -498,7 +532,8 @@ impl Store {
                 range: None,
             })
             .collect();
-        let picks = resolve::resolve(index, provided, &now.packages, &keep)
+        let stored = stored_entries(cx.vol, &now.packages, index)?;
+        let picks = resolve::resolve_stored(index, &stored, provided, &now.packages, &keep)
             .map_err(|why| Error::Refused(Refused::Unresolved(why)))?;
         // Only what was installed stays: removing never fetches.
         let packages = now

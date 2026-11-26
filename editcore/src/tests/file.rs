@@ -49,6 +49,26 @@ fn an_edit_changes_the_bytes_and_keeps_every_line_ending() {
 }
 
 #[test]
+fn a_save_the_text_moved_on_from_is_what_reset_and_changed_go_by() {
+    let mut editor = open("alpha\n");
+    cmd(&mut editor, "c 1 balpha");
+    let written = editor.bytes();
+    cmd(&mut editor, "split 1 1 0");
+    assert_eq!(editor.bytes(), b"b\nalpha\n");
+    // The write's answer came after the split: what it wrote is the disk's.
+    editor.saved_as(&written);
+    assert!(editor.changed());
+    // Undo still reaches back past the save, and reads against the disk's.
+    cmd(&mut editor, "undo");
+    assert!(!editor.changed(), "back at what was written");
+    cmd(&mut editor, "undo");
+    assert_eq!(editor.bytes(), b"alpha\n");
+    assert!(editor.changed(), "the disk has balpha");
+    cmd(&mut editor, "reset");
+    assert_eq!(editor.bytes(), b"balpha\n");
+}
+
+#[test]
 fn there_is_nothing_to_build_in_a_file() {
     let mut editor = open("x\n");
     for line in ["build", "try"] {

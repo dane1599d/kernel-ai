@@ -116,7 +116,7 @@ fn entry(out: &mut String, e: &Entry, agents: bool) {
 }
 
 /// A value as one word: spaces and `=` would split a field, so they are `_`.
-fn word(text: &str) -> String {
+pub(super) fn word(text: &str) -> String {
     match text.is_empty() {
         true => String::from("-"),
         false => text.replace([' ', '=', '\n'], "_"),

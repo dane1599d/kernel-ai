@@ -6,14 +6,17 @@
 //! - Inside an action, consecutive writes to one file join a pending run, and
 //!   only whole records go to kaifs as the run passes their ends. Any other
 //!   request writes the run out first, so every reader sees it; a run that fails
-//!   to write out drops the action, as a failed write would have.
+//!   to write out drops the action, as a failed write would have. A write kaifs
+//!   would refuse whatever the disk holds (past [`MAX_FILE`], into a sealed
+//!   file) is refused at once instead, before the run holds it, and the action
+//!   stays open: only the disk's own failures are left for the write-out.
 //! - Reads come through a one-record cache, dropped by any change.
 
 use super::{Server, error};
 use alloc::vec::Vec;
 use fsproto::Error;
 use kaifs::BlockDev;
-use kaifs::items::CHUNK;
+use kaifs::items::{CHUNK, MAX_FILE};
 
 /// Writes not yet given to kaifs: `data` at `off` in object `object`.
 pub(crate) struct Pending {
@@ -38,10 +41,21 @@ impl<D: BlockDev> Server<D> {
         if self.owner.is_none() {
             return self.fs().write_at(object, off, data).map_err(error);
         }
+        let joins = self
+            .pending
+            .as_ref()
+            .is_some_and(|p| (p.volume, p.object) == (volume, object) && p.end() == Some(off));
+        // kaifs's own checks, made now: answered later, on whichever request
+        // writes the run out, they would drop the whole action. A run is only
+        // ever begun on an unsealed file, so one that joins it is too.
+        let fits = off
+            .checked_add(data.len() as u64)
+            .is_some_and(|end| end <= MAX_FILE);
+        if !fits || (!joins && self.fs().is_sealed(object).map_err(error)?) {
+            return Err(Error::Invalid);
+        }
         match &mut self.pending {
-            Some(p) if (p.volume, p.object) == (volume, object) && p.end() == Some(off) => {
-                p.data.extend_from_slice(data);
-            }
+            Some(p) if joins => p.data.extend_from_slice(data),
             _ => {
                 self.write_out()?;
                 self.pending = Some(Pending {
