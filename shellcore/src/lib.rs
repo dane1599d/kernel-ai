@@ -69,6 +69,7 @@ mod startup;
 pub use models::MODELS_APP;
 pub use netask::Connect as NetConnect;
 mod packages;
+mod paging;
 mod panel;
 mod pkg;
 mod power;
