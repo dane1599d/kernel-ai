@@ -18,7 +18,7 @@
 //! values come back.
 
 use crate::Shell;
-use crate::actlog::{Entry, Form, State};
+use crate::actlog::{Entry, Form, State, clip};
 use crate::agentcore::Outcome;
 use crate::tiers::Tier;
 use agentabi::{RetType, Returns};
@@ -250,12 +250,6 @@ fn merged(entry: &CEntry, id: u64, t_ns: u64) -> Entry {
         outcome: clip(&outcome.join("; ")),
         changes,
     }
-}
-
-/// `text` as one log record carries it: a longer one would make the whole
-/// log on disk unreadable at the next start (`actlog::MAX_TEXT`).
-fn clip(text: &str) -> String {
-    crate::show::truncate(text, crate::actlog::MAX_TEXT - " ...".len())
 }
 
 /// `Refused set_policy: why` as `refused: why`.
