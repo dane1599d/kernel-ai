@@ -1,7 +1,7 @@
 //! `test=app-files` (P4 task 5's exit case): the agent changes the person's files
 //! and the Files window shows each state. The Files app runs on the desktop, its
 //! effects answered by the shell, on a `kai-data` disk; the mock model answers
-//! each request line with its call (`xtask/src/mock_llm.rs`).
+//! each request line with its call (`xtask/src/mock_llm/acts.rs`).
 //!
 //! The OS's own rows change the files, so their tiers and `undo` are the OS's: a
 //! create, a move and a trash are all logged and undoable, so each runs at once and
@@ -65,7 +65,7 @@ const OPEN_MS: u64 = 12_000;
 const SHOW_MS: u64 = 120_000;
 const POLL_MS: u64 = 1_000;
 
-/// The requests the mock model answers (`xtask/src/mock_llm.rs`).
+/// The requests the mock model answers (`xtask/src/mock_llm/acts.rs`).
 const CREATE: &str = "create notes.txt saying hello";
 const MOVE: &str = "move notes.txt to plan.txt";
 const TRASH: &str = "trash notes.txt";

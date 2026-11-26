@@ -43,7 +43,7 @@ pub fn request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     if !text.starts_with("ui ") {
         return None;
     }
-    if name_of(pid) != "shell" {
+    if name_of(pid).as_deref() != Some("shell") {
         return Some(String::from("err only the shell acts for the agent"));
     }
     let mut windows = Windows(&mut state.clients);

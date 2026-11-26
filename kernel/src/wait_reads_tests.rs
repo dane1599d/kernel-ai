@@ -7,7 +7,7 @@
 //! came, with the time from the key by its clock. The host sends the keys
 //! when this case says it is ready for them. The mock model answers [`SLOW`]'s
 //! `act` only after 8 s, and [`FAIL`]'s with an error after 6 s
-//! (`xtask/src/mock_llm.rs`).
+//! (`xtask/src/mock_llm/`).
 //!
 //! 1. With no line running, a read is answered (the app's rows load).
 //! 2. During [`SLOW`]: a read is answered in under [`READ_MS`], before the line
@@ -37,7 +37,7 @@ pub const SHELL: &str = kabi::plan::SHELL_DESK_FILES;
 pub const APPS: &str = "wait-window program=comphost caps=serve+component+call uses=desktop pages=8192 stack_pages=512 burst_ms=20000 version=1";
 
 const CASE: &str = "wait-reads";
-/// `xtask/src/mock_llm.rs`'s `SLOW_LINE` and `FAIL_LINE`.
+/// `xtask/src/mock_llm/mod.rs`'s `WAIT_SLOW_LINE` and `WAIT_FAIL_LINE`.
 const SLOW: &str = "take a while over the cpu count";
 const FAIL: &str = "stop partway through the cpu count";
 /// The longest an app's read may wait while the model thinks.

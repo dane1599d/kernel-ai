@@ -132,8 +132,13 @@ impl Memories {
                 "Kai keeps at most {MAX_MEMORIES} memories; forget some first"
             ));
         }
+        // A file read back may name the last id there is (bug hunt H2-6). No
+        // id is handed out twice, so this memory is refused instead.
         let id = self.next;
-        self.next += 1;
+        let Some(next) = id.checked_add(1) else {
+            return Err(String::from("Kai has no memory ids left"));
+        };
+        self.next = next;
         self.kept.push(Memory {
             id,
             time,

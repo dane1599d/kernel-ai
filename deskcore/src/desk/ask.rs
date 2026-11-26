@@ -53,6 +53,10 @@ impl Desk {
         self.ask_preview_ms = None;
         self.held = self.down.clone();
         self.grab = None;
+        // The card takes the pointer too: a press held in a window ends here,
+        // or its release (which goes to the card) would leave the window
+        // holding every later motion and press.
+        self.cancel_press(&mut effects);
         self.damage
             .add(trusted::card(self.width, self.height, &ask));
         self.set_focus(Focus::Ask(id), &mut effects);

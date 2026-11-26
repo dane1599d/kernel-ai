@@ -145,9 +145,11 @@ impl Cache for TufCache<'_> {
     /// crash between them would leave the root or the rollback floor empty.
     fn save(&mut self, role: &str, bytes: &[u8]) -> Result<(), kaituf::Error> {
         let path = format!("{TUF_DIR}/{role}.json");
-        self.vol.begin(SAVE_ACTION).map_err(kaituf::Error::Io)?;
-        self.vol.write(&path, bytes).map_err(kaituf::Error::Io)?;
-        self.vol.commit().map_err(kaituf::Error::Io)
+        // `in_action` aborts on any failure: an action `fs` keeps open (a
+        // NoSpace or NotDir from a create) would answer every other writer of
+        // the volume Busy.
+        crate::store::in_action(self.vol, SAVE_ACTION, |vol| vol.write(&path, bytes))
+            .map_err(kaituf::Error::Io)
     }
 }
 

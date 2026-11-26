@@ -59,7 +59,12 @@ fn serve_one(state: &mut State, screen: &Screen, bytes: &[u8], info: &RecvInfo) 
     }
     let new = !state.clients.iter().any(|c| c.pid == pid);
     if new {
-        let label = name_of(pid);
+        // A caller that ended before it was served, or the kernel, opens
+        // nothing: no window is labelled with a name the kernel never gave.
+        let Some(label) = name_of(pid) else {
+            let _ = sys::reply_h(b"", &[]);
+            return false;
+        };
         let mut client = Client::new(pid, &label);
         client.theme(&state.theme_name);
         client.look(&state.look_text);
@@ -134,7 +139,7 @@ fn panel_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     }
     // The shell alone: a send's text and its fit included
     // (`deskcore::sendview::from_shell`), never an app's.
-    if !deskcore::sendview::from_shell(&name_of(pid)) {
+    if !name_of(pid).is_some_and(|name| deskcore::sendview::from_shell(&name)) {
         return Some(String::from("err only the shell talks to the panel"));
     }
     if text == panel_wire::TAKE {
@@ -293,7 +298,7 @@ fn chat_push(state: &mut State, who: Who, text: &str) -> bool {
 fn appearance_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<String> {
     let text = core::str::from_utf8(bytes).ok()?;
     let saved = panel_wire::parse_appearance(text)?;
-    if name_of(pid) != "shell" {
+    if name_of(pid).as_deref() != Some("shell") {
         return Some(String::from("err only the shell sets the appearance"));
     }
     match Appearance::decode(saved, &Shipped) {
@@ -312,7 +317,8 @@ fn appearance_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<Strin
 /// answer, or `None` for another message. The caller is the kernel's name for it,
 /// never anything it sent.
 fn files_request(state: &mut State, bytes: &[u8], pid: u64) -> Option<Vec<u8>> {
-    let caller = name_of(pid);
+    // One with no name is no client's: the surface path answers it.
+    let caller = name_of(pid)?;
     let reply = state.files.request(&caller, bytes, now_ms())?;
     if reply.wake {
         wake_shell();

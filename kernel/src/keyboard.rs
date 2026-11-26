@@ -21,13 +21,19 @@ impl Decoder {
         }
     }
 
-    fn stroke(&mut self, input: Input) -> Option<Stroke> {
-        // Keys changed hands since: what this decoder thinks is held is stale.
+    /// Starts afresh if the keys changed hands since this decoder last looked
+    /// (`input::route` bumps the ring's epoch each time, either way): what it
+    /// thinks is held went down on the other side, or comes up there.
+    fn catch_up(&mut self) {
         let epoch = i8042::epoch();
         if epoch != self.epoch {
             self.keys = keys::Decoder::new();
             self.epoch = epoch;
         }
+    }
+
+    fn stroke(&mut self, input: Input) -> Option<Stroke> {
+        self.catch_up();
         if input.aux {
             pointer::on_byte(input.byte, self.keys.ctrl());
             return None;
@@ -39,9 +45,10 @@ impl Decoder {
         self.stroke(input).and_then(|stroke| stroke.key)
     }
 
-    /// The keys held now.
+    /// The keys held now: none it saw before the keys last changed hands.
     pub fn held(&self) -> impl Iterator<Item = Code> + '_ {
-        self.keys.held()
+        let fresh = i8042::epoch() == self.epoch;
+        self.keys.held().filter(move |_| fresh)
     }
 
     /// Blocks the calling thread until a key goes down or up.
@@ -66,6 +73,8 @@ impl Decoder {
     /// Drops every queued key, still decoding each so Shift and the like stay in
     /// step. Used before a question, so keys typed earlier cannot answer it.
     pub fn discard_pending(&mut self) {
+        // With nothing queued, a change of hands since still clears what is held.
+        self.catch_up();
         while let Some(input) = i8042::next() {
             let _ = self.decode(input);
         }

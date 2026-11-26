@@ -303,8 +303,8 @@ impl Files {
     /// Commits the line's action, if one is open, for its log write:
     /// [`LogFailed::NotLanded`] for an action the line lost on any request
     /// since its last log write (a Commit refused, a held write `fs` dropped
-    /// on the log's own write before the Commit, an abort), not only the one
-    /// just refused.
+    /// on the log's own write before the Commit), not only the one just
+    /// refused. The shell's own abort (a failed run's rollback) is no loss.
     pub fn land(&self) -> Result<(), LogFailed> {
         let committed = self.commit();
         self.with_ledger(|l| l.landed(committed))
@@ -343,21 +343,10 @@ impl Files {
             Reply::Restored { rows, generation } => {
                 // The number is a real change now, even one a lost action had.
                 self.with_ledger(|l| l.committed(generation));
-                // `fs` never restores over a later change; it leaves those.
-                // A restore that put any of the rest back landed, and is the
-                // undo: asking again would restore it again, and each time
-                // write one more `name (restored)` copy (bug-hunt-6 H6-22).
-                let left = rows.iter().filter(|(_, o)| *o == Outcome::Left).count();
-                let restored = rows.iter().any(|(_, o)| *o != Outcome::Left);
-                if restored {
+                if rows.iter().any(|(_, o)| !matches!(o, Outcome::Left { .. })) {
                     self.changed.set(true);
                 }
-                match (left, restored) {
-                    (n, false) if n > 0 => Err(failed(format!(
-                        "{n} file(s) changed since, and fs never restores over a later change, so they stay as they are now"
-                    ))),
-                    (left, _) => Ok(FsUndone { generation, left }),
-                }
+                FsUndone::of(generation, &rows)
             }
             Reply::Failed(error) => Err(failed(describe(error))),
             other => Err(failed(unexpected(&other))),

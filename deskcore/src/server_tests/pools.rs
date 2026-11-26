@@ -55,3 +55,47 @@ fn letting_go_of_one_pool_leaves_the_others() {
     assert!(client.pool_in_use(2));
     assert!(client.buffer(4).is_some());
 }
+
+/// H3-27: a window's surface and a11y end after its toplevel, the surface's
+/// record (and tree) with them; a surface still a window's is refused; the
+/// ids are free again and the old a11y is no object of the client's.
+#[test]
+fn a_windows_surface_and_a11y_end_after_its_toplevel() {
+    let mut desk = Desk::new(1280, 800);
+    let open = |desk: &mut Desk, pid| {
+        let mut client = Client::new(pid, "app");
+        client.handle(desk, &setup(), true).unwrap();
+        client.pool_mapped(2);
+        let a11y = bytes(&[(3, Request::GetA11y { id: 6 })]);
+        client.handle(desk, &a11y, false).unwrap();
+        client.handle(desk, &show(), false).unwrap();
+        client
+    };
+    let mut early = open(&mut desk, 1);
+    let refused = early.handle(&mut desk, &bytes(&[(3, Request::SurfaceDestroy)]), false);
+    assert!(matches!(refused, Err(Error::BadArg)), "{refused:?}");
+    let mut client = open(&mut desk, 2);
+    let gone = bytes(&[
+        (5, Request::ToplevelDestroy),
+        (4, Request::BufferDestroy),
+        (6, Request::A11yDestroy),
+        (3, Request::SurfaceDestroy),
+        (2, Request::PoolDestroy),
+    ]);
+    let needs = client.handle(&mut desk, &gone, false).unwrap();
+    assert!(matches!(needs[..], [Need::Closed { .. }]), "{needs:?}");
+    client.pool_gone(2);
+    let surface = Request::Bind {
+        name: 2,
+        interface: "surface",
+        version: 1,
+        id: 3,
+    };
+    assert!(
+        client
+            .handle(&mut desk, &bytes(&[(REGISTRY, surface)]), false)
+            .is_ok()
+    );
+    let late = client.handle(&mut desk, &bytes(&[(6, Request::A11yCommit)]), false);
+    assert!(matches!(late, Err(Error::UnknownObject)), "{late:?}");
+}

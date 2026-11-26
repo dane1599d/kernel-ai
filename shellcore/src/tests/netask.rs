@@ -267,6 +267,87 @@ fn settings_lists_and_revokes_and_undo_puts_it_back() {
     );
 }
 
+/// bug-hunt-3 H3-21: a `c>` entry takes in only its own calls' log entries.
+/// A Settings revoke served while it ran or waited stays an entry of its own:
+/// neither the entry's failure nor an `undo` of the entry gives it back.
+#[test]
+fn a_c_entry_never_takes_in_a_revoke_logged_while_it_ran() {
+    let rr = r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#;
+    let rr = llmproto::act::parse(rr).unwrap();
+    for ok in [false, true] {
+        let host = FakeHost::new();
+        let mut shell = shell(&host);
+        assert!(answered(&host, &mut shell, "allow").ok);
+        shell.entry_begin("set_policy(\"round-robin\");");
+        shell.entry_call(&rr);
+        assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
+        // A click the main loop serves before the entry ends.
+        assert!(shell.settings(SETTINGS_APP, "net-revoke 1", true).is_ok());
+        let logged = shell.entry_end(ok);
+        if ok {
+            let id = logged.expect("the entry changed the policy");
+            assert_eq!(shell.log.get(id).unwrap().changes.len(), 1);
+            assert!(shell.eval("undo").ok);
+        }
+        assert_eq!(host.policy.get(), Some(policy::INTERACTIVE), "ok={ok}");
+        let listed = shell.settings(SETTINGS_APP, "net", false).unwrap();
+        assert_eq!(listed, "", "ok={ok}");
+        assert_eq!(connect(&mut shell), NetConnect::Asked, "ok={ok}");
+    }
+}
+
+/// #1370's review: the same for a revoke served while the entry waits on an
+/// ask, its calls so far standing in the log as one entry. The gather after
+/// the answer takes back the stand-in and the answered call, never the
+/// revoke logged between them.
+#[test]
+fn a_c_entry_never_takes_in_a_revoke_logged_while_it_waited_on_an_ask() {
+    let parse = |json: &str| llmproto::act::parse(json).unwrap();
+    let rr = parse(r#"{"name":"set_policy","arguments":{"name":"round-robin"}}"#);
+    let read = parse(r#"{"name":"fs_read","arguments":{"path":"plan.txt"}}"#);
+    let create = parse(r#"{"name":"fs_create","arguments":{"path":"a.txt","text":"one"}}"#);
+    for ok in [false, true] {
+        let host = FakeHost::new();
+        host.files
+            .borrow_mut()
+            .insert("plan.txt".into(), "make a.txt".into());
+        let mut shell = shell(&host);
+        assert!(answered(&host, &mut shell, "allow").ok);
+        shell.entry_begin(
+            "set_policy(\"round-robin\"); fs_read(\"plan.txt\", buf, 64); fs_create(\"a.txt\", \"one\");",
+        );
+        shell.entry_call(&rr);
+        shell.entry_call(&read);
+        // After content the create asks, and the calls so far stand in.
+        let made = shell.entry_call(&create);
+        let asked = made.reply.confirm.expect("a change after content asks");
+        assert!(
+            shell
+                .log
+                .entries()
+                .any(|e| e.consent == "c-entry" && e.live()),
+            "the stand-in is in the log"
+        );
+        // A click the main loop serves while the entry waits.
+        assert!(shell.settings(SETTINGS_APP, "net-revoke 1", true).is_ok());
+        let once = host.mint(asked, "fs_create(\"a.txt\", \"one\")");
+        let allowed = shell.eval(&format!("answer {asked} allow once={once}"));
+        assert!(allowed.ok, "{allowed:?}");
+        assert_eq!(host.files.borrow().len(), 2, "a.txt was made");
+        let logged = shell.entry_end(ok);
+        if ok {
+            let id = logged.expect("the entry changed things");
+            assert_eq!(shell.log.get(id).unwrap().changes.len(), 2);
+            assert!(shell.eval("undo").ok);
+        }
+        assert_eq!(host.policy.get(), Some(policy::INTERACTIVE), "ok={ok}");
+        assert_eq!(host.files.borrow().len(), 1, "ok={ok}");
+        let listed = shell.settings(SETTINGS_APP, "net", false).unwrap();
+        assert_eq!(listed, "", "ok={ok}");
+        assert_eq!(connect(&mut shell), NetConnect::Asked, "ok={ok}");
+    }
+}
+
 #[test]
 fn nothing_outside_the_package_is_asked_and_a_bad_file_fails_closed() {
     let host = FakeHost::new();
