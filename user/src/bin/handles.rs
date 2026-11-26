@@ -441,6 +441,12 @@ fn own_shm() -> Result<(), &'static str> {
         Error::Permission,
         "PROC_ALIVE with no right",
     )?;
+    // PROC_NAME too (H3-8): a pid's name says it runs.
+    expect(
+        sys::proc_name(1, &mut [0; kabi::MAX_NAME]),
+        Error::Permission,
+        "PROC_NAME with no right",
+    )?;
     quota_comes_back()?;
     at_most_sixteen()
 }
@@ -899,5 +905,51 @@ fn proc_alive() -> Result<(), &'static str> {
     if sys::proc_alive(u64::MAX) != Ok(false) {
         return Err("PROC_ALIVE said a pid never made was alive");
     }
-    Ok(())
+    proc_name(text)
+}
+
+/// PROC_NAME (H3-8): a running service, by the name LIST gives it; nothing
+/// for the kernel's pid or one never made; TooBig into no room. LIST also
+/// names a process that is exiting, which PROC_NAME no longer does, so a
+/// line answered NotFound is passed over for the next.
+fn proc_name(listing: &str) -> Result<(), &'static str> {
+    let mut named = None;
+    for line in listing.lines() {
+        let Some((pid, name)) = line.trim().split_once(' ') else {
+            continue;
+        };
+        let Ok(pid) = pid.parse::<u64>() else {
+            continue;
+        };
+        let name = name.trim();
+        let mut out = [0u8; kabi::MAX_NAME];
+        match sys::proc_name(pid, &mut out) {
+            Err(Error::NotFound) => continue,
+            Ok(len) if out.get(..len) == Some(name.as_bytes()) => {
+                named = Some(pid);
+                break;
+            }
+            other => {
+                println!("handles: PROC_NAME of pid {pid} ({name}) gave {other:?}");
+                return Err("PROC_NAME did not give a running process its name");
+            }
+        }
+    }
+    let pid = named.ok_or("PROC_NAME named no process LIST named")?;
+    let mut none = [0u8; kabi::MAX_NAME];
+    expect(
+        sys::proc_name(0, &mut none),
+        Error::NotFound,
+        "PROC_NAME of the kernel",
+    )?;
+    expect(
+        sys::proc_name(u64::MAX, &mut none),
+        Error::NotFound,
+        "PROC_NAME of a pid never made",
+    )?;
+    expect(
+        sys::proc_name(pid, &mut []),
+        Error::TooBig,
+        "PROC_NAME into no room",
+    )
 }

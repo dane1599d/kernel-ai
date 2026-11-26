@@ -25,9 +25,11 @@
 //!   sequences, and the console's ring is emptied each time they do.
 
 use crate::{hpet, i8042, threads};
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
-use kabi::input::{InputEvent, KeyRoute, Kind, Set1, TAP};
+use kabi::input::{Hands, InputEvent, KeyRoute, Kind, Set1, TAP};
 use spin::Mutex;
+use termcore::keys::Code;
 use termcore::mouse::{Button, Buttons, Decoder};
 
 /// Button bits, as `pointer::Event` has them: 0 left, 1 right, 2 middle.
@@ -73,6 +75,9 @@ struct Decoders {
     mouse: Decoder,
     /// Keys go to the console under a lease: changed only between sequences.
     leased: bool,
+    /// Who has the keys: the console or `desktop`, changed only between
+    /// sequences.
+    hands: Hands,
 }
 
 /// A pointer button went down, or the screen changed hands, since the last
@@ -87,7 +92,25 @@ static DECODERS: Mutex<Decoders> = Mutex::new(Decoders {
     keys: Set1::new(),
     mouse: Decoder::new(),
     leased: false,
+    hands: Hands::new(),
 });
+
+/// The keys physically held now, as the console's decoder names them: from the
+/// interrupt side's decoder, which is never started afresh, so a key pressed
+/// before the console's own decoder was reset still counts (the menu's gate).
+pub fn held_codes() -> Vec<Code> {
+    let makes: Vec<(bool, u8)> = x86_64::instructions::interrupts::without_interrupts(|| {
+        DECODERS.lock().keys.held_makes().collect()
+    });
+    let mut scratch = termcore::keys::Decoder::new();
+    for (extended, make) in makes {
+        if extended {
+            let _ = scratch.stroke(0xE0);
+        }
+        let _ = scratch.stroke(make);
+    }
+    scratch.held().collect()
+}
 
 /// Whether input goes to `desktop` now.
 pub fn taking() -> bool {
@@ -173,11 +196,14 @@ fn route(byte: u8, aux: bool) -> (Route, bool) {
         return (Route::Taken, false);
     }
     // Keys change hands only between sequences, never inside an E0 or E1 one,
-    // and the console's ring is emptied each time.
+    // and the console's ring is emptied each time, which starts the console's
+    // key decoder afresh (`keyboard::Decoder`): either way the screen or a
+    // lease moves, keys held across the change go down on one side and up on
+    // the other, and nothing held may stay held (H2-13).
     if decoders.keys.at_boundary() {
         let leased = taking && leased_now();
-        if leased != decoders.leased {
-            decoders.leased = leased;
+        decoders.leased = leased;
+        if decoders.hands.settle(taking, leased) {
             i8042::discard_queued();
         }
     }

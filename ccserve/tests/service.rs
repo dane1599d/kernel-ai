@@ -468,3 +468,77 @@ fn the_plan_line_covers_the_budget() {
         pages * 4
     );
 }
+
+/// H2-12: a clock only `cc`'s own work moves, shared with effects that
+/// refuse every call at once, each refusal costing 10 ms of it.
+struct Refusing {
+    now: std::rc::Rc<std::cell::Cell<u64>>,
+    calls: std::rc::Rc<std::cell::Cell<u64>>,
+}
+
+impl ccserve::Effects for Refusing {
+    fn imports(&self) -> Vec<(String, kailink::FuncType)> {
+        common::Stand.imports()
+    }
+
+    fn call(&self, _: &str, _: &[u64], _: &[u8]) -> Result<String, i64> {
+        self.now.set(self.now.get() + 10_000_000);
+        self.calls.set(self.calls.get() + 1);
+        Err(-7)
+    }
+
+    fn answer(&self, _: &str, _: &[u64], _: bool, _: &str, _: &mut [u8]) -> i64 {
+        -1
+    }
+}
+
+struct Frozen {
+    now: std::rc::Rc<std::cell::Cell<u64>>,
+    calls: std::rc::Rc<std::cell::Cell<u64>>,
+}
+
+impl ccserve::Host for Frozen {
+    fn now_ns(&self) -> u64 {
+        self.now.get()
+    }
+
+    /// Stops a run that would never end otherwise.
+    fn interrupted(&self) -> bool {
+        self.calls.get() > 1000
+    }
+
+    fn line_ns(&self) -> u64 {
+        100_000_000
+    }
+}
+
+#[test]
+fn time_cc_spends_refusing_effects_counts_against_the_line() {
+    let now = std::rc::Rc::new(std::cell::Cell::new(0));
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let effects = Refusing {
+        now: now.clone(),
+        calls: calls.clone(),
+    };
+    let host = Frozen {
+        now,
+        calls: calls.clone(),
+    };
+    let mut service =
+        ccserve::Service::new(ccserve::CC_WASM, &ccserve::XCC_HEADERS, effects, &host)
+            .expect("cc.wasm loads");
+    let mut send = |message: &str| {
+        let reply = service.handle(message.as_bytes(), &host);
+        promptcore::wire::parse_reply(&reply)
+            .unwrap()
+            .iter()
+            .map(common::show)
+            .collect::<Vec<String>>()
+    };
+    assert_eq!(send("open main origin=user"), ["ok"]);
+    assert_eq!(send(&format!("eval 1\n{DECLARE}")).last().unwrap(), "done");
+    let reply = send("eval 2\nfor (;;) note((const char *)8, 1);");
+    // 100 ms of line at 10 ms a refusal: about ten, never a thousand.
+    assert_eq!(reply, ["trap deadline"], "{} calls", calls.get());
+    assert!(calls.get() <= 11, "{} calls", calls.get());
+}

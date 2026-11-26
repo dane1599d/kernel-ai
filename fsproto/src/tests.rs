@@ -110,7 +110,7 @@ fn every_reply_round_trips_and_the_largest_fit_one_message() {
                     },
                 ),
                 (5, Outcome::Removed),
-                (6, Outcome::Left),
+                (6, Outcome::Left { folder: true }),
             ],
             generation: 3,
         },

@@ -84,7 +84,7 @@ fn undo_over_a_later_change_is_refused_and_keeps_it() {
         .insert("a.txt".into(), "later".into());
     let refused = undo::revert(host.as_ref(), inverse, true, ids()).map(|_| ());
     assert!(
-        matches!(&refused, Err(Refused::Failed(why)) if why.contains("never restores over a later change")),
+        matches!(&refused, Err(Refused::Kept(why)) if why.contains("never restores over a later change")),
         "{refused:?}"
     );
     assert_eq!(host.files.borrow()["a.txt"], "later");
@@ -152,6 +152,123 @@ fn an_undo_fs_restores_in_part_is_logged_with_its_redo() {
     assert_eq!(host.files.borrow()["a.txt"], "1");
     assert_eq!(host.files.borrow()["b.txt"], "edited");
     assert_eq!(host.files.borrow().len(), 2, "{:?}", host.files.borrow());
+}
+
+/// An undo `fs` puts nothing back is refused without "try undo again": asking
+/// again would find the same later change (#1442's review).
+#[test]
+fn an_undo_fs_puts_nothing_back_says_so_without_try_again() {
+    let call = |json: &str| Ok(llmproto::act::parse(json).unwrap());
+    let one = r#"{"name":"script","arguments":{"code":"fs_create(\"a.txt\", \"1\");"}}"#;
+    let (host, mut shell) = super::act::with_calls(alloc::vec![call(one)]);
+    assert!(shell.eval("create a.txt").ok);
+    host.files
+        .borrow_mut()
+        .insert("a.txt".into(), "edited".into());
+    let refused = shell.eval("undo");
+    assert!(!refused.ok, "{}", refused.text);
+    assert!(
+        refused.text.contains("never restores over a later change")
+            && !refused.text.contains("try undo again"),
+        "{}",
+        refused.text
+    );
+    assert_eq!(host.files.borrow()["a.txt"], "edited");
+}
+
+/// bug-hunt-6 H6-23 at the prompt: a `c>` entry that wrote one file twice is
+/// two transactions; one `undo` restores both, newest first, and the file is
+/// back as it was with nothing beside it.
+#[test]
+fn a_c_entry_that_wrote_one_file_twice_is_undone_whole() {
+    let host = FakeHost::new();
+    host.files
+        .borrow_mut()
+        .insert("todo.txt".into(), "orig".into());
+    let mut shell = shell(&host);
+    shell.entry_begin("fs_write(\"todo.txt\", \"a\"); fs_write(\"todo.txt\", \"b\");");
+    for text in ["a", "b"] {
+        let write = llmproto::act::parse(&format!(
+            r#"{{"name":"fs_write","arguments":{{"path":"todo.txt","text":"{text}"}}}}"#
+        ))
+        .unwrap();
+        let wrote = shell.entry_call(&write);
+        assert_eq!(
+            wrote.value,
+            Some(Ok(serde_json::Value::Null)),
+            "{:?}",
+            wrote.reply
+        );
+    }
+    let id = shell.entry_end(true).expect("an entry that changed things");
+    let txns: Vec<_> = shell
+        .log
+        .get(id)
+        .unwrap()
+        .changes
+        .iter()
+        .map(|c| c.inverse)
+        .collect();
+    assert_eq!(txns, [1, 2].map(|txn| Some(Inverse::Fs { txn })));
+    assert_eq!(
+        shell.eval("undo"),
+        ok("Undone: files back as they were; files back as they were")
+    );
+    assert_eq!(host.files.borrow()["todo.txt"], "orig");
+    assert_eq!(host.files.borrow().len(), 1, "{:?}", host.files.borrow());
+}
+
+/// `fs`'s restore rows as an undo: all left is refused, as nothing came back;
+/// any other row makes it the undo, which counts the files left, not folders.
+#[test]
+fn restore_rows_make_an_undo_only_when_something_came_back() {
+    use fsproto::Outcome;
+    let file = Outcome::Left { folder: false };
+    let folder = Outcome::Left { folder: true };
+    let kept = |rows: &[(u64, Outcome)]| matches!(FsUndone::of(7, rows), Err(FsRefused::Kept(_)));
+    assert!(kept(&[(1, file.clone())]));
+    assert!(kept(&[(1, file.clone()), (2, folder.clone())]));
+    assert!(kept(&[(2, folder.clone())]));
+    let undone = |rows: &[(u64, Outcome)]| FsUndone::of(7, rows).unwrap();
+    assert_eq!(
+        undone(&[]),
+        FsUndone {
+            generation: 7,
+            left: 0
+        }
+    );
+    // `undo 1` of a create: the file is gone again, and its folder, which a
+    // later change only added a name to, is not counted.
+    assert_eq!(
+        undone(&[(1, Outcome::Removed), (2, folder.clone())]),
+        FsUndone {
+            generation: 7,
+            left: 0
+        }
+    );
+    let rows = [
+        (1, Outcome::Back),
+        (2, file.clone()),
+        (3, file),
+        (4, folder),
+        (5, Outcome::Moved { name: "m".into() }),
+    ];
+    assert_eq!(
+        undone(&rows),
+        FsUndone {
+            generation: 7,
+            left: 2
+        }
+    );
+    for other in [
+        Outcome::Removed,
+        Outcome::Beside {
+            object: 9,
+            name: "n (restored)".into(),
+        },
+    ] {
+        assert_eq!(undone(&[(1, other)]).left, 0);
+    }
 }
 
 #[test]

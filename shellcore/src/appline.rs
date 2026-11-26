@@ -116,8 +116,9 @@ impl Shell {
         if line.starts_with("answer ") {
             return Reply::err("answers go on the question's own prompt");
         }
-        // While the console's C entry waits on its question, its log entry
-        // takes in whatever is logged after it began: no line runs between.
+        // While the console's C entry waits on its question, the shell is
+        // still the entry's: a line run between would be decided as one of
+        // its calls, and its `undo` could put back the entry's calls so far.
         if self.c_waiting() {
             return Reply::err(C_WAITS);
         }

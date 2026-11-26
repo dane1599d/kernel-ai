@@ -446,6 +446,25 @@ fn a_tuf_cache_save_stopped_at_any_call_keeps_the_copy_before_it() {
     assert!(TufCache { vol: &mut vol }.load("timestamp").is_err());
 }
 
+/// A save that fails inside its action (here: `pkg/tuf` is a file, so the
+/// role file cannot be created beneath it) aborts it: another caller of `fs`
+/// is not answered Busy afterwards, and `pkg`'s own next action begins at once.
+#[test]
+fn a_tuf_cache_save_that_fails_leaves_no_action_open() {
+    let mut disk = MemDisk::new(16 * 1024);
+    let mut vol = volume(&mut disk);
+    vol.write("pkg/tuf", b"not a folder").unwrap();
+    assert!(TufCache { vol: &mut vol }.save("timestamp", b"t").is_err());
+    assert_eq!(
+        vol.transport.other(Request::Begin { action: 9 }),
+        Reply::Done,
+        "the failed save's action is still open"
+    );
+    assert_eq!(vol.transport.other(Request::Abort), Reply::Done);
+    assert!(store::in_action(&mut vol, 1, |v| v.write("pkg/x", b"y")).is_ok());
+    assert_eq!(vol.transport.waits, 0, "pkg waited on its own open action");
+}
+
 /// `pkg`'s bulk `Shm`: 256 KiB, more than one of the store's 192 KiB pieces.
 const SHM: usize = 256 << 10;
 

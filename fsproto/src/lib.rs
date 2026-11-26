@@ -392,8 +392,13 @@ pub enum Outcome {
     },
     #[n(3)]
     Removed,
+    /// Left as it is; `folder` says whether it is a folder, which a later
+    /// change that only added or removed a name in it leaves too.
     #[n(4)]
-    Left,
+    Left {
+        #[n(0)]
+        folder: bool,
+    },
 }
 
 /// One thing in the trash, as [`Request::TrashList`] tells it.

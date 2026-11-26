@@ -80,6 +80,11 @@ pub fn stream() -> Vec<u8> {
         ),
         (3, Request::Commit),
         (4, Request::BufferDestroy),
+        // The window's other objects end too, its role first (H3-27).
+        (5, Request::ToplevelDestroy),
+        (6, Request::A11yDestroy),
+        (3, Request::SurfaceDestroy),
+        (2, Request::PoolDestroy),
     ];
     requests
         .iter()

@@ -480,6 +480,15 @@ fn read(path: &str) -> Result<Vec<u8>, &'static str> {
     Ok(out)
 }
 
+/// The store's current generation, `/system/pkg/current`.
+pub(crate) fn generation() -> Result<u64, &'static str> {
+    let current = read("current")?;
+    core::str::from_utf8(&current)
+        .ok()
+        .and_then(|text| text.trim().parse().ok())
+        .ok_or("pkg: /system/pkg/current is not a number")
+}
+
 /// Waits until `/system/pkg/<path>` exists.
 pub(crate) fn wait_for(path: &str) -> Result<(), ()> {
     for _ in 0..WAIT_MS / 50 {

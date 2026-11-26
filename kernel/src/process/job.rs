@@ -276,6 +276,23 @@ pub(super) fn on_parent_exit(pid: u64) {
     EXITS.locked(|exits| exits.retain(|(parent, _)| *parent != pid));
 }
 
+/// Records `entry`, a pooled child its parent has just started. The child can
+/// run, and end, before this: its exit's [`on_exit`] then found no entry to
+/// take out, and a late push would stay for good, Idle, counted against
+/// [`MAX_POOL`], and claimed only to answer Dead. The exit frees the child's
+/// table slot before [`on_exit`] runs, so a child still live once its entry is
+/// in will have that entry taken out when it ends; one not live is gone, and
+/// its entry is taken out here. True if the child is still live.
+fn record(entry: Pooled) -> bool {
+    let pid = entry.pid;
+    POOL.locked(|pool| pool.push(entry));
+    let live = super::with_table(|table| table.iter().any(|p| p.live() && p.pid == pid));
+    if !live {
+        POOL.locked(|pool| pool.retain(|p| p.pid != pid));
+    }
+    live
+}
+
 /// JOB_POOL: keeps up to `n` (at most [`MAX_POOL`]) idle `scriptrun` children
 /// for the caller, with no handles; how many it has.
 pub fn pool(slot: usize, raw: u64, n: u64) -> Result<u64, Error> {
@@ -293,13 +310,20 @@ pub fn pool(slot: usize, raw: u64, n: u64) -> Result<u64, Error> {
             .find(|name| super::named(name).is_empty())
             .ok_or(Error::Busy)?;
         let pid = start(slot, &name, b"mode=pooled", &[])?;
-        POOL.locked(|pool| {
-            pool.push(Pooled {
-                pid,
-                parent,
-                state: PoolState::Idle,
-            })
-        });
+        let pooled = Pooled {
+            pid,
+            parent,
+            state: PoolState::Idle,
+        };
+        // One that ended before it was pooled (its load ran out of frames, or
+        // it was stopped) is not started again and again: the pool answers
+        // what it holds, and a claim with none idle starts one then
+        // (`claim_new`). Not an error: the shell gives up its pool for good on
+        // one (`shellcore`'s `apart`).
+        if !record(pooled) {
+            let held = POOL.locked(|pool| pool.iter().filter(|p| p.parent == parent).count());
+            return Ok(held as u64);
+        }
     }
 }
 
@@ -321,8 +345,13 @@ pub fn claim(slot: usize, raw: u64, request_ptr: u64) -> Result<u64, Error> {
     args.try_reserve_exact(request.len)
         .map_err(|_| Error::NoMemory)?;
     args.extend_from_slice(&request.args[..request.len]);
-    let child = super::with_table(|table| table.iter().position(|p| p.live() && p.pid == pid))
-        .ok_or(Error::Dead)?;
+    let child = super::with_table(|table| table.iter().position(|p| p.live() && p.pid == pid));
+    let Some(child) = child else {
+        // It ended since the look above; its exit takes its entry out, and this
+        // does too, so the claim goes to a live child instead.
+        POOL.locked(|pool| pool.retain(|p| p.pid != pid));
+        return claim_new(slot, parent.pid, &request);
+    };
     let moved = handle::take_for(slot, &request.handles, parent.limits.caps)?;
     handle::give_at_start(child, moved);
     POOL.locked(|pool| {
@@ -356,12 +385,12 @@ fn claim_new(slot: usize, parent: u64, request: &Request) -> Result<u64, Error> 
         .map_err(|_| Error::NoMemory)?;
     args.extend_from_slice(&request.args[..request.len]);
     let pid = start(slot, &name, b"mode=pooled", &request.handles)?;
-    POOL.locked(|pool| {
-        pool.push(Pooled {
-            pid,
-            parent,
-            state: PoolState::Claimed(args),
-        })
+    // A child that ended first is not pooled; its exit still reaches JOB_WAIT,
+    // as a one-off child's does.
+    record(Pooled {
+        pid,
+        parent,
+        state: PoolState::Claimed(args),
     });
     // The child may already wait in JOB_TAKE, not in the pool yet: woken, it
     // finds its claim rather than sleeping out its wait.

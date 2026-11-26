@@ -468,7 +468,8 @@ fn finish(
                 });
                 return;
             }
-            Err(status) => step = open.session.resume(status, host),
+            // Answered by cc itself: its work counts against the line.
+            Err(status) => step = open.session.resume_at_once(status, host),
         }
     }
 }
