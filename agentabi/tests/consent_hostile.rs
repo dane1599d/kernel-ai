@@ -392,3 +392,162 @@ fn a_cue_in_lookalike_letters_is_not_a_cue() {
         );
     }
 }
+
+/// One call of `name` with `arg` literal as `text`.
+fn one(name: &'static str, arg: &'static str, text: &'static str) -> [Call<'static>; 1] {
+    let args: &'static [(&'static str, Value<'static>)] = Box::leak(Box::new([(
+        arg,
+        Value {
+            text,
+            label: Label::Literal,
+        },
+    )]));
+    [Call {
+        name,
+        args,
+        control: Label::Literal,
+    }]
+}
+
+/// The #1436 review, item 1: "stop" or "quit" negates only an action's -ing
+/// word in its own clause, and is no negation where it is the row's own verb.
+#[test]
+fn stop_negates_only_an_action_in_its_clause() {
+    // The row's own verb: asked for, so it asks once as a change with no undo,
+    // not as one the model added.
+    for (line, name) in [
+        ("stop running the miner", "miner"),
+        ("stop tracking", "tracking"),
+    ] {
+        let decision = decide(line, &one("service_stop", "name", name), &ROWS)[0];
+        assert_eq!(decision.why, Why::NoUndo, "{line:?}: {decision:?}");
+    }
+    // Not an action's -ing word, or past the clause's end: nothing negated.
+    let decision = decide(
+        "stop everything and switch to round robin",
+        &switch(),
+        &ROWS,
+    )[0];
+    assert_eq!(decision.tier, Tier::Run, "{decision:?}");
+    let focus = one("ui_focus", "window", "terminal");
+    let decision = decide("Stop. Bring up the terminal", &focus, &ROWS)[0];
+    assert_eq!(decision.tier, Tier::Run, "{decision:?}");
+    // The safe side: "stop" before an action still negates it, for every
+    // other row and for the row's own -ing word.
+    for (line, call) in [
+        (
+            "stop running the miner",
+            one("service_start", "name", "miner"),
+        ),
+        (
+            "stop killing build-3",
+            one("process_stop", "name", "build-3"),
+        ),
+        (
+            "please stop stopping the netd service",
+            one("service_stop", "name", "netd"),
+        ),
+        ("please quit trashing thesis.txt", trash_thesis()),
+        ("stop using round robin", switch()),
+        ("please stop switching to round robin", switch()),
+    ] {
+        let decision = decide(line, &call, &ROWS)[0];
+        assert_eq!(decision.why, Why::Added, "{line:?}: {decision:?}");
+    }
+}
+
+/// The #1436 review, item 2: a name only a negated clause holds is taken by
+/// a pointer when that clause only says the person has no more use for it;
+/// a name holding a negation word is still a name.
+#[test]
+fn a_pointer_takes_the_name_the_person_no_longer_needs() {
+    for (line, call) in [
+        (
+            "I don't need calc anymore, remove it",
+            one("pkg_remove", "name", "calc"),
+        ),
+        (
+            "we no longer use calc, so please uninstall it",
+            one("pkg_remove", "name", "calc"),
+        ),
+        (
+            "trash not-mine.txt",
+            one("fs_trash", "path", "/home/user/not-mine.txt"),
+        ),
+        ("remove no-ads", one("pkg_remove", "name", "no-ads")),
+    ] {
+        let decision = decide(line, &call, &ROWS)[0];
+        assert_eq!(decision.tier, Tier::Run, "{line:?}: {decision:?}");
+    }
+    // Anything else in or around the negated clause, and it still asks.
+    for line in [
+        "never touch calc, remove it",
+        "I don't want to lose calc, remove it",
+        "I don't need calc or notes anymore, remove it",
+        "I don't need calc anymore, but don't remove it",
+        "I don't need calc anymore? remove it",
+        "I don't need calc anymore. Remove it.",
+        "you don't need calc, remove it",
+        "I don't need calc, remove it and notes",
+        "don't remove calc, remove it",
+    ] {
+        let decision = decide(line, &one("pkg_remove", "name", "calc"), &ROWS)[0];
+        assert_ne!(decision.tier, Tier::Run, "{line:?}: {decision:?}");
+    }
+    let decision = decide(
+        "trash not-mine.txt",
+        &one("fs_trash", "path", "/home/user/mine.txt"),
+        &ROWS,
+    )[0];
+    assert_ne!(decision.tier, Tier::Run, "{decision:?}");
+}
+
+/// The #1436 review, items 3 and 4: a clause whose only negating words are
+/// bare answers carries nothing, and no clause carries past its sentence.
+#[test]
+fn carry_stops_at_an_answer_and_at_a_sentence_end() {
+    for line in [
+        "ok no, switch to round robin",
+        "no really, switch to round robin",
+        "so no, switch to round robin",
+        "Not again. Switch to round robin.",
+        "Neither. Switch to round robin",
+    ] {
+        let decision = decide(line, &switch(), &ROWS)[0];
+        assert_eq!(decision.tier, Tier::Run, "{line:?}: {decision:?}");
+    }
+    let ideas = one("fs_trash", "path", "/home/user/ideas");
+    let decision = decide("neither, just remove ideas please", &ideas, &ROWS)[0];
+    assert_eq!(decision.tier, Tier::Run, "{decision:?}");
+    // A clause with any other negating word still carries within its sentence.
+    for line in [
+        "not again, switch to round robin",
+        "ok never, switch to round robin",
+        "no, never, switch to round robin",
+        "never, please, switch to round robin",
+    ] {
+        let decision = decide(line, &switch(), &ROWS)[0];
+        assert_ne!(decision.tier, Tier::Run, "{line:?}: {decision:?}");
+    }
+}
+
+/// The #1436 review, item 5: "refrain" and "forbid" negate on the change
+/// path, as a grant already hears them.
+#[test]
+fn refrain_and_forbid_turn_a_change_off() {
+    for line in [
+        "refrain from switching to round robin",
+        "please refrain from round robin",
+        "I forbid you to switch to round robin",
+        "you are forbidden from using round robin",
+    ] {
+        let decision = decide(line, &switch(), &ROWS)[0];
+        assert_ne!(decision.tier, Tier::Run, "{line:?}: {decision:?}");
+    }
+    let decision = decide(
+        "you are forbidden to trash thesis.txt",
+        &trash_thesis(),
+        &ROWS,
+    )[0];
+    assert_ne!(decision.tier, Tier::Run, "{decision:?}");
+}

@@ -1283,8 +1283,14 @@ fn no_argument_in_a_negated_clause_runs_its_change() {
     }
 }
 
-/// [`NEGATED_ARGUMENTS`]' lines with the argument they do ask for.
+/// [`NEGATED_ARGUMENTS`]' lines with the argument they do ask for, and an
+/// "either ... or" that negates nothing (the #1436 review).
 const NEGATED_ARGUMENTS_ASKED: &[Attack] = &[
+    attack(
+        "remove either calc or notes",
+        &[with("pkg_remove", &[("name", v("calc", LIT))])],
+        0,
+    ),
     attack(
         "remove calc, not notes",
         &[with("pkg_remove", &[("name", v("calc", LIT))])],
