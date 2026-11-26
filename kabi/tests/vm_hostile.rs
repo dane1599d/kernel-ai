@@ -134,7 +134,7 @@ fn random_bytes_never_panic() {
             framed[4..8].fill(0);
             taken_only_as_itself(&framed);
         }
-        let _ = data_slot(rng.next(), rng.next() as u32);
+        let _ = data_slot(rng.next(), rng.next() as u32, rng.next() as usize);
     }
 }
 

@@ -6,13 +6,16 @@
 //! - **The call.** `VM` takes its operation in RDI ([`op`]) and a pointer to one
 //!   record in RSI, its length in RDX. Every record starts with an 8-byte
 //!   header: [`VERSION`] (u16), the operation (u16), and a u32 that is zero.
-//!   Each operation's record has one exact length; [`decode`] refuses a record
+//!   The operation is in both places, so [`decode_for`] takes RDI's and refuses
+//!   a header that names another. Each operation's record has one exact
+//!   length; [`decode`] refuses a record
 //!   that is short, over-long, of another version or operation, has a reserved
 //!   byte set or a field out of range, with a [`Refused`], never a panic.
 //! - **The exits.** One standard 64-byte [`crate::ring::Request`] per exit
 //!   ([`ExitEntry`]); `vmm` answers with the standard 16-byte
 //!   [`crate::ring::Response`], checked by [`check_reply`]. Read data goes in
-//!   the ring's data area at [`data_slot`].
+//!   the ring's data area at [`data_slot`]; that area is at least
+//!   `entries * 8` bytes, one 8-byte slot per entry, or the ring is refused.
 //! - All integers are little-endian.
 //!
 //! ## Where ADR 0006 leaves a field open, the narrowest reading
@@ -22,15 +25,17 @@
 //! - **Operations.** Only the six ADR 0006 names: `create`, `set_regs`, `run`,
 //!   `irq`, `stop` and `destroy`. There is no `get_regs` and no separate RAM
 //!   map: guest RAM is one `Shm` allocated in full at `create`.
-//! - **Handles travel in call registers, not records.** The RAM `Shm` and the
-//!   `VMEXIT` ring are not fields here.
+//! - **Handles travel in call registers, not records.** `create` allocates the
+//!   guest RAM `Shm` itself and returns it (ADR 0006 item 3), so it is not a
+//!   field here; the `VMEXIT` ring is not a field either.
 //! - **`create`.** `vcpus` is 1 to [`MAX_VCPUS`] (4, the ADR's default).
 //!   `ram_mib` is a multiple of [`RAM_STEP_MIB`] (2 MiB, one NPT large page)
 //!   from 2 to [`MAX_RAM_MIB`] (1,536, the ADR's default). No `flags` bit is
 //!   defined in v1, so `flags` is 0.
 //! - **`set_regs`** loads one vCPU for the Linux 64-bit boot protocol, the only
 //!   guest ADR 0006 names. The state must already be long mode (CR0.PE and PG,
-//!   CR4.PAE, EFER.LME and LMA). Only the bits that boot needs may be set:
+//!   CR4.PAE, EFER.LME and LMA). RFLAGS.VM is never set, and CR0.NW only
+//!   with CD. Only the bits that boot needs may be set:
 //!   [`CR0_ALLOWED`], [`CR4_ALLOWED`] and [`EFER_ALLOWED`]; EFER.SVME never is.
 //!   RFLAGS has bit 1 set and no reserved bit. CR3 is 4 KiB aligned and below
 //!   2^52, since CR4.PCIDE is not allowed. RIP and the GDT and IDT bases are
@@ -93,6 +98,8 @@ pub const MAX_CALL_BYTES: usize = REGS_BYTES;
 
 /// CR0: PE, MP, EM, TS, ET, NE, WP, AM, NW, CD and PG.
 pub const CR0_ALLOWED: u64 = 0x3F | (1 << 16) | (1 << 18) | (1 << 29) | (1 << 30) | (1 << 31);
+const CR0_NW: u64 = 1 << 29;
+const CR0_CD: u64 = 1 << 30;
 const CR0_NEEDED: u64 = 1 | (1 << 31);
 /// CR4: PSE, PAE, PGE, OSFXSR and OSXMMEXCPT.
 pub const CR4_ALLOWED: u64 = (1 << 4) | (1 << 5) | (1 << 7) | (1 << 9) | (1 << 10);
@@ -102,7 +109,9 @@ pub const EFER_ALLOWED: u64 = 1 | (1 << 8) | (1 << 10) | (1 << 11);
 const EFER_NEEDED: u64 = (1 << 8) | (1 << 10);
 /// RFLAGS bits that exist: everything up to ID (bit 21) but the reserved 3, 5
 /// and 15. Bit 1 reads as 1.
-const RFLAGS_DEFINED: u64 = ((1 << 22) - 1) & !((1 << 3) | (1 << 5) | (1 << 15));
+const RFLAGS_DEFINED: u64 = ((1 << 22) - 1) & !((1 << 3) | (1 << 5) | (1 << 15) | RFLAGS_VM);
+/// RFLAGS.VM (virtual-8086 mode): Intel VM entry refuses it in long mode.
+const RFLAGS_VM: u64 = 1 << 17;
 const RFLAGS_ONE: u64 = 1 << 1;
 /// Guest-physical addresses are below this.
 const PHYS_LIMIT: u64 = 1 << 52;
@@ -269,6 +278,8 @@ fn regs_ok(r: &Regs) -> bool {
     };
     r.vcpu < MAX_VCPUS
         && bits(r.cr0, CR0_ALLOWED, CR0_NEEDED)
+        // CR0.NW without CD is a combination AMD VMRUN refuses.
+        && (r.cr0 & CR0_NW == 0 || r.cr0 & CR0_CD != 0)
         && bits(r.cr4, CR4_ALLOWED, CR4_NEEDED)
         && bits(r.efer, EFER_ALLOWED, EFER_NEEDED)
         && bits(r.rflags, RFLAGS_DEFINED, RFLAGS_ONE)
@@ -285,6 +296,17 @@ fn regs_ok(r: &Regs) -> bool {
 const fn canonical(address: u64) -> bool {
     let top = address >> 47;
     top == 0 || top == (1 << 17) - 1
+}
+
+/// The record in `bytes` for the call whose RDI said `op`: [`decode`], but a
+/// header whose operation is not `op` is refused with [`Refused::Op`], so the
+/// two copies of the operation cannot disagree.
+pub fn decode_for(op: u16, bytes: &[u8]) -> Result<Call, Refused> {
+    let call = decode(bytes)?;
+    if get16(bytes, 2) != op {
+        return Err(Refused::Op);
+    }
+    Ok(call)
 }
 
 /// The record in `bytes`, if it is one v1 record whose every field is in range.
@@ -581,11 +603,13 @@ impl ExitEntry {
 }
 
 /// Byte offset in the ring's data area of the 8-byte slot for exit `seq`, in
-/// a ring of `entries` (a power of two from 8 to 4,096), or `None` for any
-/// other `entries`.
-pub fn data_slot(seq: u64, entries: u32) -> Option<usize> {
-    let ok =
-        entries.is_power_of_two() && (ring::MIN_ENTRIES..=ring::MAX_ENTRIES).contains(&entries);
+/// a ring of `entries` (a power of two from 8 to 4,096) whose data area is
+/// `data_len` bytes, or `None` for any other `entries` or a data area shorter
+/// than `entries * 8`.
+pub fn data_slot(seq: u64, entries: u32, data_len: usize) -> Option<usize> {
+    let ok = entries.is_power_of_two()
+        && (ring::MIN_ENTRIES..=ring::MAX_ENTRIES).contains(&entries)
+        && data_len >= entries as usize * 8;
     ok.then(|| (seq & u64::from(entries - 1)) as usize * 8)
 }
 

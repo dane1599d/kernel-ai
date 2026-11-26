@@ -220,7 +220,7 @@ fn set_regs_takes_long_mode_and_only_the_bits_boot_needs() {
         Call::SetRegs(r).check()
     };
     assert_eq!(Call::SetRegs(boot_regs()).check(), Ok(()));
-    let edits: [fn(&mut Regs); 16] = [
+    let edits: [fn(&mut Regs); 25] = [
         |r| r.vcpu = MAX_VCPUS,
         |r| r.cr0 &= !(1 << 31),
         |r| r.cr0 |= 1 << 1 << 20,
@@ -237,6 +237,15 @@ fn set_regs_takes_long_mode_and_only_the_bits_boot_needs() {
         |r| r.cs = 0,
         |r| r.ds = 0x1B,
         |r| r.cs = 0x20,
+        |r| r.cr0 |= 1 << 29,
+        |r| r.rflags |= 1 << 17,
+        |r| r.idt_base = 0x8000_0000_0000,
+        |r| r.cr0 &= !1,
+        |r| r.efer &= !(1 << 8),
+        |r| r.cs = 0x14,
+        |r| r.cs = 0x10 | 4,
+        |r| r.ds = 0x20,
+        |r| r.ds = 0x18 | 3,
     ];
     for (i, edit) in edits.into_iter().enumerate() {
         assert_eq!(refused(edit), Err(Refused::Range), "edit {i}");
@@ -367,10 +376,36 @@ fn a_reply_is_checked_against_its_exit() {
 
 #[test]
 fn the_data_slot_is_the_requests_ring_slot() {
-    assert_eq!(data_slot(0, 8), Some(0));
-    assert_eq!(data_slot(9, 8), Some(8));
-    assert_eq!(data_slot(u64::MAX, 4096), Some(4095 * 8));
+    assert_eq!(data_slot(0, 8, 64), Some(0));
+    assert_eq!(data_slot(9, 8, 64), Some(8));
+    assert_eq!(data_slot(u64::MAX, 4096, 4096 * 8), Some(4095 * 8));
+    // A data area shorter than entries * 8 refuses the ring.
+    assert_eq!(data_slot(1, 8, 63), None);
+    assert_eq!(data_slot(1, 4096, 4096 * 8 - 1), None);
     for entries in [0, 4, 12, 8192, u32::MAX] {
-        assert_eq!(data_slot(1, entries), None, "{entries}");
+        assert_eq!(data_slot(1, entries, usize::MAX), None, "{entries}");
+    }
+}
+
+#[test]
+fn set_regs_takes_nw_only_with_cd() {
+    let mut r = boot_regs();
+    r.cr0 |= (1 << 29) | (1 << 30);
+    assert_eq!(Call::SetRegs(r).check(), Ok(()));
+    r.cr0 &= !(1 << 30);
+    assert_eq!(Call::SetRegs(r).check(), Err(Refused::Range));
+}
+
+#[test]
+fn decode_for_refuses_a_header_that_names_another_op() {
+    for call in every_call() {
+        let mut out = [0; MAX_CALL_BYTES];
+        let len = call.encode(&mut out);
+        let own = u16::from_le_bytes([out[2], out[3]]);
+        assert_eq!(decode_for(own, &out[..len]), Ok(call));
+        for other in (1..=6).filter(|o| *o != own) {
+            assert_eq!(decode_for(other, &out[..len]), Err(Refused::Op));
+        }
+        assert_eq!(decode_for(0, &out[..len]), Err(Refused::Op));
     }
 }
