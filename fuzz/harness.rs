@@ -9,7 +9,11 @@
 #![allow(dead_code)]
 
 use kainet::chunks::Chunks;
-use kainet::http::{Connect, Fetch, HttpError, Limits, Method, Range, Stream, Url, head};
+use kainet::http::coding::Decoder;
+use kainet::http::{
+    Body, Coding, Connect, Fetch, HttpError, Limits, Method, Range, Request, Stream, Url, Verb,
+    head,
+};
 use kainet::testca::{Ca, Days, Key, KeyKind};
 use kainet::tls::{Progress, Tls};
 use rustls::client::UnbufferedClientConnection;
@@ -205,6 +209,40 @@ pub fn http_response(data: &[u8]) {
     );
     for method in [Method::Get, Method::Head] {
         let _ = head::parse(data, method);
+        for decode in [false, true] {
+            let _ = head::parse_full(data, method, decode);
+        }
+    }
+    // The browser's exchange (plan P6 F-4): every header kept, the body of
+    // any status passed on, decoded.
+    let mut decoded = 0u64;
+    let request = Request {
+        verb: Verb::Get,
+        url: &url,
+        headers: &[],
+        body: Body::Empty,
+        decode: true,
+    };
+    let _ = fetch.exchange(&mut Once(Some(data)), request, &mut |bytes| {
+        decoded += bytes.len() as u64;
+        assert!(decoded <= MAX_BODY, "past the decoded limit");
+        Ok(())
+    });
+    // The decoders on their own, fed in odd pieces.
+    for coding in [Coding::Gzip, Coding::Brotli] {
+        let mut decoder = Decoder::new(coding, MAX_BODY);
+        let mut passed = 0u64;
+        for piece in data.chunks(7) {
+            let fed = decoder.feed(piece, &mut |bytes| {
+                passed += bytes.len() as u64;
+                assert!(passed <= MAX_BODY, "past the decoded limit");
+                Ok(())
+            });
+            if fed.is_err() {
+                break;
+            }
+        }
+        let _ = decoder.finish(data.len() as u64);
     }
 }
 
