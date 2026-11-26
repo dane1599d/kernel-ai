@@ -297,11 +297,19 @@ impl Host for System {
         let _ = sys::call_route(llm(), request.as_bytes(), &mut reply, MEMORY_CALL_MS);
     }
 
-    fn forget(&self) {
+    fn forget(&self) -> Result<(), String> {
         // `new` empties llm's conversation, so it fills its slots again.
         warmth::cooled();
         let mut reply = vec![0u8; 256];
-        let _ = sys::call_route(llm(), b"new", &mut reply, MEMORY_CALL_MS);
+        let len = sys::call_route(llm(), b"new", &mut reply, MEMORY_CALL_MS)
+            .map_err(|error| alloc::format!("llm did not answer ({error:?})"))?;
+        // Lossy: the busy refusal names the app's first line, which the buffer
+        // can cut inside a character.
+        let text = String::from_utf8_lossy(&reply[..len.min(reply.len())]);
+        if text.starts_with("ok") {
+            return Ok(());
+        }
+        Err(String::from(text.strip_prefix("err ").unwrap_or(&text)))
     }
 
     /// The kernel checks the proof: the menu's ONCE, or (badge 0) a rule node
@@ -566,8 +574,8 @@ impl Host for System {
         self.files.change(change)
     }
 
-    fn fs_undo(&self, txn: u64, anyway: bool) -> Result<u64, shellcore::FsRefused> {
-        self.files.undo(txn, anyway)
+    fn fs_undo(&self, txn: u64) -> Result<shellcore::FsUndone, shellcore::FsRefused> {
+        self.files.undo(txn)
     }
 
     fn run_apart(&self, request: &str) -> Option<Result<String, String>> {

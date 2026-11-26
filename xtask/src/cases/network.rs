@@ -110,6 +110,12 @@ pub(super) const CASES: &[TestCase] = &[
             "net-stream: a revoke aborted the 3 streams on a granted NetDest and its narrowing at once; each use after answered Revoked",
             "[netstream-d] 17 streams were each refused a HANDLE_REPLACE, wider or with an undefined bit, which closed them: none was Busy",
             "net-stream: a refused HANDLE_REPLACE closed the stream with its handle: 17 in a row never met the limit of 16",
+            // Bug hunt 5's H5-18: an agent's NetDest past its day's bytes is
+            // refused a receive, not only a send and a connect.
+            "[netstream-e] past its day's bytes, a receive, a send and a connect were each refused, the echo left unread",
+            "net-stream: an agent's NetDest past its day's bytes was refused a receive, a send and a connect, and counted nothing past its budget",
+            // H5-19: a connect skips a port a live stream holds.
+            "net-stream: with the port counter come round to a live stream's port ",
         ],
         ..case("net-stream", "test=net-stream")
     },
@@ -127,6 +133,8 @@ pub(super) const CASES: &[TestCase] = &[
             "net-stream: a process killed with 3 streams open left none",
             "net-stream: a revoke aborted the 3 streams on a granted NetDest and its narrowing at once; each use after answered Revoked",
             "net-stream: a refused HANDLE_REPLACE closed the stream with its handle: 17 in a row never met the limit of 16",
+            "net-stream: an agent's NetDest past its day's bytes was refused a receive, a send and a connect, and counted nothing past its budget",
+            "net-stream: with the port counter come round to a live stream's port ",
         ],
         ..case("net-stream-polled", "test=net-stream")
     },

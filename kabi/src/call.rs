@@ -264,10 +264,12 @@ pub const SHM_CREATE: u64 = 53;
 /// for an object with fewer, so a server mapping a client's `Shm` never faults
 /// past a short one (`shm_map_least`).
 /// Once the grant node its handle came through is revoked, every page reads as
-/// zero and writes reach no one.
+/// zero and writes reach no one. The page tables the mapping adds count against
+/// the caller's page quota: NoMemory when they would pass it.
 pub const SHM_MAP: u64 = 54;
-/// `shm_unmap(address) -> 0`: removes the mapping that starts at `address`. The
-/// pages are freed when no mapping and no handle is left.
+/// `shm_unmap(address) -> 0`: removes the mapping that starts at `address`, and
+/// the page tables it leaves empty. The pages are freed when no mapping and no
+/// handle is left.
 pub const SHM_UNMAP: u64 = 55;
 /// `job_spawn(job, &JobSpawn) -> pid`: starts the program the Job names
 /// (`scriptrun`) as the caller's child, with no capability bits and only the
@@ -582,7 +584,8 @@ pub const MEM_COMMIT: u64 = 161;
 pub const MEM_RELEASE: u64 = 162;
 /// `proc_quota_set(pid, pages) -> old`: process `pid`'s page quota, which its
 /// heap, `Shm` objects and MEM_COMMIT charge against, becomes `pages`; the old
-/// one. Pages held past a lower quota stay, and the next allocation fails.
+/// one. Pages held past a lower quota stay, and the next allocation fails; the
+/// admission rule counts them until they are given back.
 /// Invalid under 64 pages; Permission to lower the shell's, the supervisor's,
 /// the model service's or `desktop`'s. Needs SUPERVISE (P3 task 12). A third
 /// argument of [`QUOTA_LOWER_ONLY`] makes `pages` a ceiling (#517): a quota at
@@ -735,11 +738,15 @@ pub const NET_CONNECT: u64 = 192;
 /// `net_send(stream, ptr, len) -> sent`: queues up to `len` bytes, at most
 /// [`super::net::STREAM_MAX_CALL`] (TooBig over it); 0 while the send buffer
 /// is full. Busy before it connected, Dead once it can no longer send,
-/// Revoked once its grant was.
+/// Revoked once its grant was; Permission, sending nothing, when the bytes
+/// would pass the day's of the agent `NetDest` it was connected on.
 pub const NET_SEND: u64 = 193;
 /// `net_recv(stream, ptr, cap) -> received`: up to `cap` bytes, at most
 /// [`super::net::STREAM_MAX_CALL`]; 0 once the peer closed and everything was
-/// read; Busy while nothing has come; Revoked once its grant was.
+/// read; Busy while nothing has come; Revoked once its grant was; Permission,
+/// with nothing read, once the day's bytes of the agent `NetDest` it was
+/// connected on are spent, as a send and a connect on it are refused then
+/// (a stream that ended with everything read still gives 0).
 pub const NET_RECV: u64 = 194;
 /// `net_poll(stream, want, timeout_ms) -> state`: waits up to `timeout_ms`
 /// (at most 60 s) until the stream is any of `want` (the `STREAM_*` bits of

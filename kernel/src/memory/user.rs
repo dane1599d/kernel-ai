@@ -17,6 +17,8 @@
 //! - The one exception is shared pages (`Shm`, ADR 0001 D4): `crate::shm` unmaps or
 //!   retargets them while the process runs, and shoots the range down on every
 //!   CPU itself. They are never OWNED, so teardown leaves their frames alone.
+//!   SHM_UNMAP's [`Memory::take_shared_range`] also unlinks the tables the
+//!   range leaves empty, which the caller frees after that shootdown.
 //!
 //! Every frame a space uses, page tables included, is counted against the process's
 //! page quota and in [`USER_FRAMES`], which must return to zero when every process
@@ -319,6 +321,30 @@ impl Memory {
             }
         }
         result
+    }
+
+    /// Removes the `count` shared pages from `addr` in `space`, as
+    /// [`Self::set_shared_range`] with `None` does, and unlinks every page
+    /// table the range leaves empty into `out` while it has room, as
+    /// [`Self::take_owned_range`] does, so a mapping's tables stop counting
+    /// against the quota once it is gone (bug hunt 5 H5-16). They stay
+    /// allocated: the caller shoots the range down on every CPU first, then
+    /// frees them with [`Memory::free_user_frames`].
+    pub fn take_shared_range(
+        &mut self,
+        space: &mut UserSpace,
+        addr: u64,
+        count: u64,
+        out: &mut alloc::vec::Vec<u64>,
+    ) {
+        let _ = self.set_shared_range(space, addr, count, None);
+        let mut done = 0;
+        while done < count {
+            let at = addr + done * PAGE_SIZE;
+            let first = (at >> 12) & 0x1FF;
+            done += (512 - first).min(count - done);
+            self.prune(space, at, out);
+        }
     }
 
     /// Unmaps the pages `space` owns in `[addr, addr + count pages)` and moves

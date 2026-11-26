@@ -502,6 +502,16 @@ extern "C" fn boot_continue() -> ! {
             if cmdline().split_whitespace().any(|word| word == "what=fail") {
                 fail("panic-reset: a failed check, on purpose");
             }
+            if cmdline()
+                .split_whitespace()
+                .any(|word| word == "what=heap-held")
+            {
+                // A fault inside the allocator: talc's lock stays held on this
+                // CPU, so the reset must allocate nothing (bug hunt 4, H4-10).
+                x86_64::instructions::interrupts::disable();
+                memory::heap::hold_for_test();
+                panic!("panic-reset: a panic with the heap locked, on purpose");
+            }
             panic!("panic-reset: a panic, on purpose")
         }
         SelfTest::Efi => run_case(efi_tests::check),
