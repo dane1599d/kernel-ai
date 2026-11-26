@@ -13,7 +13,7 @@
 //! gave, that the model did not take from the line, is never grounded, whatever
 //! else is true of it, and nor is a host that is not plainly one.
 
-use crate::host::{Host, HostError, LineWord, host_words, typed_hosts};
+use crate::host::{Host, HostError, LineWord, host_words, typed_hosts, typed_spans};
 use crate::table::{Table, counted};
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -177,10 +177,26 @@ impl Grounding<'_> {
         // A typed host counts when every word it is written with does. Typed but
         // not counting means a word of it sits in a clause that negates (or the
         // caller left it out): the line names it only to say no.
+        // Each place the line writes the host is judged on its own words: a
+        // host named only in a clause that says no is not grounded because the
+        // same labels count in another host ("never fetch example.com, fetch
+        // www.example.com instead"). Words that are not the line's own (a
+        // caller's partial list) fall back to counting a word anywhere.
         let typed = typed_hosts(line).contains(&host);
-        let counts = host_words(&host)
-            .iter()
-            .all(|text| counted(words.iter().filter(|w| w.text == *text)) == Some(true));
+        let own = host_words(&host);
+        let anywhere = || {
+            own.iter()
+                .all(|text| counted(words.iter().filter(|w| w.text == *text)) == Some(true))
+        };
+        let counts = match typed_spans(line, &host) {
+            spans if spans.is_empty() => anywhere(),
+            spans => spans.into_iter().any(|span| match words.get(span.clone()) {
+                Some(here) if here.iter().zip(&own).all(|(w, text)| w.text == *text) => {
+                    here.iter().all(|w| w.counts)
+                }
+                _ => anywhere(),
+            }),
+        };
         if typed && counts {
             return Verdict::Run(Ground::Typed);
         }
