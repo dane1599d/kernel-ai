@@ -1,0 +1,55 @@
+# Spike S14-4 `web-compare` (ADR 0014, PR #1268; P6 groundwork G3). On
+# `spike/web-compare` only, never merged. Firefox headless loads plan §4.4's
+# tier-1 sites, read-only, twice in a row. Each page's text in reading order
+# and one screenshot are kept as a 30-day artifact, never committed. A site
+# passes when its text is the same on both runs.
+#
+# workflow_dispatch, plus a push to this branch: GitHub only dispatches a
+# workflow that is on the default branch, and this branch never reaches it.
+name: Web compare (S14-4)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [spike/web-compare]
+    paths:
+      - "spikes/s14-4/**"
+      - ".github/workflows/web-compare.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-compare
+  cancel-in-progress: false
+
+jobs:
+  compare:
+    name: Firefox headless, tier-1 sites, two runs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: spikes/s14-4
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Selenium, and the runner's own Firefox and geckodriver
+        run: |
+          python3 -m pip install --user -r requirements.txt
+          firefox --version
+          "${GECKOWEBDRIVER:-/usr/local/share/gecko_driver}/geckodriver" --version | head -1
+      - name: Run 1
+        run: python3 capture.py sites.txt out/run-1
+      - name: Run 2
+        run: python3 capture.py sites.txt out/run-2
+      - name: Compare
+        run: python3 compare.py out/run-1 out/run-2 out
+      - name: Report to the job summary
+        if: always()
+        run: cat out/report.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: web-compare
+          path: spikes/s14-4/out
+          retention-days: 30

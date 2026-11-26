@@ -1,0 +1,14 @@
+# Plan p6-parity §4.4, tier 1 (B1, no JavaScript needed): one page each.
+# name  url
+wikipedia     https://en.wikipedia.org/wiki/Web_browser
+mdn           https://developer.mozilla.org/en-US/docs/Web/HTML
+gov-uk        https://www.gov.uk/
+hacker-news   https://news.ycombinator.com/
+duckduckgo    https://html.duckduckgo.com/html/?q=web+browser
+npr-text      https://text.npr.org/
+cnn-lite      https://lite.cnn.com/
+docs-rs       https://docs.rs/serde/latest/serde/
+github        https://github.com/rust-lang/rust
+stackoverflow https://stackoverflow.com/questions/11227809/why-is-processing-a-sorted-array-faster-than-processing-an-unsorted-array
+bbc-news      https://www.bbc.co.uk/news
+weather-gov   https://forecast.weather.gov/MapClick.php?lat=38.8894&lon=-77.0352
