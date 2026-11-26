@@ -81,8 +81,11 @@ impl Shadow {
     /// black: `shade`, `width` px a row, holds 255 where nothing was drawn, and
     /// each draw takes its coverage off (`v * (255 - a) / 255`, as `tint` does
     /// for black). A client's own px, which the frame holds only as a key
-    /// colour, are darkened by it afterwards.
+    /// colour, are darkened by it afterwards. It assumes a black shadow
+    /// (`color` 0), as every shadow of the desk is: another colour does more
+    /// than take light away.
     pub fn shade(&self, shade: &mut [u8], width: usize, r: Rect, clip: Rect) {
+        debug_assert!(self.color << 8 == 0, "Shadow::shade needs a black shadow");
         let height = shade.len().checked_div(width).unwrap_or(0) as i32;
         let bounds = Rect::new(0, 0, width as i32, height);
         self.each(r, clip.intersect(&bounds), |x, y, a| {

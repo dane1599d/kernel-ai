@@ -86,7 +86,7 @@ impl Pixels<'_> {
 /// `px` with each colour channel at `light` / 255, its alpha byte kept: what a
 /// shadow of black leaves of a px.
 pub fn dark(px: u32, light: u8) -> u32 {
-    let mut out = px & 0xFF00_0000;
+    let mut out = (px >> 24) << 24;
     for shift in [0, 8, 16] {
         let c = (px >> shift) & 0xFF;
         out |= (c * u32::from(light) / 255) << shift;
