@@ -124,32 +124,40 @@ fn send_metered(slot: usize, id: u64, data: &[u8]) -> Result<usize, Error> {
 /// NET_RECV on stream `id`: on an agent's `NetDest`, refused (Permission)
 /// once its day's bytes are spent, before anything is read, so what came
 /// stays in the stream, its window closes and the peer stops sending (bug
-/// hunt 5's H5-18). What a receive gives is counted as it is read: one
-/// receive may pass the budget by its own bytes, and then nothing more moves
-/// that day (`netdest::DayMeter`). A stream that ended with everything read
-/// still gives 0, and a revoked one Revoked, so the app can tell.
+/// hunt 5's H5-18). A receive is counted when the app reads it: while the
+/// day has room, its whole `cap` is charged under the meter's lock before the
+/// read and what it did not read given back after, as [`send_metered`] does,
+/// so two receives on two CPUs sharing a meter cannot both pass the budget
+/// (#1433's review). One receive may pass it by its own bytes, and then
+/// nothing more moves that day (`netdest::DayMeter::try_receive`). A stream
+/// that ended with everything read still gives 0, and a revoked one Revoked,
+/// so the app can tell. A refusal is logged once a meter a day.
 fn recv_metered(slot: usize, id: u64, out: &mut [u8]) -> Result<usize, Error> {
     let Some(meter) = net::stream::meter_of(owner(slot), id) else {
         return net::stream::recv(owner(slot), id, out);
     };
     let today = net::dest::today();
-    if !net::dest::with_meter(&meter, |m| m.has_room(today)) {
+    let cap = out.len().min(net::stream::MAX_CALL) as u64;
+    if !net::dest::with_meter(&meter, |m| m.try_receive(cap, today)) {
         // A receive into no room reads nothing: 0 only once the stream ended.
         return match net::stream::recv(owner(slot), id, &mut []) {
             Ok(0) => Ok(0),
             Ok(_) | Err(Error::Busy) => {
-                crate::log!(
-                    "net: pid {} has spent its day's bytes: receive refused",
-                    owner(slot)
-                );
+                if net::dest::with_meter(&meter, |m| m.first_refusal(today)) {
+                    crate::log!(
+                        "net: pid {} has spent its day's bytes: receive refused (logged once a day)",
+                        owner(slot)
+                    );
+                }
                 Err(Error::Permission)
             }
             Err(error) => Err(error),
         };
     }
-    let n = net::stream::recv(owner(slot), id, out)?;
-    net::dest::with_meter(&meter, |m| m.received(n as u64, today));
-    Ok(n)
+    let received = net::stream::recv(owner(slot), id, out);
+    let read = *received.as_ref().unwrap_or(&0) as u64;
+    net::dest::with_meter(&meter, |m| m.refund(cap.saturating_sub(read), today));
+    received
 }
 
 /// Where a ring-3 exchange goes: the kernel picks the address, never the caller.

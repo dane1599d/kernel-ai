@@ -129,6 +129,7 @@ mod net_download_tests;
 mod net_grant_tests;
 mod net_hold_tests;
 mod net_pf_tests;
+mod net_stream_tests;
 mod net_tests;
 mod net_throughput_tests;
 mod nvme;
@@ -531,7 +532,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::NetFallback => run_case(net_tests::fallback_check),
         SelfTest::NetStatic => run_case(net_tests::static_check),
         SelfTest::NetDest => run_case(net_tests::dest_check),
-        SelfTest::NetStream => run_case(|| net_tests::stream_check(cmdline())),
+        SelfTest::NetStream => run_case(|| net_stream_tests::stream_check(cmdline())),
         SelfTest::NetThroughput => run_case(|| net_throughput_tests::check(cmdline())),
         SelfTest::HttpsMock => run_case(https_tests::check),
         SelfTest::NetDownload { again, .. } => run_case(|| net_download_tests::check(again)),
