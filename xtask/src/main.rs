@@ -30,6 +30,7 @@
 //! cargo xtask release-boot --image PATH --model PATH [--accel kvm|tcg] [--timeout SECS]   (boots a --test-root image and imports the model; see release_boot.rs)
 //! cargo xtask release-repo prepare|prepare-timestamp|assemble [--dir DIR] | check   (the founder-signed release/pkgrepo; see release_repo/mod.rs)
 //! cargo xtask limine   (fetches and checks Limine's pinned files, for the release's source tarball)
+//! cargo xtask wpt commit | run --wpt DIR [--renderer stub] [--filter PREFIX]... [--limit N] [--out DIR]   (WPT reftests at a pinned commit, P6 G10; web-wpt.yml only; see wpt/mod.rs)
 //!
 //! `test` boots the kernel headless once per test case (boot and memory checks,
 //! page fault, double fault, write-protect, stack overflow, 60 s timer, keyboard,
@@ -94,6 +95,7 @@ mod userbuild;
 mod vbox;
 mod wit;
 mod wit_tables;
+mod wpt;
 mod wsl;
 
 use options::{Accel, Options, Task, parse_args};
@@ -133,6 +135,7 @@ fn main() -> ExitCode {
         Some("wit-check") => wit::main(&args[1..]),
         Some("wit-tables") => wit_tables::main(&args[1..]),
         Some("fs") => fs_tool::main(&args[1..]),
+        Some("wpt") => wpt::main(&args[1..]),
         Some("pkgrepo") => pkgrepo::main(&args[1..]),
         Some("release-image") => release_image::main(&args[1..]),
         Some("release-boot") => release_boot::main(&args[1..]),
