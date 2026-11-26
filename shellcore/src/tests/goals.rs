@@ -554,3 +554,14 @@ fn a_cue_inside_a_folder_name_adds_no_row() {
     let scope = crate::goalscope::scope("sort notes/q3 and never delete anything", |_| Ok(()));
     assert!(scope.is_err(), "{scope:?}");
 }
+
+/// A quoted negation still refuses the goal (#1467 review): its cue is read
+/// even inside the quotes.
+#[test]
+fn a_quoted_negation_still_refuses_a_goal() {
+    let scope = crate::goalscope::scope(
+        "sort the files in notes/ by topic, \"never move anything\"",
+        |_| Ok(()),
+    );
+    assert!(scope.is_err(), "{scope:?}");
+}

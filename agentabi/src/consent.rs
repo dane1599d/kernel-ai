@@ -205,7 +205,7 @@ pub fn decide_net(line: &str, plan: &[Call], rows: &[Action], net: &Grounding) -
     // Every cue counts here, a telling clause's too: a line that names an
     // action is never vague, so "tell me how to remove ideas, it's so slow"
     // takes no vague reading (#883 review).
-    let named_any = rows.iter().any(|row| cued_in(&words, row, true).is_some());
+    let named_any = rows.iter().any(|row| read_every_cue(&words, row).is_some());
     let decisions: Vec<Decision> = consent_grant::at_most_one(
         plan.iter()
             .map(|call| decide_one(&words, &hosts, english, call, rows))
@@ -384,7 +384,17 @@ fn value_of<'a>(call: &Call<'a>, name: &str) -> Option<Value<'a>> {
 /// move"), `None` not named. A question's or a tell clause's cue counts. For a
 /// goal's scope (G2), which takes the person's words, never a model's.
 pub fn named_in(line: &str, row: &Action) -> Option<bool> {
-    cued_in(&words(line), row, true)
+    read_every_cue(&words(line), row)
+}
+
+/// [`cued_in`] counting a telling clause's cue and a cue inside a name too:
+/// whether the line names `row` at all, or says not to (`named_any`,
+/// [`named_in`]). A quoted or joined span still names it, so `it's so slow,
+/// "don't delete ideas"` is no vague want and a goal's `"never move
+/// anything"` is still refused (#1467 review): only whether a call was asked
+/// for skips a name's cues.
+fn read_every_cue(words: &[Word], row: &Action) -> Option<bool> {
+    cued_in(words, row, true, false)
 }
 
 /// Whether a cue of `row` starts a word of the line: `Some(false)` if some do and
@@ -392,7 +402,7 @@ pub fn named_in(line: &str, row: &Action) -> Option<bool> {
 /// cue wins over the others, so "print the policy, but don't switch to round robin"
 /// does not ask for a switch.
 fn cued(words: &[Word], row: &Action) -> Option<bool> {
-    cued_in(words, row, false)
+    cued_in(words, row, false, true)
 }
 
 /// [`cued`], with `telling_counts` saying whether a cue in a clause that asks to
@@ -400,8 +410,8 @@ fn cued(words: &[Word], row: &Action) -> Option<bool> {
 /// call was asked for it does not (#721, ADR 0002): "tell me how to remove
 /// ideas" asks for no removal. For whether the line names an action at all it
 /// does, so a complaint beside it ("it's so slow, how do I remove note 2") is no
-/// vague want.
-fn cued_in(words: &[Word], row: &Action, telling_counts: bool) -> Option<bool> {
+/// vague want. With `skip_names`, a cue inside a name is not counted.
+fn cued_in(words: &[Word], row: &Action, telling_counts: bool, skip_names: bool) -> Option<bool> {
     let telling = |clause: usize| {
         words
             .iter()
@@ -417,7 +427,7 @@ fn cued_in(words: &[Word], row: &Action, telling_counts: bool) -> Option<bool> {
             // my to-delete folder" asks for no trash, "rename round-robin.md"
             // for no switch (bug-hunt-6 H6-3). A name that is the cue whole
             // ("switch to round-robin") still is.
-            if inside_a_name(words, at, cue_len, row) {
+            if skip_names && inside_a_name(words, at, cue_len, row) {
                 continue;
             }
             // A question asks to be told: "is round robin on" asks for no switch.
@@ -1534,7 +1544,7 @@ mod tests {
             assert_eq!(cued(&words(line), &change), None, "{line}");
             // It still names the action, so the line is never read as vague
             // (#883): `named_any` counts a telling clause's cue.
-            assert_eq!(cued_in(&words(line), &change, true), Some(false), "{line}");
+            assert_eq!(read_every_cue(&words(line), &change), Some(false), "{line}");
         }
         // The same words in another clause, or after the cue, or with no telling
         // word, are still an order.
@@ -1557,7 +1567,7 @@ mod tests {
             "explain: how do I switch to round robin? it's slow",
         ] {
             assert_eq!(cued(&words(line), &change), None, "{line}");
-            assert_eq!(cued_in(&words(line), &change, true), Some(false), "{line}");
+            assert_eq!(read_every_cue(&words(line), &change), Some(false), "{line}");
         }
     }
 
