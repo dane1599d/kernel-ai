@@ -191,8 +191,9 @@ impl Host for Acting {
         }
     }
 
-    fn forget(&self) {
+    fn forget(&self) -> Result<(), String> {
         self.history.borrow_mut().clear();
+        Ok(())
     }
 
     fn audit(&self, text: &str) {

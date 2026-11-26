@@ -5,9 +5,13 @@
 //! window whose content was painted last at each logical px. After the resample
 //! [`overlay`] copies a window's pixels only at px where the frame still shows
 //! the hole, the mask holds the window's own id, and the px lies inside both the
-//! window's content and its buffer: a window, the taskbar, the pane, a card or
-//! the cursor painted over it covers the hole, and a client can never reach
-//! another window's px, whatever its buffer's size or the colour it paints.
+//! window's content and its buffer: a window painted over it covers the hole,
+//! and a client can never reach another window's px, whatever its buffer's
+//! size or the colour it paints. What the painter draws over every window
+//! (the agent's outline, the taskbar, the pane, Start, a tooltip, a card and
+//! the arrow: [`crate::paint::Painter::covered`]) is marked no one's after
+//! it is painted, so no client's px land on it even where a theme painted it
+//! in the hole's own colour.
 //!
 //! All sizes here come from a client or a desk, so the arithmetic is i64 and the
 //! slices are indexed with `get`: nothing panics on any value.

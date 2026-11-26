@@ -14,12 +14,17 @@
 //! one, and [`Jobs::while_running`] answers it. A job is never pending
 //! forever: its round is bounded by the request's time limit. This is the
 //! state; llm's service loop runs the engine.
+//!
+//! `remember`, `new` and `warm-lang` change llm's state, not the round's:
+//! during a round they are answered `ok` and kept, and llm applies them in
+//! order once it ends ([`Jobs::deferred`]; bug-hunt-4 H4-12).
 
 use crate::act::{self, ActError};
 use crate::health::{State as Health, Status};
 use crate::script::{self, AnswerError, Lang, ScriptRequest};
 use alloc::format;
 use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 /// A job's state.
 enum State {
@@ -43,7 +48,13 @@ pub struct Jobs {
     restart: u64,
     issued: u64,
     job: Option<Job>,
+    /// `remember`, `new` and `warm-lang` that came during the round, oldest
+    /// first.
+    deferred: Vec<String>,
 }
+
+/// The most requests a round keeps for after it; past it they are refused.
+pub const MAX_DEFERRED: usize = 16;
 
 /// What `app-start` does.
 #[derive(Debug, PartialEq, Eq)]
@@ -60,6 +71,7 @@ impl Jobs {
             restart,
             issued: 0,
             job: None,
+            deferred: Vec::new(),
         }
     }
 
@@ -101,6 +113,10 @@ impl Jobs {
             "Kai is writing {}; say `stop building` to stop it",
             job.about
         );
+        if waits(command, rest) && self.deferred.len() < MAX_DEFERRED {
+            self.deferred.push(String::from(text));
+            return (String::from("ok"), false);
+        }
         match command {
             "app-take" if mine => (String::from("pending"), false),
             "app-take" => (String::from("ended unknown ticket"), false),
@@ -177,6 +193,23 @@ impl Jobs {
             self.job = None;
         }
         String::from("ok")
+    }
+
+    /// What waited for the round that just ended, oldest first: llm applies
+    /// it now, as if it came after the round.
+    pub fn deferred(&mut self) -> Vec<String> {
+        core::mem::take(&mut self.deferred)
+    }
+}
+
+/// Whether `command rest` changes only llm's state, so it may wait for the
+/// round's end: `remember`, `new`, `warm-lang c|rhai`.
+fn waits(command: &str, rest: &str) -> bool {
+    match command {
+        "remember" => true,
+        "new" => rest.is_empty(),
+        "warm-lang" => matches!(rest.trim(), "c" | "rhai"),
+        _ => false,
     }
 }
 

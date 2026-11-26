@@ -41,9 +41,10 @@ pub struct SplitTransport {
     routed_taken: bool,
 }
 
-/// The physical address of `function`'s common configuration structure, from its
-/// capabilities and the BAR firmware assigned.
-pub fn common_cfg(ecam: &EcamAccess, function: DeviceFunction) -> Option<u64> {
+/// Where `function`'s common configuration structure lies, from its
+/// capabilities: the BAR it is in and its offset there, both as the device
+/// says. The caller bounds them against that BAR before mapping anything.
+pub fn common_cfg(ecam: &EcamAccess, function: DeviceFunction) -> Option<(u8, u64)> {
     let mut at = (ecam.read_word(function, 0x34) & 0xFC) as u8;
     for _ in 0..48 {
         if at == 0 {
@@ -52,20 +53,11 @@ pub fn common_cfg(ecam: &EcamAccess, function: DeviceFunction) -> Option<u64> {
         let header = ecam.read_word(function, at);
         let next = (header >> 8) as u8;
         if header as u8 == CAP_VENDOR && (header >> 24) as u8 == COMMON_CFG {
-            let bar = (ecam.read_word(function, at + 4) & 0xFF) as u8;
-            let offset = u64::from(ecam.read_word(function, at + 8));
-            if bar > 5 {
-                return None;
-            }
-            let low = ecam.read_word(function, 0x10 + 4 * bar);
-            if low & 1 != 0 {
-                return None; // an I/O BAR
-            }
-            let high = match (low >> 1) & 3 {
-                2 => u64::from(ecam.read_word(function, 0x14 + 4 * bar)),
-                _ => 0,
-            };
-            return Some(((high << 32) | u64::from(low & !0xF)) + offset);
+            // A capability placed so its fields run past the 256-byte header
+            // is garbage, not an overflow.
+            let bar = (ecam.read_word(function, at.checked_add(4)?) & 0xFF) as u8;
+            let offset = u64::from(ecam.read_word(function, at.checked_add(8)?));
+            return Some((bar, offset));
         }
         at = next & 0xFC;
     }

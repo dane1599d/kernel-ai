@@ -235,6 +235,10 @@ pub struct Server<D: BlockDev> {
     people: Vec<(u64, bool)>,
     /// The model store's blob being written in the open action ([`models`]).
     sealing: Option<models::Sealing>,
+    /// A model blob was removed while a GC pass that still reaches it ran, or
+    /// when no pass could start, or a pass's frees were lost with its commit:
+    /// idle starts the next one ([`Server::idle`]).
+    gc_again: bool,
     /// What a Rename moved with it, as `fs` read it (ENDPOINT_BADGE): a `Dir`'s
     /// badge and rights, or why the handle it moved cannot be one, for the one
     /// call ([`Server::call_into`]).
@@ -302,6 +306,7 @@ impl<D: BlockDev> Server<D> {
             caps_of: |_| None,
             people: Vec::new(),
             sealing: None,
+            gc_again: false,
             into: None,
         };
         let fixed = server.prepare(&uuid)?;
@@ -561,18 +566,21 @@ impl<D: BlockDev> Server<D> {
     /// expired undo snapshots and, while space is low, up to [`DROP_PER_PASS`]
     /// of the oldest (kaifs's space rule), then the GC frees what they held: a
     /// slice of it, or while space is low the whole pass, since a writer that
-    /// never pauses would otherwise outrun it. `now` is the time in ns since
-    /// boot, as [`Call::now`]; expiry is on the filesystem's clock.
+    /// never pauses would otherwise outrun it. A model blob's removal that no
+    /// pass started after gets one here too (H5-7). `now` is the time in ns
+    /// since boot, as [`Call::now`]; expiry is on the filesystem's clock.
     pub fn idle(&mut self, now: u64) {
         self.reap();
         if self.owner.is_some() {
             return;
         }
         let now = self.base.saturating_add(now);
+        let again = self.gc_again;
         let fs = self.fs();
         // Under the reserve with freed blocks waiting: commits give them back.
         let release = fs.reserve_waits_on_pending();
-        if !fs.writable() || !(fs.gc_running() || fs.space_low() || fs.expiry_due(now) || release) {
+        let due = fs.gc_running() || again || fs.space_low() || fs.expiry_due(now) || release;
+        if !fs.writable() || !due {
             return;
         }
         // Retention, the GC and these commits free space: they may take the
@@ -588,6 +596,7 @@ impl<D: BlockDev> Server<D> {
     /// Retention, then a slice of the GC (see [`Server::idle`]).
     fn retain_and_collect(&mut self, now: u64) {
         let fs = self.fs();
+        let mut started = false;
         let stepped = (|| {
             if !fs.gc_running() {
                 let mut dropped = fs.expire(now)?.len();
@@ -601,13 +610,22 @@ impl<D: BlockDev> Server<D> {
                     fs.commit()?;
                 }
                 fs.gc_start()?;
+                started = true;
             }
             let budget = if fs.space_low() { u64::MAX } else { GC_BUDGET };
             fs.gc_step(budget).map(|step| step.done)
         })();
+        // A pass begun now marks from after every removal so far.
+        if started {
+            self.gc_again = false;
+        }
         match stepped {
             Ok(true) => {
-                let _ = self.commit();
+                // A commit that fails drops what the pass freed with it: the
+                // next idle runs another (H5-7).
+                if self.commit().is_err() {
+                    self.gc_again = true;
+                }
             }
             Ok(false) => {}
             Err(_) => {

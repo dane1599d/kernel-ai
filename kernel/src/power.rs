@@ -60,7 +60,9 @@ pub fn safe_to_switch_off() -> ! {
     }
 }
 
-/// Reboots the machine. Never returns.
+/// Reboots the machine. Never returns. Allocates nothing: the fault path ends
+/// here (`fault::reset`), perhaps from a fault inside the allocator, or with
+/// its lock held by a CPU that is halted now.
 pub fn reboot() -> ! {
     x86_64::instructions::interrupts::disable();
     let skip = cmdline()
@@ -72,7 +74,7 @@ pub fn reboot() -> ! {
     if let Some(reset) = reset {
         log!(
             "power: rebooting through the FADT reset register ({})",
-            describe(reset)
+            ResetWrite(reset)
         );
         write_reset(reset);
         settle();
@@ -89,18 +91,25 @@ pub fn reboot() -> ! {
     triple_fault()
 }
 
-fn describe(reset: Reset) -> alloc::string::String {
-    let space = match reset.register.space {
-        Space::Io => "I/O port",
-        Space::Memory => "memory at",
-        Space::PciConfig => "PCI configuration",
-        Space::Other(_) => "an unsupported space at",
-    };
-    alloc::format!(
-        "write {:#x} to {space} {:#x}",
-        reset.value,
-        reset.register.address
-    )
+/// The reset register's write, for `reboot`'s line: formatted as it is
+/// printed, never on the heap.
+struct ResetWrite(Reset);
+
+impl core::fmt::Display for ResetWrite {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let reset = self.0;
+        let space = match reset.register.space {
+            Space::Io => "I/O port",
+            Space::Memory => "memory at",
+            Space::PciConfig => "PCI configuration",
+            Space::Other(_) => "an unsupported space at",
+        };
+        write!(
+            f,
+            "write {:#x} to {space} {:#x}",
+            reset.value, reset.register.address
+        )
+    }
 }
 
 /// Writes the reset value. Takes no lock: memory space only where `init` mapped.

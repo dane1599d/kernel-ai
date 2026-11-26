@@ -218,12 +218,12 @@ impl<D: BlockDev> Server<D> {
             .map_err(error)?;
         // Committed here, not by `answer`, so the GC pass can start after it.
         self.commit()?;
+        // The blocks are free at the end of a pass begun after that commit. One
+        // already running began before it and still reaches them, and one may
+        // not start now: then idle starts the next one (H5-7).
         let fs = self.fs();
-        if !fs.gc_running() {
-            // The blocks are free at the pass's end; a pass that cannot start
-            // now leaves them to the next one.
-            let _ = fs.gc_start();
-        }
+        let started = !fs.gc_running() && fs.gc_start().is_ok();
+        self.gc_again = !started;
         Ok(Reply::Done)
     }
 

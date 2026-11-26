@@ -253,6 +253,12 @@ static REPORTER: AtomicUsize = AtomicUsize::new(0);
 /// How many times the reporting CPU re-entered the fatal path.
 static REPORT_DEPTH: AtomicUsize = AtomicUsize::new(0);
 
+/// Whether a CPU is reporting a fatal error: the console then shows every
+/// line at once, a question's hold or not.
+pub fn reporting() -> bool {
+    REPORTER.load(Ordering::Acquire) != 0
+}
+
 /// Prepares this CPU to report a fatal error. Interrupts go off, so a halt request
 /// or a context switch cannot interrupt the report.
 /// - The first CPU to fail halts the others and takes over the output line.

@@ -170,6 +170,8 @@ pub(super) const CASES: &[TestCase] = &[
             "tune-revert: the guardrail reverted every CPU within 100 ms + 1 tick, before the watchdog",
             "tune-revert: an ejection during the trial restored interactive on every CPU, not round-robin",
             "tune-revert: (d) a policy switch cancelled the trial and won",
+            "tune-revert: (e) POLICY for the installed policy during a trial cancelled it",
+            "tune-revert: (f) POLICY for the installed policy cleared a watchdog ejection",
             "tune-revert: no workload process was killed as a runaway",
         ],
         ..case("tune-revert", "test=tune-revert workload=A seed=1")

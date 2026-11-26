@@ -72,13 +72,22 @@ pub enum FsChange<'a> {
     EmptyTrash,
 }
 
-/// Why the `fs` server did not restore a transaction.
+/// Why the `fs` server did not restore a transaction. There is no "put back
+/// anyway": `fs` never restores over a later change, so asking would offer
+/// what no yes can do (bug-hunt-6 H6-22).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FsRefused {
-    /// A later change touched the same files, as this says; restoring would undo
-    /// it too, so the user is asked first.
-    Later(String),
     Failed(String),
+}
+
+/// A restore `fs` committed: its generation, which a restore of it undoes, and
+/// how many of the transaction's files it left as they are, because a later
+/// change touched them (`fs` keeps those; a file's old version goes beside it).
+/// One that left some is still a change that landed, so it is logged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FsUndone {
+    pub generation: u64,
+    pub left: usize,
 }
 
 /// What a run of log entry `entry` may show the owners of its calls.
@@ -143,8 +152,10 @@ pub trait Host {
     /// Keeps a finished model turn in llm's conversation memory (P1 task 10): the
     /// user's line, the call as `act` returned it, and the result line.
     fn remember(&self, _line: &str, _call: &str, _result: &str) {}
-    /// Forgets the conversation (`new`).
-    fn forget(&self) {}
+    /// Forgets the conversation (`new`), or says why llm did not.
+    fn forget(&self) -> Result<(), String> {
+        Ok(())
+    }
     /// Where the user is, for the State line (ADR 0010 §5); nothing by default.
     fn state(&self) -> state::State {
         state::State::default()
@@ -348,9 +359,9 @@ pub trait Host {
         Ok(())
     }
     /// Restores what transaction `txn` replaced, as one new transaction: its number,
-    /// so `undo` again can redo. Compare-and-set: refused when a later change
-    /// touched the same files, unless `anyway`.
-    fn fs_undo(&self, _txn: u64, _anyway: bool) -> Result<u64, FsRefused> {
+    /// so `undo` again can redo, and how many files it left because a later change
+    /// touched them. Refused when it would restore none of them.
+    fn fs_undo(&self, _txn: u64) -> Result<FsUndone, FsRefused> {
         Err(FsRefused::Failed(String::from(NO_FILES)))
     }
     /// The services the supervisor runs, so a stop names a service or a process
