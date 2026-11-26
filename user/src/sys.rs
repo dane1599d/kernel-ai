@@ -515,6 +515,16 @@ pub fn proc_alive(pid: u64) -> Result<bool, Error> {
     call(call::PROC_ALIVE, [pid, 0, 0, 0, 0, 0]).map(|alive| alive == 1)
 }
 
+/// Live process `pid`'s name (PROC_NAME, needs DISPLAY or SUPERVISE), into
+/// `out`; its length. NotFound once it has ended, and for the kernel's, 0.
+pub fn proc_name(pid: u64, out: &mut [u8]) -> Result<usize, Error> {
+    call(
+        call::PROC_NAME,
+        [pid, out.as_mut_ptr() as u64, out.len() as u64, 0, 0, 0],
+    )
+    .map(|n| n as usize)
+}
+
 /// Process `pid` runs `normal` (0) or `background` (1) (PROC_CLASS_SET, needs
 /// SUPERVISE).
 pub fn proc_class_set(pid: u64, class: u64) -> Result<u64, Error> {
