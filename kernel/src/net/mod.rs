@@ -28,7 +28,7 @@ use core::net::Ipv4Addr;
 use core::sync::atomic::{AtomicU16, Ordering};
 use device::NicDevice;
 use smoltcp::iface::{Config, Interface, SocketSet, SocketStorage};
-use smoltcp::socket::tcp;
+use smoltcp::socket::{Socket, tcp};
 use smoltcp::time::{Duration, Instant};
 use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress};
 use spin::Mutex;
@@ -39,7 +39,7 @@ const TX_BUFFER: usize = 16 * 1024;
 const MAX_POLL_GAP_MS: u64 = 2;
 /// The receive queue, the one given an interrupt.
 pub const RECEIVE_QUEUE: u16 = 0;
-const FIRST_EPHEMERAL_PORT: u16 = 49152;
+const FIRST_EPHEMERAL_PORT: u16 = netcore::ephemeral::FIRST;
 /// Receive and transmit queue depth: a power of two, at most QEMU's 256. A deep
 /// receive queue, refilled in batches, lets the host deliver frames without a
 /// kick for each one (spike P5-S2).
@@ -133,9 +133,31 @@ pub fn is_up() -> bool {
     NET.lock().is_some()
 }
 
-fn next_port() -> u16 {
-    let port = NEXT_PORT.fetch_add(1, Ordering::Relaxed);
-    FIRST_EPHEMERAL_PORT + port.wrapping_sub(FIRST_EPHEMERAL_PORT) % 16384
+/// The next ephemeral port no socket in `sockets` holds (bug hunt 5's
+/// H5-19, [`netcore::ephemeral`]): the counter comes round every 16384, and
+/// a live stream's port would give a new connect to the same server that
+/// stream's four-tuple. Taken with `NET` held, and the socket given it is in
+/// the set before `NET` is let go, so no two take one port. None when every
+/// port is held.
+fn next_port(sockets: &SocketSet<'_>) -> Option<u16> {
+    netcore::ephemeral::next_free(
+        || NEXT_PORT.fetch_add(1, Ordering::Relaxed),
+        |port| {
+            sockets
+                .iter()
+                .any(|(_, socket)| held_port(socket) == Some(port))
+        },
+    )
+}
+
+/// The local port `socket` holds, if any: a TCP socket's from its connect
+/// on, a close still going out included, and a bound UDP socket's.
+fn held_port(socket: &Socket<'_>) -> Option<u16> {
+    match socket {
+        Socket::Tcp(socket) => socket.local_endpoint().map(|end| end.port),
+        Socket::Udp(socket) => Some(socket.endpoint().port),
+        _ => None,
+    }
 }
 
 /// Polls until the interface has an address, the deadline passes, or `cancel()`
@@ -186,11 +208,12 @@ pub fn exchange(
         );
         socket.set_timeout(Some(Duration::from_millis(timeout_ms)));
         socket.set_nagle_enabled(false);
+        let local = next_port(&net.sockets).ok_or("net: no free port")?;
         socket
             .connect(
                 net.iface.context(),
                 (IpAddress::Ipv4(server.0), server.1),
-                next_port(),
+                local,
             )
             .map_err(|_| "net: cannot start the connection")?;
         net.sockets.add(socket)
@@ -310,4 +333,10 @@ pub(crate) fn frames_ticket() -> wake::Ticket {
 /// The network's current setup, for `:net` and the tests.
 pub fn status() -> Option<setup::Status> {
     NET.lock().as_ref().map(|net| net.setup.status())
+}
+
+/// Moves the port counter so the next port drawn is `port`: `test=net-stream`
+/// checks with it that a port in use is skipped (bug hunt 5's H5-19).
+pub(crate) fn draw_next(port: u16) {
+    NEXT_PORT.store(port, Ordering::Relaxed);
 }

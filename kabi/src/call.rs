@@ -738,11 +738,15 @@ pub const NET_CONNECT: u64 = 192;
 /// `net_send(stream, ptr, len) -> sent`: queues up to `len` bytes, at most
 /// [`super::net::STREAM_MAX_CALL`] (TooBig over it); 0 while the send buffer
 /// is full. Busy before it connected, Dead once it can no longer send,
-/// Revoked once its grant was.
+/// Revoked once its grant was; Permission, sending nothing, when the bytes
+/// would pass the day's of the agent `NetDest` it was connected on.
 pub const NET_SEND: u64 = 193;
 /// `net_recv(stream, ptr, cap) -> received`: up to `cap` bytes, at most
 /// [`super::net::STREAM_MAX_CALL`]; 0 once the peer closed and everything was
-/// read; Busy while nothing has come; Revoked once its grant was.
+/// read; Busy while nothing has come; Revoked once its grant was; Permission,
+/// with nothing read, once the day's bytes of the agent `NetDest` it was
+/// connected on are spent, as a send and a connect on it are refused then
+/// (a stream that ended with everything read still gives 0).
 pub const NET_RECV: u64 = 194;
 /// `net_poll(stream, want, timeout_ms) -> state`: waits up to `timeout_ms`
 /// (at most 60 s) until the stream is any of `want` (the `STREAM_*` bits of
