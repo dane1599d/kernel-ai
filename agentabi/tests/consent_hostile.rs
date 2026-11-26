@@ -454,6 +454,60 @@ fn stop_negates_only_an_action_in_its_clause() {
         let decision = decide(line, &call, &ROWS)[0];
         assert_eq!(decision.why, Why::Added, "{line:?}: {decision:?}");
     }
+    // The #1460 review: any -ing word but a noun negates, whether or not a
+    // row's cue starts it.
+    let theme: [Call<'static>; 1] = [Call {
+        name: "appearance_set",
+        args: &[
+            (
+                "setting",
+                Value {
+                    text: "theme",
+                    label: Label::Literal,
+                },
+            ),
+            (
+                "value",
+                Value {
+                    text: "dark",
+                    label: Label::Literal,
+                },
+            ),
+        ],
+        control: Label::Literal,
+    }];
+    assert_eq!(
+        decide("make the theme dark", &theme, &ROWS)[0].tier,
+        Tier::Run
+    );
+    for (line, call) in [
+        ("Stop changing the scheduler to round robin", switch()),
+        ("stop making the theme dark", theme),
+        ("quit putting the scheduler on round robin", switch()),
+    ] {
+        let decision = decide(line, &call, &ROWS)[0];
+        assert_ne!(decision.tier, Tier::Run, "{line:?}: {decision:?}");
+    }
+    // An app's row whose cue is "stop" and that has an undo would run: its
+    // "stop" before an -ing word stays a negation.
+    let start = *find(&ROWS, "service_start").expect("service_start");
+    let timer_stop = agentabi::Action {
+        name: "timer_stop",
+        cues: &["stop"],
+        owner: agentabi::Owner::App("timer"),
+        ..start
+    };
+    assert_eq!(derive(&timer_stop), Tier::Run);
+    let rows = [timer_stop];
+    let tea = one("timer_stop", "name", "tea");
+    assert_eq!(decide("stop the tea timer", &tea, &rows)[0].tier, Tier::Run);
+    for line in [
+        "stop restarting the tea timer",
+        "please stop running the tea timer",
+    ] {
+        let decision = decide(line, &tea, &rows)[0];
+        assert_ne!(decision.tier, Tier::Run, "{line:?}: {decision:?}");
+    }
 }
 
 /// The #1436 review, item 2: a name only a negated clause holds is taken by
@@ -525,9 +579,37 @@ fn carry_stops_at_an_answer_and_at_a_sentence_end() {
         "ok never, switch to round robin",
         "no, never, switch to round robin",
         "never, please, switch to round robin",
+        // The #1460 review: only bare answers and their lead-ins make one.
+        "under no circumstances, ever, switch to round robin",
+        "Under no circumstances, switch to round robin",
+        // A run of dots trails off, and a sentence of only a negation is said
+        // of the next one.
+        "Never... switch to round robin",
+        "Don't... switch to round robin",
+        "Not. Switch to round robin.",
+        "Don't. Switch to round robin",
     ] {
         let decision = decide(line, &switch(), &ROWS)[0];
         assert_ne!(decision.tier, Tier::Run, "{line:?}: {decision:?}");
+    }
+    let decision = decide(
+        "Under no circumstances, delete thesis.txt",
+        &trash_thesis(),
+        &ROWS,
+    )[0];
+    assert_ne!(decision.tier, Tier::Run, "{decision:?}");
+    let calc = one("pkg_remove", "name", "calc");
+    for line in ["Don't... remove calc", "Do. Not. Remove. Calc."] {
+        let decision = decide(line, &calc, &ROWS)[0];
+        assert_ne!(decision.tier, Tier::Run, "{line:?}: {decision:?}");
+    }
+    // "No." and "Not again." still answer, and say nothing of what follows.
+    for line in [
+        "No. Switch to round robin",
+        "Not again. Switch to round robin.",
+    ] {
+        let decision = decide(line, &switch(), &ROWS)[0];
+        assert_eq!(decision.tier, Tier::Run, "{line:?}: {decision:?}");
     }
 }
 
