@@ -373,6 +373,43 @@ impl Memory {
         tables
     }
 
+    /// S14-2 (spike): makes the owned pages of `[addr, addr + count pages)`
+    /// read-execute (writable cleared, NX cleared), or with `exec` false
+    /// read-write again (the other way round). Pages not mapped or not owned
+    /// are skipped; how many were changed. The caller shoots the range down.
+    pub fn protect_exec(
+        &mut self,
+        space: &mut UserSpace,
+        addr: u64,
+        count: u64,
+        exec: bool,
+    ) -> u64 {
+        let mut changed = 0;
+        let mut done = 0;
+        while done < count {
+            let at = addr + done * PAGE_SIZE;
+            let first = ((at >> 12) & 0x1FF) as usize;
+            let run = (512 - first).min((count - done) as usize);
+            done += run as u64;
+            if let Ok(leaf) = self.leaf_table(space, at) {
+                for entry in self.table(leaf).iter_mut().skip(first).take(run) {
+                    let flags = entry.flags();
+                    if !flags.contains(PageTableFlags::PRESENT) || !flags.contains(OWNED) {
+                        continue;
+                    }
+                    let flags = if exec {
+                        (flags - PageTableFlags::WRITABLE) - PageTableFlags::NO_EXECUTE
+                    } else {
+                        flags | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
+                    };
+                    entry.set_flags(flags);
+                    changed += 1;
+                }
+            }
+        }
+        changed
+    }
+
     /// Unlinks the tables on the path to `addr` that map nothing more, from
     /// the deepest there is (the leaf, or where the path stops) up to the
     /// page-directory-pointer table (never the PML4, nor the model window's

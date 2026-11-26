@@ -604,6 +604,11 @@ pub const PROC_CLASS_SET: u64 = 164;
 /// processes start and end (ADR 0001). Numbered at merge, M's block; 165 is
 /// SHM_SIZE's (#1141).
 pub const PROC_ALIVE: u64 = 166;
+/// S14-2 (spike, never merged): `mem_exec(addr, bytes) -> pages`: the committed
+/// pages of `[addr, addr + bytes)` in a reservation become read-execute (no longer
+/// writable). Invalid outside the reservation area or unaligned.
+pub const MEM_EXEC: u64 = 167;
+// `mem_exec(addr, bytes, exec)`: with `exec` 0 the pages become read-write again.
 
 // ---- U, 170-179 ----
 

@@ -78,6 +78,27 @@ pub fn commit(slot: usize, addr: u64, bytes: u64) -> Result<u64, Error> {
     result
 }
 
+/// MEM_EXEC (S14-2, spike): the committed pages of `[addr, addr + bytes)`, which
+/// must lie in the process's reservation area, become read-execute, or with
+/// `exec` false read-write again.
+pub fn exec(slot: usize, addr: u64, bytes: u64, exec: bool) -> Result<u64, Error> {
+    let pages = pages_of(bytes)?;
+    if !addr.is_multiple_of(PAGE_SIZE)
+        || addr < kabi::layout::MEM_BASE
+        || addr.saturating_add(pages * PAGE_SIZE) > kabi::layout::MEM_END
+    {
+        return Err(Error::Invalid);
+    }
+    let (changed, cr3) = {
+        let mut guard = lock_space(slot);
+        let space = guard.as_mut().ok_or(Error::Dead)?;
+        let changed = memory::with(|m| m.protect_exec(space, addr, pages, exec));
+        (changed, space.cr3())
+    };
+    crate::smp::tlb_shootdown_range(&[cr3], addr, pages);
+    Ok(changed)
+}
+
 /// MEM_RELEASE: unmaps and frees every page of the reservation starting at
 /// `addr`, which then ends; how many pages were freed. It walks one page past
 /// the committed ones ([`mm::reserve::Release::walk`]), so the tables a commit

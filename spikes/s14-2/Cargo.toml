@@ -1,0 +1,16 @@
+[package]
+name = "spike-wasmtime-nostd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+test = false
+
+# S14-2 (throwaway, spike/wasmtime-nostd, never merged): Wasmtime's runtime
+# alone, no_std, no compiler. It loads a `.cwasm` made ahead of time, after
+# checking its signature.
+[dependencies]
+wasmtime = { version = "51.0.0", default-features = false, features = ["runtime", "pulley", "custom-virtual-memory"] }
+ed25519-compact = { version = "2.6.0", default-features = false, features = ["opt_size"] }

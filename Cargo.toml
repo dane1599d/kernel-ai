@@ -86,6 +86,8 @@ members = [
     "semindex",
     "shellcore",
     "spikes/rhai",
+    "spikes/s14-2",
+    "spikes/s14-2-host",
     "spikes/wasmi",
     "supervise",
     "surfabi",
