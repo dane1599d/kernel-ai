@@ -109,6 +109,11 @@ fn main() -> i32 {
     server.set_alive(alive);
     server.set_name_of(name_of);
     server.set_caps_of(caps_of);
+    // A caller that ran before this fs may think an action the last one had
+    // open is still open: its first change is told it is gone (H3-11).
+    if let Ok(pid) = sys::part_self(part) {
+        server.set_own_pid(pid);
+    }
     // Retention counts real time when the firmware gave a date; without one,
     // kaifs's clock counts only the time `fs` has run.
     if let Ok(seconds) = sys::clock_now() {
@@ -182,7 +187,14 @@ fn main() -> i32 {
         });
         match minted {
             None => {
-                let _ = sys::reply_h(&answer.reply, &[]);
+                // No reply is built past one message (H3-7); one that were
+                // would reach its caller as if fs never answered.
+                if let Err(Error::TooBig) = sys::reply_h(&answer.reply, &[]) {
+                    println!(
+                        "fs: a {}-byte reply was too big to send",
+                        answer.reply.len()
+                    );
+                }
             }
             Some(Ok(handle)) => {
                 // A reply that fails left the handle here: close it.

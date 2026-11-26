@@ -51,7 +51,7 @@ mod sealed_shm_tests;
 mod tests;
 mod trash;
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec::Vec;
 use fsproto::{
@@ -213,12 +213,21 @@ pub struct Server<D: BlockDev> {
     /// changes are refused ([`Error::Dropped`]) until it sends Abort or Begin
     /// itself. A commit or a drop of anyone else's leaves the marks alone.
     dropped: BTreeMap<u64, DropCause>,
+    /// This `fs`'s own pid ([`Server::set_own_pid`]); 0 until set.
+    own_pid: u64,
+    /// The callers older than this `fs` that have sent it a change
+    /// ([`Server::predates`]).
+    told: BTreeSet<u64>,
     /// The caller of the request being answered: a drop on its own request
     /// is one it hears.
     asking: u64,
     /// The least of the open action's changes' claims on kaifs's reserve: what
     /// its commit may spend ([`Server::spends_reserve`]).
     action_spend: Spend,
+    /// The generation on disk when the last GC pass ended with nothing
+    /// dropped and nothing freed: until a commit moves it, low space alone
+    /// starts no other pass ([`Server::idle`]).
+    quiet: Option<u64>,
     /// The record last read.
     cache: Option<buffer::Cached>,
     /// Whether a caller (a pid) still runs: a dead owner's action is aborted
@@ -298,8 +307,11 @@ impl<D: BlockDev> Server<D> {
             base,
             pending: None,
             dropped: BTreeMap::new(),
+            own_pid: 0,
+            told: BTreeSet::new(),
             asking: 0,
             action_spend: Spend::All,
+            quiet: None,
             cache: None,
             alive: |_| true,
             name_of: |_, _| None,
@@ -333,6 +345,24 @@ impl<D: BlockDev> Server<D> {
     /// every later change.
     pub fn set_alive(&mut self, alive: fn(u64) -> bool) {
         self.alive = alive;
+    }
+
+    /// This `fs`'s own pid (PART_SELF). Pids only count up, so a caller below
+    /// it ran before this `fs` started, and may have had an action open in
+    /// the one before, which a restart dropped with everything in it: its
+    /// first change here, unless a Begin or an Abort, is answered
+    /// [`Error::Dropped`] and lands nothing, so a change it meant for that
+    /// action never commits on its own outside any (H3-11). Only the first:
+    /// a client that never begins an action is refused once, not until it
+    /// aborts. Until this is set, no caller is refused this way.
+    pub fn set_own_pid(&mut self, pid: u64) {
+        self.own_pid = pid;
+    }
+
+    /// Whether `caller` ran before this `fs` started and this is its first
+    /// change here; the kernel (0) never counts.
+    fn predates(&mut self, caller: u64) -> bool {
+        caller != 0 && caller < self.own_pid && self.told.insert(caller)
     }
 
     /// The wall time at boot, ns since 1970 (`CLOCK_NOW` less the time since
@@ -576,10 +606,14 @@ impl<D: BlockDev> Server<D> {
         }
         let now = self.base.saturating_add(now);
         let again = self.gc_again;
+        // A pass that found nothing to free runs again for low space only once
+        // a commit has changed the disk (H3-9): on a disk that stays under a
+        // tenth free, every tick would mark everything and commit, forever.
+        let low = self.fs.space_low() && self.quiet != Some(self.fs.committed);
         let fs = self.fs();
         // Under the reserve with freed blocks waiting: commits give them back.
         let release = fs.reserve_waits_on_pending();
-        let due = fs.gc_running() || again || fs.space_low() || fs.expiry_due(now) || release;
+        let due = fs.gc_running() || again || low || fs.expiry_due(now) || release;
         if !fs.writable() || !due {
             return;
         }
@@ -593,13 +627,17 @@ impl<D: BlockDev> Server<D> {
         self.fs.io.alloc.spend_reserve(was);
     }
 
-    /// Retention, then a slice of the GC (see [`Server::idle`]).
+    /// Retention, then a slice of the GC (see [`Server::idle`]). A pass that
+    /// ends with nothing dropped and nothing freed commits only to give back
+    /// blocks still waiting out their two commits, and leaves the disk
+    /// [`Server::quiet`] until the next commit.
     fn retain_and_collect(&mut self, now: u64) {
         let fs = self.fs();
+        let mut dropped = 0;
         let mut started = false;
         let stepped = (|| {
             if !fs.gc_running() {
-                let mut dropped = fs.expire(now)?.len();
+                dropped = fs.expire(now)?.len();
                 for _ in 1..DROP_PER_PASS {
                     match fs.expire(now)?.len() {
                         0 => break,
@@ -613,21 +651,27 @@ impl<D: BlockDev> Server<D> {
                 started = true;
             }
             let budget = if fs.space_low() { u64::MAX } else { GC_BUDGET };
-            fs.gc_step(budget).map(|step| step.done)
+            fs.gc_step(budget)
         })();
         // A pass begun now marks from after every removal so far.
         if started {
             self.gc_again = false;
         }
         match stepped {
-            Ok(true) => {
+            Ok(step) if step.done => {
+                let idle = dropped == 0 && step.freed_blocks == 0;
+                let waiting = self.fs.io.alloc.has_pending() || !self.fs.is_clean();
                 // A commit that fails drops what the pass freed with it: the
                 // next idle runs another (H5-7).
-                if self.commit().is_err() {
+                if (!idle || waiting) && self.commit().is_err() {
                     self.gc_again = true;
                 }
+                // Quiet only when this pass committed nothing: a commit (an
+                // allocator condense, a moved oid counter) can free blocks of
+                // its own, and the next pass gives them back.
+                self.quiet = (idle && !waiting).then_some(self.fs.committed);
             }
-            Ok(false) => {}
+            Ok(_) => {}
             Err(_) => {
                 self.drop_changes();
             }
@@ -659,6 +703,12 @@ impl<D: BlockDev> Server<D> {
             self.own_folder_only(call.caller, &request)?;
         }
         let changes = changes(&request);
+        // A restarted `fs` tells each older caller, on its first change, that
+        // any action it had open is gone (H3-11).
+        let fresh = matches!(request, Request::Begin { .. } | Request::Abort);
+        if changes && self.predates(call.caller) && !fresh {
+            return Err(Error::Dropped(DropCause::Io));
+        }
         if let Some(&cause) = self.dropped.get(&call.caller).filter(|_| changes) {
             match request {
                 // It knows now: an Abort is its acknowledgement, a Begin its
@@ -1290,14 +1340,12 @@ impl<D: BlockDev> Server<D> {
         };
         let _ = self.fs.set_volume(volume);
         match done {
-            Ok((rows, generation)) => Ok(Reply::Restored {
-                rows: rows
-                    .into_iter()
-                    .take(MAX_ROWS as usize)
-                    .map(|(ino, o)| (ino, outcome(o)))
-                    .collect(),
+            // Committed before it answers: the answer must fit one message
+            // whatever the names, or the caller hears a failure (H3-7).
+            Ok((rows, generation)) => Ok(fsproto::restored(
+                rows.into_iter().map(|(ino, o)| (ino, outcome(o))).collect(),
                 generation,
-            }),
+            )),
             Err(e) => Err(e),
         }
     }

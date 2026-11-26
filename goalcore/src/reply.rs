@@ -7,6 +7,7 @@
 //!                               err <tier> #<entry>: <text>     (failed)
 //!                               ok asked <entry>: on the person's card
 //!                               err refused: <why>              (the ceiling)
+//!                               err busy: <why>                 (not taken now)
 //! agent-step wait <entry>       ok waiting #<entry>
 //!                               ok ran #<entry>: <line>
 //!                               err not run #<entry>: <line>    (a no)
@@ -29,6 +30,12 @@ pub enum Reply {
     /// The goal's ceiling refused it: the shell restarted (it keeps no grants) or
     /// the goal was revoked.
     Refused(String),
+    /// The shell could not take it now (`err busy`: a question waits for the
+    /// person). The step did not reach the door and made no entry: it is sent
+    /// again later, and is no step run or failed (H2-9). (`err not asked` is
+    /// not this: that step reached the door and was logged, so it is a step
+    /// that failed.)
+    Busy(String),
     /// It ran, or it failed; the entry is the actlog's.
     Done(StepDone),
 }
@@ -52,6 +59,9 @@ pub fn read(reply: &str) -> Reply {
     }
     if reply.starts_with("err refused") {
         return Reply::Refused(reply.to_string());
+    }
+    if let Some(why) = reply.strip_prefix("err busy") {
+        return Reply::Busy(why.trim_start_matches(':').trim().to_string());
     }
     Reply::Done(done(reply))
 }
@@ -144,5 +154,24 @@ mod tests {
             Reply::Refused(_)
         ));
         assert_eq!(read("err"), Reply::Done(failed(None, "err".to_string())));
+    }
+
+    /// H2-9: the shell's busy reply is no step run or failed: it was never sent
+    /// to the door. A step the shell did take and log stays a failed one.
+    #[test]
+    fn a_busy_shell_is_not_a_failed_step() {
+        assert_eq!(
+            read("err busy: a question waits for the person; step again later"),
+            Reply::Busy(String::from(
+                "a question waits for the person; step again later"
+            ))
+        );
+        assert!(matches!(
+            read("err not asked: the agent has 4 questions waiting"),
+            Reply::Done(StepDone {
+                failed: Some(_),
+                ..
+            })
+        ));
     }
 }

@@ -1,0 +1,22 @@
+[package]
+name = "kaizip"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Zip files in Files, the host half (plan P6 M-7, groundwork G14): list,
+# extract and make archives through zip 9.8.2 (MIT), behind ceilings against
+# zip bombs, path escapes, duplicate names and encrypted entries. A std host
+# crate, not an fsserve helper: zip reads through std::io, and fsserve is
+# no_std in ring 3. Files' own wiring comes with M-7.
+[lib]
+doctest = false
+
+[dependencies]
+# Stored and deflate only: no AES, bzip2, deflate64, LZMA, PPMd, xz or zstd,
+# and no zopfli. An entry in any other method is refused by name.
+zip = { version = "=9.8.2", default-features = false, features = ["deflate-flate2"] }
+# zip's deflate runs on flate2's Rust backend (miniz_oxide); zip asks for
+# flate2 with no features, so the backend is chosen here.
+flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
