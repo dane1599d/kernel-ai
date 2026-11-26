@@ -118,12 +118,39 @@ impl Intercepts {
         Self([0; 6])
     }
 
-    /// What every VMCB must intercept: VMRUN (APM 15.5.1; VMRUN refuses a
-    /// VMCB without it, with [`crate::ExitCode::INVALID`]), and a shutdown,
-    /// so a guest's triple fault exits to the host instead of resetting it.
+    /// The host's minimum: what every VMCB the kernel runs intercepts, so the
+    /// guest cannot reach past its own state. Each is here because:
+    ///
+    /// - **VMRUN**: VMRUN refuses a VMCB without it (APM 15.5.1, with
+    ///   [`crate::ExitCode::INVALID`]), and the guest gets no nested SVM.
+    /// - **VMLOAD, VMSAVE**: not intercepted, they take RAX as a host
+    ///   physical address (without virtual VMLOAD/VMSAVE), so the guest
+    ///   reads and writes any host page: CVE-2021-3656 was KVM letting a
+    ///   nested guest run them unintercepted.
+    /// - **STGI, CLGI**: they set and clear the CPU's global interrupt flag;
+    ///   a guest that clears it holds off the host's interrupts and NMIs.
+    /// - **SKINIT**: it reinitializes the CPU into a secure loader the guest
+    ///   chose, taking the machine.
+    /// - **INTR, NMI, SMI**: physical interrupts, NMIs and SMIs exit to the
+    ///   host, so its timer, IPIs and firmware keep the CPU while a guest runs.
+    /// - **IOIO_PROT, MSR_PROT**: without them the CPU ignores the IOPM and
+    ///   MSRPM ([`IoPermissions`], [`MsrPermissions`]) and the guest reaches
+    ///   every port and MSR itself.
+    /// - **SHUTDOWN**: a guest's triple fault exits instead of shutting the
+    ///   CPU down, host and all.
     pub const fn required() -> Self {
         Self::none()
             .with(Intercept::VMRUN)
+            .with(Intercept::VMLOAD)
+            .with(Intercept::VMSAVE)
+            .with(Intercept::STGI)
+            .with(Intercept::CLGI)
+            .with(Intercept::SKINIT)
+            .with(Intercept::INTR)
+            .with(Intercept::NMI)
+            .with(Intercept::SMI)
+            .with(Intercept::IOIO_PROT)
+            .with(Intercept::MSR_PROT)
             .with(Intercept::SHUTDOWN)
     }
 
@@ -226,11 +253,17 @@ impl IoPermissions {
     }
 
     /// Lets the guest use ports `first` to `first + count - 1` without an
-    /// exit.
-    pub fn allow(&mut self, first: u16, count: u16) {
-        for port in first as usize..first as usize + count as usize {
+    /// exit. Refused, with nothing changed, for a range that ends past port
+    /// 0xFFFF.
+    pub fn allow(&mut self, first: u16, count: u16) -> Result<(), (u16, u16)> {
+        let end = first as usize + count as usize;
+        if end > 0x1_0000 {
+            return Err((first, count));
+        }
+        for port in first as usize..end {
             self.0[port / 8] &= !(1 << (port % 8));
         }
+        Ok(())
     }
 
     /// Whether an access of `size` bytes at `port` exits: any of its bytes'

@@ -24,6 +24,16 @@ fn an_exception_must_carry_exactly_the_error_code_it_pushes() {
     assert_eq!(Event::exception(14, None), Err(Refusal::ErrorCode(14)));
     assert_eq!(Event::exception(6, Some(0)), Err(Refusal::ErrorCode(6)));
     assert_eq!(Event::exception(32, None), Err(Refusal::NotAnException(32)));
+    // The NMI has its own type, and 9, 15, 22-27 and 31 are reserved.
+    for vector in [2, 9, 15, 22, 23, 24, 25, 26, 27, 31] {
+        assert_eq!(
+            Event::exception(vector, None),
+            Err(Refusal::ReservedVector(vector))
+        );
+    }
+    // 28-30 (#HV, #VC, #SX) are exceptions.
+    assert!(Event::exception(28, None).is_ok());
+    assert!(Event::exception(30, Some(0)).is_ok());
     for vector in 0..32u8 {
         let pushes = matches!(vector, 8 | 10..=14 | 17 | 21 | 29 | 30);
         assert_eq!(pushes_error_code(vector), pushes, "vector {vector}");

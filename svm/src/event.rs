@@ -27,11 +27,18 @@ const ERROR_VALID: u32 = 1 << 11;
 /// #AC, #CP, #VC and #SX.
 pub const WITH_ERROR_CODE: [u8; 10] = [8, 10, 11, 12, 13, 14, 17, 21, 29, 30];
 
+/// Exception vectors the CPU defines no exception for, or that are not one:
+/// 2 is the NMI ([`Event::nmi`]), and 9, 15, 22-27 and 31 are reserved.
+pub const NOT_EXCEPTIONS: [u8; 10] = [2, 9, 15, 22, 23, 24, 25, 26, 27, 31];
+
 /// Why an event cannot be injected as asked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
     /// An exception's vector is 0-31.
     NotAnException(u8),
+    /// Vector 2 (the NMI, which has its own type) or a reserved one
+    /// ([`NOT_EXCEPTIONS`]).
+    ReservedVector(u8),
     /// The exception pushes an error code and none was given, or the other
     /// way round.
     ErrorCode(u8),
@@ -76,10 +83,18 @@ impl Event {
     }
 
     /// Exception `vector`, with the error code it pushes: refused when the
-    /// vector is not an exception's, or the code is missing or extra.
+    /// vector is not an exception's (above 31, the NMI's or a reserved one),
+    /// or the code is missing or extra.
     pub const fn exception(vector: u8, error_code: Option<u32>) -> Result<Self, Refusal> {
         if vector > 31 {
             return Err(Refusal::NotAnException(vector));
+        }
+        let mut i = 0;
+        while i < NOT_EXCEPTIONS.len() {
+            if NOT_EXCEPTIONS[i] == vector {
+                return Err(Refusal::ReservedVector(vector));
+            }
+            i += 1;
         }
         let pushes = pushes_error_code(vector);
         if pushes != error_code.is_some() {

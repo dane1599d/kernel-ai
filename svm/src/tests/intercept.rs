@@ -40,6 +40,33 @@ fn intercepts_are_at_table_b1s_word_and_bit() {
     }
 }
 
+/// The host's minimum, pinned: word 3 holds INTR (0), NMI (1), SMI (2),
+/// IOIO_PROT (27), MSR_PROT (28) and SHUTDOWN (31); word 4 VMRUN (0),
+/// VMLOAD (2), VMSAVE (3), STGI (4), CLGI (5) and SKINIT (6). VMMCALL (bit 1)
+/// is the guest's call to the host and is the caller's to add.
+#[test]
+fn the_required_set_is_the_hosts_minimum() {
+    let required = Intercepts::required();
+    assert_eq!(required.0, [0, 0, 0, 0x9800_0007, 0x0000_007D, 0]);
+    for intercept in [
+        Intercept::VMRUN,
+        Intercept::VMLOAD,
+        Intercept::VMSAVE,
+        Intercept::STGI,
+        Intercept::CLGI,
+        Intercept::SKINIT,
+        Intercept::INTR,
+        Intercept::NMI,
+        Intercept::SMI,
+        Intercept::IOIO_PROT,
+        Intercept::MSR_PROT,
+        Intercept::SHUTDOWN,
+    ] {
+        assert!(required.contains(intercept), "{intercept:?}");
+    }
+    assert!(!required.contains(Intercept::VMMCALL));
+}
+
 #[test]
 fn a_set_adds_removes_and_lands_in_the_vmcb() {
     let set = Intercepts::required()
@@ -47,6 +74,7 @@ fn a_set_adds_removes_and_lands_in_the_vmcb() {
         .with(Intercept::CPUID)
         .with(Intercept::MSR_PROT);
     assert!(set.contains(Intercept::VMRUN) && set.contains(Intercept::SHUTDOWN));
+    assert!(set.contains(Intercept::MSR_PROT) && set.contains(Intercept::IOIO_PROT));
     assert!(set.contains(Intercept::HLT));
     let set = set.without(Intercept::HLT);
     assert!(!set.contains(Intercept::HLT) && set.contains(Intercept::CPUID));
@@ -98,14 +126,20 @@ fn the_io_map_has_a_bit_a_port_and_checks_every_byte() {
     assert_eq!(size_of::<IoPermissions>(), IOPM_SIZE);
     let mut map = IoPermissions::intercept_all();
     assert!(map.intercepts(0x3F8, 1));
-    map.allow(0x3F8, 8);
+    map.allow(0x3F8, 8).unwrap();
     assert!(!map.intercepts(0x3F8, 1) && !map.intercepts(0x3FF, 1));
     assert!(map.intercepts(0x400, 1));
     // A 4-byte access at 0x3FD covers 0x3FD-0x400: 0x400 still exits.
     assert!(!map.intercepts(0x3FC, 4));
     assert!(map.intercepts(0x3FD, 4));
     // An access at the top runs into the third page, which stays set.
-    map.allow(0xFFFF, 1);
+    map.allow(0xFFFF, 1).unwrap();
+    // A range past 0xFFFF is refused, and changes nothing.
+    let before = map.clone();
+    assert_eq!(map.allow(0xF000, 0xF000), Err((0xF000, 0xF000)));
+    assert_eq!(map.allow(0xFFFF, 2), Err((0xFFFF, 2)));
+    assert_eq!(map, before);
+    assert_eq!(map.allow(0, 0), Ok(()));
     assert!(!map.intercepts(0xFFFF, 1));
     assert!(map.intercepts(0xFFFF, 2));
     assert_eq!(map.0[0x3F8 / 8], 0x00);

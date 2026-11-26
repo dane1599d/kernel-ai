@@ -368,6 +368,38 @@ impl SaveArea {
     }
 }
 
+// The layout the CPU reads, checked when the crate builds, for every target:
+// the sizes and the fields VMRUN and #VMEXIT use most (APM tables B-1, B-2).
+const _: () = {
+    use core::mem::{align_of, offset_of, size_of};
+    assert!(size_of::<Vmcb>() == 4096 && align_of::<Vmcb>() == 4096);
+    assert!(size_of::<ControlArea>() == CONTROL_AREA_SIZE);
+    assert!(size_of::<SaveArea>() == SAVE_AREA_SIZE);
+    assert!(size_of::<Segment>() == 16);
+    assert!(offset_of!(Vmcb, save) == 0x400);
+    assert!(offset_of!(ControlArea, iopm_base_pa) == 0x040);
+    assert!(offset_of!(ControlArea, msrpm_base_pa) == 0x048);
+    assert!(offset_of!(ControlArea, asid) == 0x058);
+    assert!(offset_of!(ControlArea, exit_code) == 0x070);
+    assert!(offset_of!(ControlArea, exit_info_1) == 0x078);
+    assert!(offset_of!(ControlArea, exit_info_2) == 0x080);
+    assert!(offset_of!(ControlArea, exit_int_info) == 0x088);
+    assert!(offset_of!(ControlArea, nested_control) == 0x090);
+    assert!(offset_of!(ControlArea, event_inj) == 0x0A8);
+    assert!(offset_of!(ControlArea, n_cr3) == 0x0B0);
+    assert!(offset_of!(ControlArea, clean) == 0x0C0);
+    assert!(offset_of!(ControlArea, next_rip) == 0x0C8);
+    assert!(offset_of!(SaveArea, cpl) == 0x0CB);
+    assert!(offset_of!(SaveArea, efer) == 0x0D0);
+    assert!(offset_of!(SaveArea, cr4) == 0x148);
+    assert!(offset_of!(SaveArea, rip) == 0x178);
+    assert!(offset_of!(SaveArea, rsp) == 0x1D8);
+    assert!(offset_of!(SaveArea, rax) == 0x1F8);
+    assert!(offset_of!(SaveArea, cr2) == 0x240);
+    assert!(offset_of!(SaveArea, g_pat) == 0x268);
+    assert!(offset_of!(SaveArea, spec_ctrl) == 0x2E0);
+};
+
 /// TLB_CONTROL: flush nothing.
 pub const TLB_FLUSH_NONE: u8 = 0;
 /// TLB_CONTROL: flush every ASID's entries (the host's too).
