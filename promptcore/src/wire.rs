@@ -432,6 +432,37 @@ impl Reply {
         Ok(())
     }
 
+    /// Adds `first` and then `second`, or neither: each as [`Reply::push_leaving`]
+    /// would add it one after the other, but without copying the reply to
+    /// find out. Nothing changes if either is refused. `first` is not a
+    /// terminal record, which `second` could not follow.
+    pub fn push_pair(
+        &mut self,
+        first: &Record,
+        second: &Record,
+        keep: usize,
+    ) -> Result<(), Refused> {
+        let records = self.records + 1 + usize::from(!second.terminal());
+        if self.ended
+            || first.terminal()
+            || records >= MAX_RECORDS
+            || !first.valid()
+            || !second.valid()
+        {
+            return Err(Refused);
+        }
+        let mut bytes = Vec::new();
+        first.write(&mut bytes);
+        second.write(&mut bytes);
+        if bytes.len().saturating_add(keep) > self.room() {
+            return Err(Refused);
+        }
+        self.bytes.extend_from_slice(&bytes);
+        self.records += 2;
+        self.ended = second.terminal();
+        Ok(())
+    }
+
     pub fn into_bytes(self) -> Vec<u8> {
         self.bytes
     }

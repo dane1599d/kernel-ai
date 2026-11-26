@@ -202,8 +202,6 @@ mod tests {
             .map_or_else(Vec::new, |u| u.split('+').collect())
     }
 
-    /// The routes after the prefix are checked by name in `supervise`
-    /// (`every_shell_lines_routes_are_named_in_order`).
     /// `cap::POLICY` is the person's: the scheduler's controls need it, and
     /// `fs` gives its holder the person's share of the space reserve
     /// (`PART_PEER_CAPS`). Every line the system and its apps plan, test lines
@@ -263,6 +261,8 @@ mod tests {
         assert!(shells >= SHELL_LINES.len(), "the walk missed shell lines");
     }
 
+    /// The routes after the prefix are checked by name in `supervise`
+    /// (`every_shell_lines_routes_are_named_in_order`).
     #[test]
     fn each_shell_line_starts_with_the_shells_fixed_routes() {
         let named = [

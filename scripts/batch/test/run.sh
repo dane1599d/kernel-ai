@@ -39,7 +39,7 @@ mkpr() {  # n branch base files...
 }
 
 setup() {
-  rm -rf "$T/origin.git" "$T/work" "$T/prs" "$T/state" "$T"/kill-* "$T/fluency-dispatches" "$T/list-fails" "$T/others" "$T/others-fail" "$T/fail-with" "$T/compile.log" "$T"/on-ci-wait-* "$T/ci-waits" "$T/on-fluency-wait"
+  rm -rf "$T/origin.git" "$T/work" "$T/prs" "$T/state" "$T"/kill-* "$T/fluency-dispatches" "$T/list-fails" "$T/others" "$T/others-fail" "$T/fail-with" "$T/compile.log" "$T"/on-ci-wait-* "$T/ci-waits" "$T/on-fluency-wait" "$T/ready-hook" "$T/fluency-hook" "$T/on-ready" "$T/moved-head" "$T/edit-fails" "$T/ffpid"
   git init -q --bare "$T/origin.git"
   git -C "$T/origin.git" symbolic-ref HEAD refs/heads/main
   git clone -q "$T/origin.git" "$T/work" 2>/dev/null
@@ -668,6 +668,52 @@ git -C "$T/work" fetch -q origin && git -C "$T/work" checkout -q --detach origin
 auto_until "left out: conflicts in"
 L="$T/state/batch-auto.log"
 check "the deleted file is listed"            'grep -q "#9 left out: conflicts in base.txt" "$L" && [ ! -s "$T/prs/9/labels" ]'
+
+echo "== batch-ff.sh: an error with no span is not credited to a later note's file"
+setup
+cat "$T/prs/1/sha" > "$T/fail-with"
+e=$'\033'
+{ for l in "${e}[1m${e}[91merror[E0599]${e}[0m${e}[1m: no method named \`go\`${e}[0m" \
+           "${e}[1m${e}[96mnote${e}[0m: the method is defined here" \
+           "  ${e}[1m${e}[94m--> ${e}[0mother/note.rs:5:1" \
+           "" \
+           "${e}[1m${e}[91merror[E0432]${e}[0m${e}[1m: unresolved import \`foo\`${e}[0m" \
+           "${e}[1m${e}[96mhelp${e}[0m: a similar path exists" \
+           "  ${e}[1m${e}[94m--> ${e}[0mother/help.rs:6:1" \
+           "" \
+           "${e}[1m${e}[91merror[E0001]${e}[0m${e}[1m: a build script failed${e}[0m" \
+           "Caused by:" \
+           "  ${e}[1m${e}[94m--> ${e}[0mother/caused.rs:7:1" \
+           "" \
+           "${e}[1m${e}[91merror[E0308]${e}[0m${e}[1m: mismatched types${e}[0m" \
+           "  ${e}[1m${e}[94m--> ${e}[0mkainet/src/real.rs:9:9"; do
+    printf '%s\t%s\t%s\n' "Format, lint, host unit tests" "UNKNOWN STEP" "2026-11-23T04:16:08.8681079Z $l"
+  done; } > "$T/compile.log"
+ff 1
+check "a column-0 note, help or Caused by ends the wait" '! has "other/note.rs" && ! has "other/help.rs" && ! has "other/caused.rs"'
+check "an error with its own span still counts" 'has "    compile error: kainet/src/real.rs:9:9  error[E0308]: mismatched types" && [ "$(grep -c "compile error: " "$T/out")" = 1 ]'
+
+echo "== batch-ff.sh: finish compares the branch on origin, not headRefOid, which lags a push"
+setup
+touch "$T/prs/1/stays-open"
+# After land's head checks, GitHub still answers with another head (a lag).
+echo "git -C \"$T/work\" rev-parse HEAD > \"$T/prs/1/lagging-head\"" > "$T/on-ready"
+ff 1
+check "landed but still open is told despite the lag" 'has "#1 landed but GitHub still shows it open"'
+
+echo "== setup(): no stub hook is left behind for the next case"
+for f in ready-hook fluency-hook on-ready moved-head edit-fails; do : > "$T/$f"; done
+setup
+check "hook files are cleared"                '(for f in ready-hook fluency-hook on-ready moved-head edit-fails; do [ -e "$T/$f" ] && exit 1; done; exit 0)'
+
+echo "== batch-auto.sh: unlabel that cannot remove the label posts no comment and says so"
+setup; carried
+for n in 2 3 4 5 7; do : > "$T/prs/$n/labels"; done
+: > "$T/edit-fails"
+auto_wait "removing batch-ready failed"
+check "the failure is logged"                 'grep -q "#8: removing batch-ready failed; no comment posted" "$L"'
+check "no comment says the label is gone"     '! grep -q "pr comment 8 " "$T/gh.log"'
+rm -f "$T/edit-fails"
 
 echo "branches left: $(branches)"
 [ $fails = 0 ] && echo "all batcher tests pass" || { echo "$fails batcher test(s) failed"; exit 1; }
