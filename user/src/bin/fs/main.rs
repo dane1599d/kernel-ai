@@ -51,10 +51,20 @@ user::entry!(main);
 
 /// How long a receive waits before a slice of the GC.
 const IDLE_MS: u64 = 100;
-/// The block cache in front of the disk: 16 MiB of 4 KiB blocks for now, under
-/// the memory the kernel sets aside for services beside the model; the plan's
-/// 64 MiB ([`kaifs::cache::DEFAULT_BLOCKS`]) waits for that budget to grow.
-const CACHE_BLOCKS: usize = 4096;
+/// The block cache in front of the disk, in MiB, when the plan line names none:
+/// the kernel names one from the admission budget (`cache_mib=`, #1036).
+const CACHE_MIB: usize = 16;
+/// The largest cache fs takes: ADR 0004's ([`kaifs::cache::DEFAULT_BLOCKS`]).
+const MAX_CACHE_MIB: usize = 64;
+
+/// The cache's size in MiB from fs's `cache_mib=` word, within 16 to 64.
+fn cache_mib(args: &str) -> usize {
+    args.split_whitespace()
+        .find_map(|word| word.strip_prefix("cache_mib="))
+        .and_then(|mib| mib.parse().ok())
+        .unwrap_or(CACHE_MIB)
+        .clamp(CACHE_MIB, MAX_CACHE_MIB)
+}
 /// The kernel's S04-2 file, in `system`.
 const BENCH_FILE: &str = "s04-2";
 
@@ -75,7 +85,8 @@ fn main() -> i32 {
     uuid[8..].copy_from_slice(&info.sectors.to_le_bytes());
     // kaifs, its block cache, then runs of up to 128 KiB a PART_* call.
     let runs = fsserve::batch::Batched::new(dev::PartDev::new(part, &info));
-    let disk = kaifs::cache::Cached::new(runs, CACHE_BLOCKS);
+    let cache_mib = cache_mib(&user::args());
+    let disk = kaifs::cache::Cached::new(runs, (cache_mib << 20) / kaifs::BLOCK);
     let mut server = match Server::start(disk, uuid) {
         Ok((server, started)) => {
             let how = match started {
@@ -83,7 +94,7 @@ fn main() -> i32 {
                 Started::Mounted { generation } => alloc::format!("generation {generation}"),
             };
             println!(
-                "fs: up; kai-data has {} sectors ({} MiB), {how}",
+                "fs: up; kai-data has {} sectors ({} MiB), {how}; a {cache_mib} MiB block cache",
                 info.sectors,
                 info.sectors / 2048
             );
@@ -98,6 +109,11 @@ fn main() -> i32 {
     server.set_alive(alive);
     server.set_name_of(name_of);
     server.set_caps_of(caps_of);
+    // A caller that ran before this fs may think an action the last one had
+    // open is still open: its first change is told it is gone (H3-11).
+    if let Ok(pid) = sys::part_self(part) {
+        server.set_own_pid(pid);
+    }
     // Retention counts real time when the firmware gave a date; without one,
     // kaifs's clock counts only the time `fs` has run.
     if let Ok(seconds) = sys::clock_now() {
@@ -171,7 +187,14 @@ fn main() -> i32 {
         });
         match minted {
             None => {
-                let _ = sys::reply_h(&answer.reply, &[]);
+                // No reply is built past one message (H3-7); one that were
+                // would reach its caller as if fs never answered.
+                if let Err(Error::TooBig) = sys::reply_h(&answer.reply, &[]) {
+                    println!(
+                        "fs: a {}-byte reply was too big to send",
+                        answer.reply.len()
+                    );
+                }
             }
             Some(Ok(handle)) => {
                 // A reply that fails left the handle here: close it.

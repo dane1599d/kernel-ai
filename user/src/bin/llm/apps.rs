@@ -14,7 +14,8 @@ use user::println;
 #[derive(Default)]
 pub struct Apps {
     rows: AppRows,
-    /// (app, its answer's `version` line) of the last request's apps.
+    /// (app, its answer's `version` line) of the last request's apps, sorted
+    /// by app (`apps::key`).
     key: Vec<(String, String)>,
 }
 
@@ -27,17 +28,17 @@ impl Apps {
         wire: &str,
         count: &dyn Fn(&str) -> usize,
     ) -> Option<local::act::Grammar> {
-        let Some(entries) = apps::entries(wire) else {
+        let Some(mut entries) = apps::entries(wire) else {
             println!("llm: the request's apps are malformed; keeping the last");
             return None;
         };
-        let key: Vec<(String, String)> = entries
-            .iter()
-            .map(|(app, answer)| {
-                let head = answer.lines().next().unwrap_or("");
-                (String::from(*app), String::from(head))
-            })
-            .collect();
+        // By name: the shell lists running apps first, so the same apps come in
+        // another order as one starts or stops. Sorted, the apps turn (and the
+        // act slot's cached prefix) is the same for the same apps however they
+        // came, and the apps past the budget are the last by name.
+        entries.sort_by_key(|(app, _)| *app);
+        // In any order: the same set of (app, version) keeps the grammar.
+        let key = apps::key(&entries);
         if key == self.key {
             return None;
         }

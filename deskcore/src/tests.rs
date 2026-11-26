@@ -71,6 +71,39 @@ fn damage_merges_cuts_and_caps_at_sixteen() {
     const { assert!(damage::MAX == 16) };
 }
 
+/// H6-20: `desktop`'s own damage (a pointer event's two cursor boxes) goes
+/// through the same merge and cap as the desk's: a read of 32 moves is one or two
+/// clips, not 64.
+#[test]
+fn a_burst_of_pointer_moves_is_merged_into_few_clips() {
+    let mut extra = Vec::new();
+    let mut at = Point { x: 500, y: 500 };
+    for n in 0..32 {
+        let before = at;
+        if n % 2 == 0 {
+            at.x += 3;
+        } else {
+            at.y += 3;
+        }
+        extra.push(crate::paint::cursor_box(before));
+        extra.push(crate::paint::cursor_box(at));
+    }
+    assert_eq!(extra.len(), 64);
+    let desk = alloc::vec![Rect::new(0, 0, 10, 10)];
+    let clips = damage::for_frame(desk, &mut extra, 1920, 1080);
+    assert!(extra.is_empty());
+    assert!(clips.len() <= damage::MAX, "{}", clips.len());
+    assert!(clips.len() <= 3, "{clips:?}");
+    for (n, a) in clips.iter().enumerate() {
+        for (m, b) in clips.iter().enumerate() {
+            assert!(n == m || a.intersect(b) != Some(*b), "{a:?} holds {b:?}");
+        }
+    }
+    // Nothing the person moved over is left out.
+    let pointer = crate::paint::reach(crate::paint::cursor_box(at));
+    assert!(clips.iter().any(|c| c.intersect(&pointer) == Some(pointer)));
+}
+
 #[test]
 fn chrome_hits_controls_title_content_and_grabs() {
     let content = Rect::new(100, 100, 400, 300);
@@ -537,6 +570,85 @@ fn a_press_of_a_held_button_starts_over() {
         button: Button::Left,
         down: true,
     }));
+}
+
+/// A release with no press held is no window's, even over its content: its
+/// press went to the chrome or a card, was ended, or is the stale release
+/// the kernel sends when the screen comes back with a button held.
+#[test]
+fn a_release_with_no_press_held_goes_nowhere() {
+    let (mut desk, ids) = desk_with(1);
+    let window = ids[0];
+    let c = desk.window(window).unwrap().content();
+    desk.input(at((c.x + 3, c.y + 4)));
+    for button in [Button::Left, Button::Right, Button::Middle] {
+        let effects = desk.input(Input::Button {
+            button,
+            down: false,
+        });
+        assert!(
+            !effects.iter().any(|e| matches!(e, Effect::Button { .. })),
+            "{button:?}: {effects:?}"
+        );
+    }
+}
+
+/// Lost input (the kernel's queue overflowed) ends a held press: the window
+/// hears it let go, and a Left click elsewhere afterwards is not its. A lost
+/// Right release used to send every Left click to the window until Right
+/// was pressed again.
+#[test]
+fn lost_input_ends_a_held_press() {
+    let (mut desk, ids) = desk_with(1);
+    let window = ids[0];
+    let c = desk.window(window).unwrap().content();
+    desk.input(at((c.x + 3, c.y + 4)));
+    desk.input(Input::Button {
+        button: Button::Right,
+        down: true,
+    });
+    // Right's release is lost; desktop hears that input was dropped.
+    assert!(desk.input_lost().contains(&Effect::Button {
+        window,
+        at: Point { x: -1, y: -1 },
+        button: Button::Right,
+        down: false,
+    }));
+    let elsewhere = (c.right() + 50, c.bottom() + 50);
+    let effects = click(&mut desk, elsewhere);
+    assert!(
+        !effects.iter().any(|e| matches!(
+            e,
+            Effect::Button { window: w, .. } | Effect::Pointer { window: w, .. } if *w == window
+        )),
+        "{effects:?}"
+    );
+    // Nothing is held now: lost input again says nothing.
+    assert!(
+        !desk
+            .input_lost()
+            .iter()
+            .any(|e| matches!(e, Effect::Button { .. }))
+    );
+}
+
+/// Lost input stops a move where it is: the pointer moves on, the window
+/// does not.
+#[test]
+fn lost_input_ends_a_move() {
+    let (mut desk, ids) = desk_with(1);
+    let frame = desk.window(ids[0]).unwrap().frame;
+    let title = (frame.x + 60, frame.y + 10);
+    desk.input(at(title));
+    desk.input(Input::Button {
+        button: Button::Left,
+        down: true,
+    });
+    assert_eq!(desk.dragged(), Some(ids[0]));
+    desk.input_lost();
+    assert_eq!(desk.dragged(), None);
+    desk.input(at((title.0 + 200, title.1)));
+    assert_eq!(desk.window(ids[0]).unwrap().frame, frame);
 }
 
 /// A window closed while a button is held in it holds nothing after.

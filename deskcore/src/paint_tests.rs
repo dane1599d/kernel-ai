@@ -438,6 +438,7 @@ fn shown_sharp(painter: &mut Painter, scene: &Scene<'_>) -> Vec<u32> {
             mask: &mask,
             id: window.id.0,
             content,
+            shade: painter.shade(),
         };
         let place = overlay::Place {
             scale: SCALE,
@@ -518,6 +519,53 @@ fn a_sharp_client_under_the_card_never_lands_on_it_whatever_its_colour() {
     };
     let (px, marked) = markers_in(&screen, &above);
     assert!(px > 0 && marked == px, "{marked} of {px} px above the card");
+}
+
+/// Bug-hunt 6 H6-19: at 1.25x the focused window's shadow over a lower
+/// client's content darkens that client's own px, as it does at 1x, instead of
+/// showing the darkened key colour.
+#[test]
+fn a_shadow_over_a_sharp_client_darkens_its_own_px() {
+    let (w, h) = (1280, 720);
+    let mut painter = Painter::new(FONTS).expect("the fonts parse");
+    let mut desk = Desk::new(w, h);
+    let size = Size { w: 600, h: 400 };
+    let (lower, _) = desk.open(1, "app", "App", size, true);
+    let (upper, _) = desk.open(2, "app", "Other", size, true);
+    assert_eq!(desk.focus(), crate::desk::Focus::Window(upper));
+    let (below, above) = (
+        desk.window(lower).unwrap(),
+        desk.window(upper).unwrap().frame,
+    );
+    let content = below.content();
+    let (panel, chat) = (Panel::new(), crate::chat::Chat::default());
+    let scene = scene_of(&desk, &panel, &chat);
+    let screen = shown_sharp(&mut painter, &scene);
+    let shade = painter.shade();
+    let centre = |d: i32, len: i32| ((2 * d + 1) * 120 / (2 * SCALE as i32)).min(len - 1);
+    let (mut dark, mut wrong) = (0, 0);
+    for y in 0..PH {
+        for x in 0..PW {
+            let p = crate::geom::Point {
+                x: centre(x, w),
+                y: centre(y, h),
+            };
+            let light = shade[(p.y * w + p.x) as usize];
+            // The lower window's own px, under the upper one's shadow only.
+            if light == 255 || !content.contains(p) || above.contains(p) {
+                continue;
+            }
+            dark += 1;
+            let got = screen[(y * PW + x) as usize];
+            wrong +=
+                usize::from((got >> 8 & 0xFF).abs_diff(u32::from(light)) > 2 || got & 0xFF != 0);
+        }
+    }
+    assert!(dark > 500, "{dark} px are in the shadow");
+    assert_eq!(
+        wrong, 0,
+        "{wrong} of {dark} px are not the client's, darkened"
+    );
 }
 
 /// H5-21's pane and taskbar: `shell` set to the hole's colour, a client

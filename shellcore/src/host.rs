@@ -78,6 +78,9 @@ pub enum FsChange<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FsRefused {
     Failed(String),
+    /// Nothing was put back: everything the transaction changed has changed
+    /// since. Asking again would find the same, so no one is told to.
+    Kept(String),
 }
 
 /// A restore `fs` committed: its generation, which a restore of it undoes, and
@@ -88,6 +91,34 @@ pub enum FsRefused {
 pub struct FsUndone {
     pub generation: u64,
     pub left: usize,
+}
+
+impl FsUndone {
+    /// What `fs`'s restore rows, committed as `generation`, mean for an undo.
+    /// `fs` never restores over a later change; it leaves those. A restore that
+    /// put any of the rest back landed, and is the undo: asking again would
+    /// restore it again, and each time write one more `name (restored)` copy
+    /// (bug-hunt-6 H6-22). One that put nothing back is refused. Only files
+    /// count as left: a later change that only added or removed a name in a
+    /// folder leaves the folder too, though every file is back (#1442's review).
+    pub fn of(generation: u64, rows: &[(u64, fsproto::Outcome)]) -> Result<Self, FsRefused> {
+        use fsproto::Outcome;
+        let left = rows
+            .iter()
+            .filter(|(_, o)| *o == Outcome::Left { folder: false })
+            .count();
+        let restored = rows.iter().any(|(_, o)| !matches!(o, Outcome::Left { .. }));
+        match (left, restored) {
+            (_, true) => Ok(FsUndone { generation, left }),
+            _ if rows.is_empty() => Ok(FsUndone { generation, left }),
+            (0, false) => Err(FsRefused::Kept(String::from(
+                "it changed since, and fs never restores over a later change, so it stays as it is now",
+            ))),
+            (n, false) => Err(FsRefused::Kept(format!(
+                "{n} file(s) changed since, and fs never restores over a later change, so they stay as they are now"
+            ))),
+        }
+    }
 }
 
 /// What a run of log entry `entry` may show the owners of its calls.

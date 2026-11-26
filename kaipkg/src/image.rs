@@ -54,6 +54,19 @@ pub struct Checked {
     pub indexes: Vec<Index>,
 }
 
+/// Every package name the image's repository lists: those it keeps, and those
+/// it refuses too. `pkg` keeps these from a local build, so a refused package
+/// of the image (a damaged medium, a failed closure) cannot be squatted.
+pub fn names(checked: &Checked) -> Vec<String> {
+    let mut names: Vec<String> = checked.indexes.iter().map(|i| i.name.clone()).collect();
+    let refused = checked.refused.iter().filter_map(|(path, _)| {
+        let target = path.strip_suffix(".kpkg")?;
+        Some(target.rsplit_once('-')?.0.to_string())
+    });
+    names.extend(refused);
+    names
+}
+
 struct Metadata<'a>(&'a mut dyn Files);
 
 impl Remote for Metadata<'_> {

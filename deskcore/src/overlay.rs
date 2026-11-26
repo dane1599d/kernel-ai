@@ -39,6 +39,10 @@ pub struct Owner<'a> {
     pub mask: &'a [u32],
     pub id: u32,
     pub content: Rect,
+    /// The light the shadows left at each logical px ([`crate::paint::Painter::shade`]),
+    /// as wide as the frame; empty or short, none. Where a shadow darkened the
+    /// hole, the window's px are darkened the same.
+    pub shade: &'a [u8],
 }
 
 /// Where on the screen: the scale, the physical rectangle to touch and the
@@ -68,6 +72,15 @@ pub fn mark(mask: &mut [u32], width: i32, height: i32, rect: Rect, id: u32) {
 /// `v` logical px as physical, rounded as a client rounds its own.
 fn physical(v: i64, scale: u32) -> i64 {
     (v * i64::from(scale) + i64::from(ONE) / 2).div_euclid(i64::from(ONE))
+}
+
+/// Whether `px` is `hole` under shadows that left `light` of the light, each
+/// channel within the rounding of the shadows drawn one after another.
+fn darkened(hole: u32, light: u8, px: u32) -> bool {
+    let want = |shift: u32| (((hole >> shift) & 0xFF) * u32::from(light) / 255) as i32;
+    [0, 8, 16]
+        .iter()
+        .all(|&shift| (want(shift) - ((px >> shift) & 0xFF) as i32).abs() <= 2)
 }
 
 /// Puts a client's own pixels on the screen: the physical `rect`, cut to the
@@ -154,8 +167,21 @@ pub fn overlay(
         ) else {
             continue;
         };
+        let shades = owner.shade.get(row..).unwrap_or(&[]);
         for ((px, &s), &c) in out.iter_mut().zip(src).zip(&columns) {
-            if held[c] == hole && owned[c] == owner.id {
+            if owned[c] != owner.id {
+                continue;
+            }
+            let light = shades.get(c).copied().unwrap_or(255);
+            // The hole itself, or the hole as a shadow over it left it (a faint
+            // shadow leaves it as it was, so that counts as shaded too).
+            let shaded = light < 255 && darkened(hole, light, held[c]);
+            if held[c] == hole || shaded {
+                let s = if shaded {
+                    crate::compose::dark(s, light)
+                } else {
+                    s
+                };
                 *px = match buffer.alpha {
                     true => crate::compose::over(s, *px) | ALPHA,
                     false => s | ALPHA,
@@ -235,6 +261,7 @@ mod tests {
                 mask: &self.mask,
                 id,
                 content,
+                shade: &[],
             };
             let place = Place {
                 scale: 120,
@@ -474,6 +501,7 @@ mod tests {
             mask: &mask,
             id: 4,
             content,
+            shade: &[],
         };
         let place = Place {
             scale: 150,

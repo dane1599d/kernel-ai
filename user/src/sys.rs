@@ -1497,6 +1497,12 @@ pub fn part_peer_caps(handle: Handle, pid: u64) -> Result<u64, Error> {
     call(call::PART_PEER_CAPS, [u64::from(handle.0), pid, 0, 0, 0, 0])
 }
 
+/// This process's own pid (PART_SELF), for `fs`, which holds the `Partition`
+/// handle `handle`.
+pub fn part_self(handle: Handle) -> Result<u64, Error> {
+    call(call::PART_SELF, [u64::from(handle.0), 0, 0, 0, 0, 0])
+}
+
 /// Hands the kernel the model store's model, `extents` (first block, blocks) of
 /// the partition from byte `offset` of the file (P2 task 10); the bytes filled.
 pub fn model_fill(partition: Handle, extents: &[(u64, u64)], offset: u64) -> Result<u64, Error> {

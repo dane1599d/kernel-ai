@@ -369,6 +369,13 @@ impl Shell {
                     )));
                     break;
                 }
+                // Nothing was put back, and asking again would find the same.
+                Err(Refused::Kept(why)) => {
+                    self.host.audit(&format!("undo #{id} kept: {why}"));
+                    left.push(change);
+                    stopped = Some(Reply::err(format!("{}{why}", undone(&said))));
+                    break;
+                }
             }
         }
         if !redo.is_empty() {

@@ -17,7 +17,6 @@ extern crate std;
 #[cfg(test)]
 mod tests;
 
-use alloc::vec::Vec;
 use gfx2d::text::Text;
 use gfx2d::{Canvas, Rect};
 use look::Palette;
@@ -115,23 +114,37 @@ impl Scale {
     }
 }
 
-/// The row spans of `r` with corners of radius `radius` px: for each row, how
-/// far its ends are inset, and the coverage (0-255) of the pixel just inside.
-fn insets(r: Rect, radius: i32) -> Vec<(i32, u32)> {
-    let radius = radius.clamp(0, r.w.min(r.h) / 2);
-    (0..r.h)
-        .map(|y| {
-            let from_edge = y.min(r.h - 1 - y);
-            if from_edge >= radius {
-                return (0, 255);
-            }
-            let rf = radius as f32;
-            let dy = rf - from_edge as f32 - 0.5;
-            let inset = rf - libm::sqrtf((rf * rf - dy * dy).max(0.0));
-            let whole = libm::floorf(inset);
-            (whole as i32, (255.0 * (1.0 - (inset - whole))) as u32)
-        })
-        .collect()
+/// `radius` as far as `r` has room for it: half its shorter side, and none when
+/// `r` is empty. A squeezed widget's rect can be less than empty, and
+/// `clamp(0, negative)` panics.
+fn corner(r: Rect, radius: i32) -> i32 {
+    radius.min(r.w.min(r.h) / 2).max(0)
+}
+
+/// The rows of `r` that `clip` reaches, counted from the top of `r`: only these
+/// are drawn, so a rect far taller than the window costs only the rows shown.
+fn rows(r: Rect, clip: Rect) -> core::ops::Range<i32> {
+    let seen = r.intersect(&clip);
+    if seen.is_empty() {
+        return 0..0;
+    }
+    let top = seen.y - r.y;
+    top..top + seen.h
+}
+
+/// Row `y` of `r` with corners of radius `radius` px (from [`corner`]): how far
+/// its ends are inset and, in a corner, the coverage (0-255) of the pixel just
+/// inside.
+fn inset_of(r: Rect, radius: i32, y: i32) -> (i32, Option<u32>) {
+    let from_edge = y.min(r.h - 1 - y);
+    if from_edge >= radius {
+        return (0, None);
+    }
+    let rf = radius as f32;
+    let dy = rf - from_edge as f32 - 0.5;
+    let inset = rf - libm::sqrtf((rf * rf - dy * dy).max(0.0));
+    let whole = libm::floorf(inset);
+    (whole as i32, Some((255.0 * (1.0 - (inset - whole))) as u32))
 }
 
 /// One row from `x0` to `x1`, its end pixels at coverage `edge` when the row
@@ -156,34 +169,29 @@ fn span(
 
 /// `r` filled in `color`, its corners rounded and antialiased, as far as `clip`.
 fn fill(c: &mut Canvas<'_>, r: Rect, radius: i32, color: u32, clip: Rect) {
-    for (y, (inset, edge)) in insets(r, radius).into_iter().enumerate() {
+    let radius = corner(r, radius);
+    for y in rows(r, clip) {
+        let (inset, edge) = inset_of(r, radius, y);
         let ends = (r.x + inset, r.right() - inset);
-        let edge = (radius > 0 && in_corner(r, radius, y)).then_some(edge);
-        span(c, r.y + y as i32, ends, edge, color, clip);
+        span(c, r.y + y, ends, edge, color, clip);
     }
-}
-
-/// Whether row `y` of `r` falls in a rounded corner.
-fn in_corner(r: Rect, radius: i32, y: usize) -> bool {
-    let y = y as i32;
-    y.min(r.h - 1 - y) < radius.clamp(0, r.w.min(r.h) / 2)
 }
 
 /// A `width` px outline just inside `r`, its corners rounded.
 fn stroke(c: &mut Canvas<'_>, r: Rect, width: i32, radius: i32, color: u32, clip: Rect) {
     let inner = r.grow(-width);
-    let inner_radius = (radius - width).max(0);
-    let inner_rows = insets(inner, inner_radius);
-    for (y, (inset, edge)) in insets(r, radius).into_iter().enumerate() {
-        let row = r.y + y as i32;
+    let inner_radius = corner(inner, radius - width);
+    let radius = corner(r, radius);
+    for y in rows(r, clip) {
+        let row = r.y + y;
+        let (inset, edge) = inset_of(r, radius, y);
         let (x0, x1) = (r.x + inset, r.right() - inset);
-        let edge = (radius > 0 && in_corner(r, radius, y)).then_some(edge);
         let at = row - inner.y;
         if inner.is_empty() || at < 0 || at >= inner.h {
             span(c, row, (x0, x1), edge, color, clip);
             continue;
         }
-        let ii = inner_rows[at as usize].0;
+        let ii = inset_of(inner, inner_radius, at).0;
         // Each side on its own: the outer end antialiased, the inner end hard.
         let hard = i32::from(edge.is_some());
         let (left, right) = ((x0 + hard, inner.x + ii), (inner.right() - ii, x1 - hard));

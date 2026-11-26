@@ -270,6 +270,24 @@ pub fn entries(mut text: &str) -> Option<Vec<(&str, &str)>> {
     Some(entries)
 }
 
+/// What llm compares to tell whether a request's apps are those of the
+/// grammar in use: each of [`entries`]' (app, its answer's first line),
+/// sorted by app. The shell lists running apps first, so an app starting or
+/// stopping reorders the same set; sorted, that is no new key,
+/// so no grammar is built (and leaked) again and the apps turn, with the act
+/// slot's cached prefix, stays as it was (bug hunt #21).
+pub fn key(entries: &[(&str, &str)]) -> Vec<(String, String)> {
+    let mut key: Vec<(String, String)> = entries
+        .iter()
+        .map(|(app, answer)| {
+            let head = answer.lines().next().unwrap_or("");
+            (String::from(*app), String::from(head))
+        })
+        .collect();
+    key.sort();
+    key
+}
+
 /// The group in `groups` holding the row `name`.
 pub fn group_of<'a>(groups: &'a [AppGroup], name: &str) -> Option<&'a AppGroup> {
     groups
