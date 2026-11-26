@@ -493,7 +493,7 @@ impl Host for FakeHost {
             }
         }
         if !restored && left > 0 {
-            return Err(FsRefused::Failed(format!(
+            return Err(FsRefused::Kept(format!(
                 "{left} file(s) changed since, and fs never restores over a later change"
             )));
         }

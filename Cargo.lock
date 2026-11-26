@@ -2405,6 +2405,7 @@ dependencies = [
  "comp-models",
  "deskcore",
  "editcore",
+ "fsproto",
  "goalcore",
  "kabi",
  "kaiagent",
