@@ -175,7 +175,7 @@ jobs:
         run: cargo clippy -p kernel --target x86_64-unknown-none --features spikes -- -D warnings
       - name: Clippy for the engine crates on the soft-float kernel target
         if: steps.scope.outputs.code == 'true'
-        run: cargo clippy -p gguf -p cpufeat -p quant -p bpe -p infer --target x86_64-unknown-none -- -D warnings
+        run: cargo clippy -p gguf -p cpufeat -p quant -p bpe -p infer -p svm --target x86_64-unknown-none -- -D warnings
       - name: Clippy for the soft-float ring-3 programs
         if: steps.scope.outputs.code == 'true'
         run: cargo clippy -p user --target x86_64-unknown-none --lib --bin supervisor --bin shell --bin crasher --bin spinner --bin hog --bin edit --bin work --bin netcheck --bin handles --bin scriptrun --bin fs --bin filecheck --bin deskdemo --bin tufbench --bin goals -- -D warnings
