@@ -485,6 +485,7 @@ fn state_round_trips_and_damage_is_ignored() {
             keep: true,
             pid: 42,
             started_ms: 1234,
+            version: None,
         },
         Record {
             name: "hog".into(),
@@ -496,13 +497,14 @@ fn state_round_trips_and_damage_is_ignored() {
             keep: false,
             pid: 0,
             started_ms: 0,
+            version: Some("p-0a1b2c3d4e5f".into()),
         },
     ];
     assert_eq!(decode(encode(&records).as_bytes()), records);
     assert!(decode(b"").is_empty());
     assert!(decode(b"garbage").is_empty());
     assert!(decode(&[0xFF, 0xFE]).is_empty());
-    let damaged = alloc::format!("{STATE_MAGIC}\ncrasher x 1 0 0 0 0 0\nhog 2 0 0 0 0 7 99");
+    let damaged = alloc::format!("{STATE_MAGIC}\ncrasher x 1 0 0 0 0 0\nhog 2 0 0 0 0 7 99 -");
     // State in an older layout reads as none rather than as shifted fields.
     assert!(decode(b"supervisor-state 2\nhog 2 0 0 7").is_empty());
     assert_eq!(decode(damaged.as_bytes()).len(), 1);
@@ -532,6 +534,28 @@ hog 2 1 0 1 7 99 5",
         ),
         (true, false, 7, vec![5])
     );
+}
+
+#[test]
+fn a_package_version_survives_the_state_round_trip_and_state_5_has_none() {
+    let mut hello = Record::new("hello");
+    hello.pid = 7;
+    hello.recent = vec![10, 20];
+    hello.version = Some("p-0a1b2c3d4e5f".into());
+    let plain = Record::new("fs");
+    let back = decode(encode(&[plain.clone(), hello.clone()]).as_bytes());
+    assert_eq!(back, [plain, hello.clone()]);
+    // State 5 had no version field: its records carry over with none.
+    let old = decode(b"supervisor-state 5\nhello 3 1 0 0 1 7 100 10 20");
+    assert_eq!(old.len(), 1);
+    assert_eq!(
+        (old[0].restarts, old[0].pid, old[0].version.clone()),
+        (3, 7, None)
+    );
+    assert_eq!(old[0].recent, [10, 20]);
+    // A version that is not a package label is damage: the record is dropped.
+    let bad = encode(&[hello]).replace("p-0a1b2c3d4e5f", "evil");
+    assert!(decode(bad.as_bytes()).is_empty());
 }
 
 /// POLICY is the person's: a line that asks for it is refused unless it is
