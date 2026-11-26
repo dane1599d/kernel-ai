@@ -114,17 +114,37 @@ pub fn switch() {
 /// (Ctrl+Alt+F12), the screen stays on the console until then: neither
 /// Ctrl+Alt+F12 nor a claim returns it, so no window gets keys meanwhile.
 /// Returns whether it took it.
-pub fn take_for_answer() -> bool {
+///
+/// `publish` makes the question visible (`terminal`'s flag). It runs under
+/// this lock once `answering` is set, so a Ctrl+Alt+F12 that comes after the
+/// question can be seen also sees the answer pending, and leaves the screen
+/// on the console. One just before it may have handed the screen back to a
+/// holder that has not claimed it yet: the console keeps it then too, and the
+/// answer hands it back (#1505's desk-ask flake).
+pub fn take_for_answer(publish: impl FnOnce()) -> bool {
     let mut state = STATE.lock();
     state.answering = true;
-    let Some(grant) = state.showing.take() else {
+    publish();
+    if let Some(grant) = state.showing.take() {
+        state.taken_back = true;
+        drop(state);
+        to_console(grant);
+        input::screen(false);
+        log!("display: the console took the screen for an answer");
+        return true;
+    }
+    // Not showing, not taken back, and a holder: it was given the screen
+    // (a second Ctrl+Alt+F12, or an earlier answer) and its claim is still
+    // to come. The claim would be refused while the answer waits, so the
+    // answer must give the screen back after.
+    if state.taken_back || state.holder.is_none() {
         return false;
-    };
+    }
     state.taken_back = true;
     drop(state);
-    to_console(grant);
+    input::end_lease();
     input::screen(false);
-    log!("display: the console took the screen for an answer");
+    log!("display: the console kept a screen handed back, for an answer");
     true
 }
 
