@@ -38,7 +38,8 @@ permissions:
 
 concurrency:
   # One real-model groups run at a time per ref; a second dispatch on the same
-  # ref waits, never cancels.
+  # ref waits, never cancels a run that is running. GitHub keeps one pending
+  # run per group, so a third dispatch on the same ref replaces the waiting one.
   group: real-model-groups-${{ github.ref }}
   cancel-in-progress: false
 
