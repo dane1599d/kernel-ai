@@ -488,3 +488,24 @@ fn pointers_past_the_window_are_refused_and_counted() {
         assert_eq!(window.refused.get(), 1, "{address:#x}");
     }
 }
+
+#[test]
+fn refixed_tables_let_mutations_reach_the_readers() {
+    let mem = windowed(&with_fadt(fadt()));
+    let mut rng = XorShift::new(0xac5e);
+    let (mut parsed, mut fadt_read) = (0, 0);
+    for _ in 0..2_000 {
+        let mut whole = mem.clone();
+        // A mutation inside one listed table's body, past its header.
+        let at = TABLES_AT[rng.below(4)] + SDT_HEADER_LEN + rng.below(40);
+        whole[at] = rng.next() as u8;
+        // Its checksum is now wrong, as a fuzzer's mutation leaves it; the
+        // harness's re-fix mends the root and every listed table.
+        harness::refix_tables(&mut whole);
+        let platform = harness::check(&whole);
+        parsed += usize::from(platform.is_some());
+        fadt_read += usize::from(platform.is_some_and(|p| p.ignored.is_empty()));
+    }
+    assert_eq!(parsed, 2_000, "every re-fixed mutation parses");
+    assert!(fadt_read > 1_900, "{fadt_read} with no table left out");
+}

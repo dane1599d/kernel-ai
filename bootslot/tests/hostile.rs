@@ -125,3 +125,20 @@ fn damaged_slot_files_and_pending_take_only_what_they_say() {
         sweep_fields(text.as_bytes(), 0..text.len(), |_, b| harness::pending(b));
     }
 }
+
+#[test]
+fn a_single_flipped_bit_with_the_old_crc_is_refused() {
+    for record in records() {
+        let bytes = record.encode();
+        for bit in 0..BYTES * 8 {
+            let mut flipped = bytes;
+            flipped[bit / 8] ^= 1 << (bit % 8);
+            assert!(
+                read(Some(&flipped)).is_err(),
+                "bit {bit} flipped and the record still read"
+            );
+            // And it still keeps the rule, were it ever taken.
+            harness::slot_record(&flipped);
+        }
+    }
+}
