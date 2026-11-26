@@ -374,9 +374,16 @@ impl Memory {
     }
 
     /// S14-2 (spike): makes the owned pages of `[addr, addr + count pages)`
-    /// read-execute: writable cleared, NX cleared. Pages not mapped or not owned
+    /// read-execute (writable cleared, NX cleared), or with `exec` false
+    /// read-write again (the other way round). Pages not mapped or not owned
     /// are skipped; how many were changed. The caller shoots the range down.
-    pub fn protect_exec(&mut self, space: &mut UserSpace, addr: u64, count: u64) -> u64 {
+    pub fn protect_exec(
+        &mut self,
+        space: &mut UserSpace,
+        addr: u64,
+        count: u64,
+        exec: bool,
+    ) -> u64 {
         let mut changed = 0;
         let mut done = 0;
         while done < count {
@@ -390,7 +397,11 @@ impl Memory {
                     if !flags.contains(PageTableFlags::PRESENT) || !flags.contains(OWNED) {
                         continue;
                     }
-                    let flags = (flags - PageTableFlags::WRITABLE) - PageTableFlags::NO_EXECUTE;
+                    let flags = if exec {
+                        (flags - PageTableFlags::WRITABLE) - PageTableFlags::NO_EXECUTE
+                    } else {
+                        flags | PageTableFlags::WRITABLE | PageTableFlags::NO_EXECUTE
+                    };
                     entry.set_flags(flags);
                     changed += 1;
                 }

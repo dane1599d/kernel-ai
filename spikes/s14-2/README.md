@@ -54,3 +54,13 @@ plan; the figures come from the `wasmtime-nostd` boot case's log (KVM).
    `futures-util` back to 0.3.34; no feature flag is needed and `deny.toml` is
    untouched. (The lockfile still lists `futures` 0.3.31 because Cargo locks every
    optional dependency of every feature; it is not built.)
+7. **Native code needs Wasmtime's `custom-virtual-memory` feature**, even with
+   `memory_init_cow(false)`: without it `has_virtual_memory` is off for an OS
+   Wasmtime does not know, and `CodeMemory::publish` refuses to make code
+   executable ("this target requires virtual memory to be enabled"). With it on,
+   the embedder also defines `wasmtime_memory_image_{new,map_at,free}` (stubs
+   here: copy-on-write images are off). `mprotect` must also be able to make
+   pages writable again, because dropping a module unpublishes its code, so
+   MEM_EXEC takes a flag: 1 read-execute, 0 read-write.
+8. The Pulley run needs `memory_init_cow(false)` for the same reason (first boot:
+   "virtual memory disabled at compile time -- cannot enable CoW").

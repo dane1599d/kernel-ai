@@ -608,6 +608,7 @@ pub const PROC_ALIVE: u64 = 166;
 /// pages of `[addr, addr + bytes)` in a reservation become read-execute (no longer
 /// writable). Invalid outside the reservation area or unaligned.
 pub const MEM_EXEC: u64 = 167;
+// `mem_exec(addr, bytes, exec)`: with `exec` 0 the pages become read-write again.
 
 // ---- U, 170-179 ----
 

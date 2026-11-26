@@ -8,6 +8,7 @@ use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use user::sys;
 
 const PAGE: usize = 4096;
+const PROT_WRITE: u32 = 1 << 1;
 const PROT_EXEC: u32 = 1 << 2;
 
 /// Bytes committed now, and the most there were.
@@ -54,12 +55,13 @@ pub unsafe extern "C" fn wasmtime_munmap(addr: *mut u8, size: usize) -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wasmtime_mprotect(addr: *mut u8, size: usize, prot: u32) -> i32 {
-    if prot & PROT_EXEC == 0 {
-        // Pages are read-write; Wasmtime asks for read-only only to guard
-        // what it has finished writing, which the spike does not enforce.
+    if prot & PROT_EXEC == 0 && prot & PROT_WRITE == 0 {
+        // Wasmtime asks for read-only only to guard what it has finished
+        // writing, which the spike does not enforce.
         return 0;
     }
-    match sys::mem_exec(addr as u64, size as u64) {
+    // Read-execute for code; read-write again before it is unpublished.
+    match sys::mem_exec(addr as u64, size as u64, prot & PROT_EXEC != 0) {
         Ok(_) => 0,
         Err(_) => -1,
     }
@@ -76,3 +78,18 @@ pub extern "C" fn wasmtime_tls_get(slot: usize) -> *mut u8 {
 pub extern "C" fn wasmtime_tls_set(slot: usize, value: *mut u8) {
     TLS[slot].store(value, Ordering::Relaxed);
 }
+
+// Copy-on-write memory images are off (`memory_init_cow(false)`), so these are
+// never asked for; the custom virtual-memory platform wants them defined.
+#[unsafe(no_mangle)]
+pub extern "C" fn wasmtime_memory_image_new(_: *const u8, _: usize, _: *mut *mut u8) -> i32 {
+    -1
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wasmtime_memory_image_map_at(_: *mut u8, _: *mut u8, _: usize) -> i32 {
+    -1
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wasmtime_memory_image_free(_: *mut u8) {}

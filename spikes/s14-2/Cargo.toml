@@ -12,5 +12,5 @@ test = false
 # alone, no_std, no compiler. It loads a `.cwasm` made ahead of time, after
 # checking its signature.
 [dependencies]
-wasmtime = { version = "51.0.0", default-features = false, features = ["runtime", "pulley"] }
+wasmtime = { version = "51.0.0", default-features = false, features = ["runtime", "pulley", "custom-virtual-memory"] }
 ed25519-compact = { version = "2.6.0", default-features = false, features = ["opt_size"] }

@@ -25,7 +25,7 @@ pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u6
         call::MEM_RESERVE => mem::reserve(slot, a[0]),
         call::MEM_COMMIT => mem::commit(slot, a[0], a[1]),
         call::MEM_RELEASE => mem::release(slot, a[0]),
-        call::MEM_EXEC => mem::exec(slot, a[0], a[1]),
+        call::MEM_EXEC => mem::exec(slot, a[0], a[1], a[2] != 0),
         call::PROC_QUOTA_SET => {
             need(slot, cap::SUPERVISE).and_then(|()| profile::quota_set_with(a[0], a[1], a[2]))
         }
