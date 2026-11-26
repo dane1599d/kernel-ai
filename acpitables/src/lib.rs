@@ -82,9 +82,44 @@ pub struct Platform {
     pub reset: Option<fadt::Reset>,
     /// The FADT says the machine has no 8042 keyboard controller.
     pub no_8042: bool,
+    /// The first AMD IOMMU the IVRS table describes (spike S07-2 only).
+    pub ivrs: Option<Ivrs>,
     /// Damaged optional tables (FADT, MCFG) left out, as if absent, with why; at
     /// most [`MAX_IGNORED`]. ACPICA too only warns about them.
     pub ignored: Vec<(&'static str, Error)>,
+}
+
+/// An AMD IOMMU from an IVRS table's first IVHD block (type 10h, 11h or
+/// 40h): where its registers are and its own PCI device ID. Spike S07-2,
+/// `spike/amdvi-qemu` only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ivrs {
+    pub base: u64,
+    pub device_id: u16,
+    pub segment: u16,
+}
+
+/// IVRS: the 36-byte header, IVinfo (u32) and 8 reserved bytes, then IVHD
+/// and IVMD blocks: type u8, flags u8, length u16, IOMMU device ID u16,
+/// capability offset u16, IOMMU base u64, PCI segment u16.
+fn parse_ivrs(ivrs: &[u8]) -> Option<Ivrs> {
+    let mut at = SDT_HEADER_LEN + 12;
+    while at + 18 <= ivrs.len() {
+        let kind = ivrs[at];
+        let len = u16::from_le_bytes([ivrs[at + 2], ivrs[at + 3]]) as usize;
+        if len < 4 || at + len > ivrs.len() {
+            return None;
+        }
+        if matches!(kind, 0x10 | 0x11 | 0x40) && len >= 18 {
+            return Some(Ivrs {
+                device_id: u16::from_le_bytes([ivrs[at + 4], ivrs[at + 5]]),
+                base: u64_at(ivrs, at + 8),
+                segment: u16::from_le_bytes([ivrs[at + 16], ivrs[at + 17]]),
+            });
+        }
+        at += len;
+    }
+    None
 }
 
 /// How an ISA IRQ reaches the I/O APIC.
@@ -181,6 +216,10 @@ pub fn parse(mem: &impl PhysMem, rsdp: u64) -> Result<Platform, Error> {
             b"MCFG" => match table(mem, address) {
                 Ok(bytes) => parse_mcfg(bytes, &mut platform),
                 Err(error) => ignore(&mut platform, "MCFG", error),
+            },
+            b"IVRS" => match table(mem, address) {
+                Ok(bytes) => platform.ivrs = parse_ivrs(bytes),
+                Err(error) => ignore(&mut platform, "IVRS", error),
             },
             b"FACP" => match table(mem, address) {
                 Ok(bytes) => fadt::apply(bytes, &mut platform),
@@ -430,5 +469,29 @@ mod tests {
         mem.0[0] = b'X';
         assert_eq!(parse(&mem, 0), Err(Error::BadRsdp));
         assert_eq!(parse(&Flat(vec![0; 8]), 0), Err(Error::Unreadable));
+    }
+
+    #[test]
+    fn ivrs_gives_the_first_iommu() {
+        // As QEMU builds it: header, IVinfo, reserved, then an IVHD 10h.
+        let mut ivrs = vec![0u8; SDT_HEADER_LEN + 12];
+        let mut ivhd = vec![0x10, 0xB0, 24, 0, 0x10, 0, 0x40, 0];
+        ivhd.extend(0xFED8_0000u64.to_le_bytes());
+        ivhd.extend([0, 0, 0, 0, 0, 0, 0, 0]);
+        ivrs.extend(&ivhd);
+        let found = parse_ivrs(&ivrs).unwrap();
+        assert_eq!(
+            found,
+            Ivrs {
+                base: 0xFED8_0000,
+                device_id: 0x10,
+                segment: 0,
+            }
+        );
+        // An IVHD whose length runs past the table is not trusted.
+        let at = SDT_HEADER_LEN + 12;
+        ivrs[at + 2] = 200;
+        assert_eq!(parse_ivrs(&ivrs), None);
+        assert_eq!(parse_ivrs(&ivrs[..SDT_HEADER_LEN]), None);
     }
 }

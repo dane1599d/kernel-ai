@@ -313,6 +313,9 @@ pub enum SelfTest {
     Fpu,
     /// L2: the isolation probe; ops 0-2 complete and every other op is stopped.
     Probe,
+    /// S07-2 (spike/amdvi-qemu): AMD-Vi under QEMU, translated DMA for
+    /// virtio-net, xHCI and virtio-rng, and a canary DMA that faults.
+    Amdvi,
     /// P1: handle tables, startup handles and need() on handles.
     Handles,
     /// IPC round trips timed: 0 B, 1 KiB and 7 KiB, kernel to ring 3 and ring 3

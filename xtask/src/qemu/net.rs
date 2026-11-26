@@ -51,6 +51,24 @@ pub fn net_without_vectors(args: &mut [String]) {
     }
 }
 
+/// S07-2 (spike/amdvi-qemu): QEMU's AMD IOMMU, created before the devices it
+/// translates, and the network card and virtio-rng with ACCESS_PLATFORM offered.
+/// A transitional virtio device cannot offer it, so both are modern only.
+pub fn behind_amd_iommu(args: &mut Vec<String>) {
+    const PLATFORM: &str = ",iommu_platform=on,disable-legacy=on";
+    for arg in args.iter_mut() {
+        if arg.starts_with(NET_DEVICE) || arg == "virtio-rng-pci" {
+            arg.push_str(PLATFORM);
+        }
+    }
+    if let Some(at) = args.iter().position(|arg| arg == "q35") {
+        args.splice(
+            at + 1..at + 1,
+            ["-device".to_string(), "amd-iommu".to_string()],
+        );
+    }
+}
+
 pub fn net_behind_bridge(args: &mut Vec<String>) {
     if let Some(at) = args.iter().position(|arg| arg == NET_DEVICE) {
         args[at] = format!("{NET_DEVICE},bus=kai-rp0");

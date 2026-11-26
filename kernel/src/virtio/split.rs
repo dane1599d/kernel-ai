@@ -31,6 +31,17 @@ pub const COMMON_CFG_BYTES: u64 = 56;
 /// No MSI-X entry: the event is not signalled (VirtIO 1.2, 4.1.4.3).
 const NO_VECTOR: u16 = 0xFFFF;
 
+/// VIRTIO_F_ACCESS_PLATFORM: the device's DMA goes through the platform's
+/// IOMMU (VirtIO 1.2, 6).
+const ACCESS_PLATFORM: u64 = 1 << 33;
+static ACCESS_PLATFORM_TAKEN: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Whether a device behind this transport negotiated ACCESS_PLATFORM.
+pub fn access_platform_taken() -> bool {
+    ACCESS_PLATFORM_TAKEN.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 pub struct SplitTransport {
     inner: PciTransport,
     /// The common configuration structure, mapped uncached.
@@ -117,7 +128,18 @@ impl Transport for SplitTransport {
     }
 
     fn write_driver_features(&mut self, driver_features: u64) {
-        self.inner.write_driver_features(driver_features)
+        // S07-2 (spike only): virtio-drivers 0.13 accepts no ACCESS_PLATFORM,
+        // and QEMU refuses FEATURES_OK from a driver that leaves out one it
+        // offers, so the transport takes it whenever the device offers it.
+        let offered = self.inner.read_device_features() & ACCESS_PLATFORM != 0;
+        if offered {
+            ACCESS_PLATFORM_TAKEN.store(true, core::sync::atomic::Ordering::Relaxed);
+        }
+        let features = match offered {
+            true => driver_features | ACCESS_PLATFORM,
+            false => driver_features,
+        };
+        self.inner.write_driver_features(features)
     }
 
     fn max_queue_size(&mut self, queue: u16) -> u32 {

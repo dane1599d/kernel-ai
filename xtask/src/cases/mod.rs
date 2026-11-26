@@ -129,6 +129,9 @@ pub struct TestCase {
     /// With `then`: the rest of the first console line containing this text
     /// must differ between the two boots (ENTROPY's sample).
     pub differs: Option<&'static str>,
+    /// S07-2 (spike/amdvi-qemu): put QEMU's `amd-iommu` first, with the network
+    /// card and the virtio-rng at `iommu_platform=on`.
+    pub iommu: bool,
     /// Attach a virtio-rng (`-device virtio-rng-pci`).
     pub rng: bool,
     /// Boot from the slot disk (`image/slots.rs`, ADR 0008) with a `kai.slot`
@@ -305,6 +308,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         data_mib: None,
         then: None,
         differs: None,
+        iommu: false,
         rng: false,
         slots: false,
         update: None,

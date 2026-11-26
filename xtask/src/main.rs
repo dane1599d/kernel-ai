@@ -576,6 +576,9 @@ fn execute(options: &Options) -> Result<(), String> {
             if case.bridge {
                 qemu::net_behind_bridge(&mut args);
             }
+            if case.iommu {
+                qemu::behind_amd_iommu(&mut args);
+            }
             qemu::netdev_from_env(&mut args);
             if case.powers_off {
                 args.push("-no-shutdown".into());

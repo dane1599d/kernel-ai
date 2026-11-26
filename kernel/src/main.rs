@@ -20,6 +20,8 @@ extern crate alloc;
 mod act_tests;
 mod agent_desk_tests;
 mod allow;
+mod amdvi;
+mod amdvi_tests;
 mod apic;
 mod app_build_tests;
 mod app_editor_build_tests;
@@ -391,6 +393,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Pointer => run_case(pointer::self_test),
         SelfTest::Display => run_case(display_tests::check),
         SelfTest::Usb => run_case(usb::self_test),
+        SelfTest::Amdvi => run_case(amdvi_tests::check),
         SelfTest::Sched => run_case(sched_tests::latency_check),
         SelfTest::Watchdog => run_case(sched_tests::watchdog_check),
         SelfTest::Smp => run_case(smp_tests::all_cpus_check),

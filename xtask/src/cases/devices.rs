@@ -193,6 +193,25 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("devices", "test=devices")
     },
+    // S07-2 (spike/amdvi-qemu, ADR 0007): QEMU's amd-iommu translates the
+    // network card's, the virtio-rng's and qemu-xhci's DMA through a table of
+    // ours, and the rng's DMA to an unmapped canary page faults and is logged.
+    TestCase {
+        usb: &["usb-kbd", "usb-tablet"],
+        keys: &[USB_TABLET],
+        rng: true,
+        iommu: true,
+        expect: &[
+            "amdvi: COMPLETION_WAIT stored after ",
+            "amdvi: virtio-net DMA is translated: ACCESS_PLATFORM, a DHCP lease, 3 of 3 pings",
+            "amdvi: qemu-xhci DMA is translated: keys and a click over USB",
+            "amdvi: virtio-rng DMA is translated: 64 random bytes",
+            "amdvi: virtio-rng DMA to the canary at ",
+            "amdvi: after the fault the network still answers: only the rng was stopped",
+            "amdvi: S07-2 passed",
+        ],
+        ..case("amdvi", "test=amdvi amdvi=on")
+    },
     // P7: a keyboard and a tablet on xHCI. QEMU sends keys to the USB keyboard
     // and absolute moves to the tablet; the kernel checks the keys came over USB,
     // through the controller's MSI-X interrupt.

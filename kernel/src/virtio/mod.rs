@@ -5,7 +5,7 @@
 
 pub mod blk;
 pub mod hal;
-mod pci;
+pub(crate) mod pci;
 pub mod split;
 
 use crate::log;
@@ -39,7 +39,11 @@ pub fn init(platform: &acpitables::Platform, cmdline: &str) {
         }
     }
     if let Some(transport) = found.rng {
-        crate::entropy::attach(transport);
+        // S07-2: the spike's case drives the rng itself.
+        match crate::amdvi::active() {
+            true => crate::amdvi::hold_rng(transport),
+            false => crate::entropy::attach(transport),
+        }
     }
     blk::init(found.disks);
     crate::nvme::init(found.nvme);

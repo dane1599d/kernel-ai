@@ -161,6 +161,12 @@ pub fn probe(platform: &acpitables::Platform, cmdline: &str) -> Result<Found, &'
             window.end_bus,
             functions.len()
         );
+        if window.segment == 0
+            && crate::amdvi::wanted(cmdline)
+            && let Err(message) = crate::amdvi::start(platform, access, &functions)
+        {
+            log!("{message}");
+        }
         let mut root = PciRoot::new(access);
         for f in functions {
             let ids = Ids {

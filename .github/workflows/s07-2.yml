@@ -1,0 +1,58 @@
+name: S07-2 AMD-Vi spike
+
+# Spike S07-2 (ADR 0007), on spike/amdvi-qemu only and never merged: boots the
+# `amdvi` case under KVM and TCG on QEMU's amd-iommu. One run at a time, and a
+# run is never cancelled for a newer push.
+on:
+  push:
+    branches: [spike/amdvi-qemu]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: s07-2-amdvi
+  cancel-in-progress: false
+
+jobs:
+  amdvi:
+    name: amdvi (${{ matrix.accel }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        accel: [kvm, tcg]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/qemu
+      - name: Show the runner's CPU and QEMU's AMD IOMMU
+        run: |
+          nproc
+          grep -m1 '^vendor_id' /proc/cpuinfo
+          grep -m1 '^model name' /proc/cpuinfo
+          echo "virtualisation flags: $(grep -m1 '^flags' /proc/cpuinfo | grep -o -w -E 'svm|vmx|npt|nrip_save|decodeassists|avic' | xargs echo)"
+          qemu-system-x86_64 -device amd-iommu,help
+      - name: Allow KVM for the runner user
+        if: matrix.accel == 'kvm'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for live components
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: qemu
+          save-if: false
+      - name: Fetch the locked crates
+        run: cargo fetch --locked
+      - name: Boot the amdvi case
+        env:
+          XTASK_CASE: amdvi
+        run: cargo xtask test --accel ${{ matrix.accel }} --timeout 300
+    timeout-minutes: 60

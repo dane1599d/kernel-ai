@@ -58,3 +58,5 @@ zerocopy = { version = "0.8.40", default-features = false }
 bitflags = { version = "2.13.2", default-features = false }
 spike-rhai = { path = "../spikes/rhai", optional = true }
 spike-wasmi = { path = "../spikes/wasmi", optional = true }
+# S07-2 (spike/amdvi-qemu only).
+spike-s07-2 = { path = "../spikes/s07-2" }
