@@ -133,8 +133,9 @@ impl Host for FakeHost {
             .push((line.into(), call.into(), result.into()));
     }
 
-    fn forget(&self) {
+    fn forget(&self) -> Result<(), String> {
         self.forgot.set(self.forgot.get() + 1);
+        self.forget_refused.borrow().clone().map_or(Ok(()), Err)
     }
 
     fn once_check(&self, badge: u64, digest: &[u8; 32]) -> Result<(), String> {

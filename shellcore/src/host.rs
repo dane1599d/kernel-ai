@@ -143,8 +143,10 @@ pub trait Host {
     /// Keeps a finished model turn in llm's conversation memory (P1 task 10): the
     /// user's line, the call as `act` returned it, and the result line.
     fn remember(&self, _line: &str, _call: &str, _result: &str) {}
-    /// Forgets the conversation (`new`).
-    fn forget(&self) {}
+    /// Forgets the conversation (`new`), or says why llm did not.
+    fn forget(&self) -> Result<(), String> {
+        Ok(())
+    }
     /// Where the user is, for the State line (ADR 0010 §5); nothing by default.
     fn state(&self) -> state::State {
         state::State::default()
