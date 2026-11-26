@@ -1,6 +1,6 @@
 # ADR 0005: Graphics: compositor, surface protocol and visual direction
 
-Status: Amended 2026-11-19: a send answered on the desk (§7). Amended 2026-11-14: Kai Desk, Implemented 2026-11-15. The look, the AI's place on the screen and the order of the trusted layer changed (see "Amendment 2026-11-14" below). The founder approved the amendment with its four calls at their defaults on 2026-11-15 (#925), and Kai Desk PRs 5-10 built it (#935, #940, #943, #944, #947 and the finishing PR). Accepted 2026-10-22 (proposed 2026-10-21). The founder approved it with their answers of 2026-10-22 folded in; those points are marked "decided 2026-10-22". Questions still open below keep this ADR's stated default until the founder answers.
+Status: Amended 2026-11-25: a window's pool, surface and a11y end with it (§3). Amended 2026-11-19: a send answered on the desk (§7). Amended 2026-11-14: Kai Desk, Implemented 2026-11-15. The look, the AI's place on the screen and the order of the trusted layer changed (see "Amendment 2026-11-14" below). The founder approved the amendment with its four calls at their defaults on 2026-11-15 (#925), and Kai Desk PRs 5-10 built it (#935, #940, #943, #944, #947 and the finishing PR). Accepted 2026-10-22 (proposed 2026-10-21). The founder approved it with their answers of 2026-10-22 folded in; those points are marked "decided 2026-10-22". Questions still open below keep this ADR's stated default until the founder answers.
 
 Repo citations are `path:line` on main at `ec5ecff`. Open work is cited at its branch tip: #18 virtio-gpu (`origin/dane/virtio-gpu-a5daaa`, `7603e54` plus merge `af7635d`), #19 USB input (`origin/dane/usb-input-83eb7c`, `0717caa`) and #16 networking (`origin/dane/net-dhcp-dns-b5bdb7`). Nothing was built or run for this ADR, and no model ran anywhere. Crate versions, licences, features and dependencies were re-read on crates.io on 2026-10-21 from the founder's PC (web reads only), as were the repo citations against `ec5ecff`; contrast ratios are WCAG 2.2 arithmetic.
 
@@ -127,19 +127,20 @@ Crate `surfabi`: no_std, host-tested, fuzzed. It keeps Wayland's object model, s
 | Object | Requests | Events | From |
 |---|---|---|---|
 | registry | bind | global | `wl_registry` |
-| pool | create(Shm, size), buffer(offset, w, h, stride, format) | | `wl_shm_pool` |
+| pool | create(Shm, size), buffer(offset, w, h, stride, format), destroy | | `wl_shm_pool` |
 | buffer | destroy | release | `wl_buffer` |
-| surface | attach, damage_buffer, frame, set_opaque, commit | preferred_scale (n/120), enter, leave | `wl_surface`, fractional-scale-v1 |
+| surface | attach, damage_buffer, frame, set_opaque, commit, destroy | preferred_scale (n/120), enter, leave | `wl_surface`, fractional-scale-v1 |
 | toplevel | set_title, set_app_id, set_min_size, set_max_size, ack_configure, set_unsaved(bool), set_agent_private(bool) | configure(serial, w, h, states), close | `xdg_toplevel` |
 | popup | position(anchor, gravity, offset), grab | configure, done | `xdg_popup` |
 | seat | set_cursor(shape name) | focus_in, focus_out, modifiers | `wl_seat`, cursor-shape-v1 |
-| a11y | tree_update(bytes), commit, bind_action(node, action name; empty unbinds) | action_request(node, action, value) | ours |
+| a11y | tree_update(bytes), commit, bind_action(node, action name; empty unbinds), destroy | action_request(node, action, value) | ours |
 | panel | layer, exclusive_zone | configure | ours, like wlr-layer-shell; system programs only |
 
 - **`Surface`.** A pool's `Shm` begins with one 4 KiB header page (C's): magic, version 1, size, stride, format, scale, the front buffer index, `commit_seq`, up to 32 damage rectangles (u16 x, y, w, h) and a ring of 64 events of 32 bytes. Events are frame done, buffer release, and this surface's input: an `InputEvent`, the position in surface-local logical units and, for a key, its text, so native apps need no keymap. A client draws into its back buffer, writes its damage, bumps `commit_seq` and rings the doorbell. `desktop` latches, composites, flushes and posts the events. A frame costs no message and no IPC call, only a doorbell. A translator maps `wl_surface.commit` to a header write.
 - **Trees.** `a11y.tree_update` carries fixed little-endian records that mirror a pinned subset of AccessKit 0.25.1's `TreeUpdate`: role, name, value, bounds, actions, children and focus. An update may span several messages and applies at `a11y.commit`. `desktop` caps a window at 4,096 nodes and 256 KiB. An AccessKit upgrade changes a converter, not the ABI.
 - **Focus.** Only `desktop` moves keyboard focus: by click, by Alt+Tab, or by a row the agent runs. A new window takes focus only with an activation token from a user action (the xdg-activation-v1 rule).
 - **Versions.** Each object has a version, as in Wayland. A release only adds requests and events. `kai-surface 2` is kept for GPU buffers.
+- Amended 2026-11-25: a window's every object ends. Only a buffer and a toplevel could be destroyed, so each window opened and closed left its pool, surface and a11y in the connection's table (1,024 objects) and its last tree in `desktop`'s memory, and about the 340th open closed every window of the app. Three requests are added, as in Wayland: `pool.destroy` (opcode 2, `wl_shm_pool.destroy`; buffers made on it live until destroyed), `surface.destroy` (opcode 10, `wl_surface.destroy`; refused while the surface is still a toplevel's, so the role goes first; what `desktop` kept of it, its tree included, goes with it) and `a11y.destroy` (opcode 3). comphost sends all three after a window's toplevel and buffers. Requests added only: no header, event or existing opcode changes.
 
 ### 4. Apps and `uikit`
 

@@ -93,6 +93,9 @@ pub enum Request<'a> {
         stride: u32,
         format: Format,
     },
+    /// The client is done with the pool (`wl_shm_pool.destroy`): no buffer is
+    /// made on it again, and the buffers made on it live until destroyed.
+    PoolDestroy,
     // buffer
     BufferDestroy,
     // surface
@@ -123,6 +126,10 @@ pub enum Request<'a> {
     /// desktop prefers ([`Event::Scale`]) is shown unresampled. `SCALE_ONE`
     /// to `SCALE_MAX`, else the message is bad.
     SetBufferScale(u32),
+    /// The client is done with the surface (`wl_surface.destroy`), once its
+    /// toplevel is (`desktop` refuses it before): its id, and what `desktop`
+    /// kept of it, its tree included, go.
+    SurfaceDestroy,
     // toplevel
     SetTitle(&'a str),
     SetAppId(&'a str),
@@ -161,6 +168,8 @@ pub enum Request<'a> {
     // a11y: records of [`crate::tree`], applied at `A11yCommit`
     TreeUpdate(&'a [u8]),
     A11yCommit,
+    /// The client is done with its surface's a11y object: its id goes.
+    A11yDestroy,
     /// The declared action (`<app>_<function>`) a node runs, so the agent's
     /// `ui_act` on it takes that action's tier; an empty name unbinds it.
     BindAction {
@@ -208,6 +217,7 @@ impl<'a> Request<'a> {
                 }
                 request
             }
+            (I::Pool, 2) => Request::PoolDestroy,
             (I::Buffer, 0) => Request::BufferDestroy,
             (I::Surface, 0) => Request::Attach {
                 buffer: r.object()?,
@@ -227,6 +237,7 @@ impl<'a> Request<'a> {
                 s @ SCALE_ONE..=SCALE_MAX => Request::SetBufferScale(s),
                 _ => return Err(Error::BadArg),
             },
+            (I::Surface, 10) => Request::SurfaceDestroy,
             (I::Toplevel, 0) => Request::SetTitle(r.string()?),
             (I::Toplevel, 1) => Request::SetAppId(r.string()?),
             (I::Toplevel, 2) => Request::SetMinSize {
@@ -259,6 +270,7 @@ impl<'a> Request<'a> {
             (I::Seat, 0) => Request::SetCursor(r.string()?),
             (I::A11y, 0) => Request::TreeUpdate(r.array()?),
             (I::A11y, 1) => Request::A11yCommit,
+            (I::A11y, 3) => Request::A11yDestroy,
             (I::A11y, 2) => Request::BindAction {
                 node: r.uint()?,
                 action: r.string()?,
@@ -303,6 +315,7 @@ impl<'a> Request<'a> {
                 .int(height as i32)
                 .int(stride as i32)
                 .uint(format as u32),
+            Request::PoolDestroy => w(2),
             Request::BufferDestroy => w(0),
             Request::Attach { buffer } => w(0).uint(buffer),
             Request::DamageBuffer(r) => rect(1, &r),
@@ -314,6 +327,7 @@ impl<'a> Request<'a> {
             Request::GetA11y { id } => w(7).uint(id),
             Request::GetPanel { id } => w(8).uint(id),
             Request::SetBufferScale(scale) => w(9).uint(scale),
+            Request::SurfaceDestroy => w(10),
             Request::SetTitle(text) => w(0).string(text),
             Request::SetAppId(text) => w(1).string(text),
             Request::SetMinSize { width, height } => w(2).int(width as i32).int(height as i32),
@@ -332,6 +346,7 @@ impl<'a> Request<'a> {
             Request::SetCursor(name) => w(0).string(name),
             Request::TreeUpdate(bytes) => w(0).array(bytes),
             Request::A11yCommit => w(1),
+            Request::A11yDestroy => w(3),
             Request::BindAction { node, action } => w(2).uint(node).string(action),
             Request::Layer(layer) => w(0).uint(layer),
             Request::ExclusiveZone(px) => w(1).int(px as i32),
@@ -615,9 +630,11 @@ impl Objects {
             Request::Attach { buffer } if self.interface(buffer) != Some(Interface::Buffer) => {
                 return Err(Error::BadArg);
             }
-            Request::BufferDestroy | Request::ToplevelDestroy => {
-                self.live.retain(|(i, _)| *i != object)
-            }
+            Request::BufferDestroy
+            | Request::ToplevelDestroy
+            | Request::PoolDestroy
+            | Request::SurfaceDestroy
+            | Request::A11yDestroy => self.live.retain(|(i, _)| *i != object),
             _ => {
                 if let Some((id, made)) = request.creates() {
                     self.make(id, made)?;
