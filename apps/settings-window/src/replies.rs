@@ -5,14 +5,14 @@
 //!
 //! | Read | Answer |
 //! |---|---|
-//! | `rules` | one line a rule: `<n> <words>` or `S<n> <words>` |
+//! | `rules`, `rules <from>` | one line a rule: `<n> <words>` or `S<n> <words>`; a last line `more <n>` when lines are left, which `rules <n>` goes on from |
 //! | `grants` | the names of the apps that have effect rows, one a line |
 //! | `grants <app>` | one line a row of that app: `<app>`, `<row>` and `allowed` or `withheld`, tab apart |
 //! | `about` | `<key>: <value>` lines for `version`, `commit`, `licence`, `source` and `notices` |
 //! | `profiles` | one name a line, the one in use marked `* ` |
 //! | `apps` | the names of the apps that can nap, one a line |
 //! | `file appearance`, `file apps`, `file updates` | the settings file's bytes |
-//! | `net` | one line a network grant: `#<n> <app> <host> <session or always>` |
+//! | `net`, `net <from>` | one line a network grant: `#<n> <app> <host> <session or always>`, and `more <n>` as `rules` |
 
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -30,6 +30,21 @@ pub const MAX_LINE: usize = 200;
 pub const MAX_NAME: usize = 64;
 /// Largest answer read (the host gives no more: `wasmhost::settings::MAX_REPLY`).
 pub const MAX_ANSWER: usize = 64 << 10;
+
+/// `answer` without its last line, and the line after it, if that line is
+/// `more <n>`: a long list's page, with the line the next one starts from.
+pub fn split_more(answer: &[u8]) -> Option<(&[u8], usize)> {
+    let at = answer
+        .iter()
+        .rposition(|&b| b == b'\n')
+        .map_or(0, |i| i + 1);
+    let last = core::str::from_utf8(&answer[at..]).ok()?;
+    let n = last.strip_prefix("more ")?;
+    let n = (!n.is_empty() && n.len() <= 9 && n.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| n.parse().ok())
+        .flatten()?;
+    Some((&answer[..at.saturating_sub(1)], n))
+}
 
 /// The reads the window makes when the app starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,7 +104,10 @@ impl Read {
                 let text = core::str::from_utf8(answer)
                     .map_err(|_| String::from("the answer is not text"))?;
                 match self {
-                    Read::Rules => settings.rules = rules(text),
+                    Read::Rules => {
+                        settings.rules = rules(text);
+                        settings.rules_unread = false;
+                    }
                     Read::Grants => {
                         let apps = access::parse_apps(text)
                             .ok_or_else(|| String::from("the apps with rows are not readable"))?;
@@ -104,7 +122,10 @@ impl Read {
                         settings.profile = current;
                     }
                     Read::Apps => settings.nappable = names(text),
-                    Read::Net => settings.net = net(text),
+                    Read::Net => {
+                        settings.net = net(text);
+                        settings.net_unread = false;
+                    }
                     _ => {}
                 }
             }

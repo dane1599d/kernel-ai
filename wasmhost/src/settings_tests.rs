@@ -236,6 +236,20 @@ fn every_read_is_an_exact_line_and_nothing_else_is_a_read() {
     for read in ["grants notes", "grants files-window", "grants app2"] {
         assert_eq!(classify(read), Ok(Kind::Read), "{read}");
     }
+    // A later page of a long list.
+    for read in ["net 40", "rules 0", "net 999999999"] {
+        assert_eq!(classify(read), Ok(Kind::Read), "{read}");
+    }
+    for not in [
+        "net ",
+        "net x",
+        "net -1",
+        "rules 1 2",
+        "net 1234567890",
+        "rules  3",
+    ] {
+        assert!(classify(not).is_err(), "{not}");
+    }
     let not_reads = [
         "grants ",
         "grants  notes",

@@ -358,3 +358,64 @@ fn a_change_whose_own_write_fails_too_leaves_the_drop_owed() {
         NetConnect::Asked
     );
 }
+
+/// A click while the appearance cannot be read is refused: it would start from
+/// the defaults and write them over the theme, scale and zone saved.
+#[test]
+fn an_appearance_change_is_never_written_over_a_file_that_could_not_be_read() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    for row in [
+        "appearance-set theme light",
+        "appearance-set scale 150",
+        "appearance-set time_zone +02:00",
+    ] {
+        shell.settings(SETTINGS_APP, row, true).unwrap();
+    }
+    let saved = host.appearance.borrow().clone();
+    host.read_errors.borrow_mut().push("appearance_read");
+    let reply = shell.settings(SETTINGS_APP, "appearance-set reduced_motion on", true);
+    assert!(reply.is_err(), "{reply:?}");
+    assert!(reply.unwrap_err().contains("could not be read"));
+    assert_eq!(*host.appearance.borrow(), saved);
+    // Settings' read of the file says so too, not that none is saved.
+    assert!(
+        shell
+            .settings(SETTINGS_APP, "file appearance", false)
+            .is_err()
+    );
+    // The disk answers again: the click goes through, on what was saved.
+    host.read_errors.borrow_mut().clear();
+    shell
+        .settings(SETTINGS_APP, "appearance-set reduced_motion on", true)
+        .unwrap();
+    let now = crate::appearance::current(host.as_ref()).unwrap();
+    assert_eq!((now.theme.as_str(), now.scale), ("light", 150));
+    assert_eq!(now.time_zone_min, 120);
+}
+
+/// Turning the restart window off while it cannot be read is not "off already":
+/// the window stays on disk, and `updated` would restart inside it.
+#[test]
+fn a_restart_window_is_not_called_off_when_it_could_not_be_read() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    shell
+        .settings(SETTINGS_APP, "restart-window 120 240", true)
+        .unwrap();
+    let saved = host.restart_file.borrow().clone();
+    assert!(saved.is_some());
+    host.read_errors.borrow_mut().push("restart_read");
+    let reply = shell.settings(SETTINGS_APP, "restart-window off", true);
+    let why = reply.unwrap_err();
+    assert!(why.contains("could not be read"), "{why}");
+    assert_eq!(*host.restart_file.borrow(), saved);
+    assert!(shell.settings(SETTINGS_APP, "file updates", false).is_err());
+    host.read_errors.borrow_mut().clear();
+    assert!(
+        shell
+            .settings(SETTINGS_APP, "restart-window off", true)
+            .unwrap()
+            .contains("off")
+    );
+}
