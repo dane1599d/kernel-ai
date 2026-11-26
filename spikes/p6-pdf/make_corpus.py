@@ -171,7 +171,8 @@ def main():
     plain = at("gen-text-30p.pdf")
     qpdf("--encrypt", "", "owner", "256", "--", plain, at("gen-enc-aes256.pdf"))
     rows.append(("gen-enc-aes256.pdf", "encrypted, AES-256, empty user password", 150))
-    qpdf("--encrypt", "", "owner", "128", "--use-aes=n", "--", plain, at("gen-enc-rc4.pdf"))
+    # RC4 on purpose: old PDFs use it, and qpdf writes it only when asked.
+    qpdf("--allow-weak-crypto", "--encrypt", "", "owner", "128", "--use-aes=n", "--", plain, at("gen-enc-rc4.pdf"))
     rows.append(("gen-enc-rc4.pdf", "encrypted, RC4-128, empty user password", 150))
     qpdf("--encrypt", "secret", "owner", "256", "--", plain, at("gen-enc-password.pdf"))
     rows.append(("gen-enc-password.pdf", "encrypted, a user password (should refuse)", 150))
