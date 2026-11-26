@@ -60,6 +60,10 @@ pub fn setup_check() -> Result<(), &'static str> {
     if status.losses != 0 || !matches!(status.source, Source::Dhcp { .. }) {
         return Err("net-setup: the capped lease ran out instead of being renewed");
     }
+    // Renewals are not new leases (netcore::lease): the count stays at 1.
+    if status.leases != 1 {
+        return Err("net-setup: a renewal counted as a new lease");
+    }
     log!("net-setup: the 4 s lease was renewed: still leased after 10 s, none lost");
     // What `:net`, `:resolve` and `:ping` print; xtask checks the text.
     net_commands::status();

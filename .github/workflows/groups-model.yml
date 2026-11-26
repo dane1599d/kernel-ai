@@ -37,8 +37,9 @@ permissions:
   contents: read
 
 concurrency:
-  # One real-model groups run at a time; a second dispatch waits, never cancels.
-  group: real-model-groups
+  # One real-model groups run at a time per ref; a second dispatch on the same
+  # ref waits, never cancels.
+  group: real-model-groups-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -81,7 +82,7 @@ jobs:
         run: |
           mkdir -p "$KAI_MODELS"
           if [ ! -f "$KAI_MODELS/$FILE" ]; then
-            curl -fL --retry 3 -o "$KAI_MODELS/$FILE" "$URL"
+            curl -fL --retry 3 --max-time 1800 -o "$KAI_MODELS/$FILE" "$URL"
           fi
           echo "$SHA256  $KAI_MODELS/$FILE" | sha256sum -c -
       - name: Keep the model for later runs, saved from main only (a branch's cache serves only that branch, and the store has a 10 GB cap)
