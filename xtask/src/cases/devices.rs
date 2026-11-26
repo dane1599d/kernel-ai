@@ -111,6 +111,19 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("fail-reset", "test=panic-reset what=fail panic=reset")
     },
+    // Bug hunt 4 H4-10: the reset allocates nothing, so a fault inside the
+    // allocator, its lock held on this CPU, still resets the machine.
+    TestCase {
+        resets: true,
+        expect: &[
+            "fault: panic-reset: a panic with the heap locked, on purpose; resetting the machine",
+            "power: rebooting through the FADT reset register (write 0xf to I/O port 0xcf9)",
+        ],
+        ..case(
+            "heap-held-reset",
+            "test=panic-reset what=heap-held panic=reset",
+        )
+    },
     // ADR 0008: UEFI runtime services, mapped and switched to virtual addresses.
     TestCase {
         expect: &[
