@@ -20,8 +20,20 @@ pub(crate) const MIB: u64 = 1024 * 1024;
 const MIN_VOLUME_MIB: u64 = 64;
 /// Fixed, so the same files give the same image.
 const VOLUME_ID: u32 = 0x4B41_4931;
-/// Seeds the disk's and the partition's GUIDs.
+/// The bootable image's id: seeds the disk's and the partition's GUIDs.
 const DISK_NAME: &str = "kernel-ai";
+
+/// An `--image-id` seed, checked: 1 to 64 printable ASCII characters with no
+/// space, so it reads back the same from any log line it is printed in.
+pub fn image_id(seed: &str) -> Result<&str, String> {
+    let fits = (1..=64).contains(&seed.len()) && seed.bytes().all(|b| b.is_ascii_graphic());
+    match fits {
+        true => Ok(seed),
+        false => Err(format!(
+            "--image-id expects 1 to 64 printable ASCII characters with no space, got {seed:?}"
+        )),
+    }
+}
 
 /// The files and directories under `dir`, as the FAT32 writer takes them.
 pub fn tree(dir: &Path) -> Result<Vec<Node>, String> {

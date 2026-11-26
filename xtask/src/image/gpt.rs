@@ -1,7 +1,9 @@
 //! A GPT disk with one partition, the EFI system partition: a protective MBR, the
 //! primary header and entry array, the partition, and the backup array and header
 //! at the end. GUIDs are derived from a label, so the same inputs give the same
-//! disk.
+//! disk: type GUIDs from the type's label, for good, and the disk's and each
+//! partition's from the image's id and their role ([`unique`]), so two images
+//! with different ids share no disk or partition GUID (ADR 0008 §1).
 
 use super::SECTOR;
 use sha2::{Digest, Sha256};
@@ -21,6 +23,14 @@ pub fn guid(label: &str) -> [u8; 16] {
     out
 }
 
+/// A disk's, a partition's or a volume's own GUID: from the image's id and
+/// what it is the GUID of (`disk`, `partition kai-a`). The id is an image's
+/// seed (`release-image --image-id`); each fixed default keeps CI's images
+/// byte-identical.
+pub fn unique(image_id: &str, what: &str) -> [u8; 16] {
+    guid(&format!("{image_id} {what}"))
+}
+
 /// Sectors a disk needs around a partition of `partition` sectors.
 pub fn disk_sectors(partition: u64) -> u64 {
     // The backup array and header, then rounded up to whole MiB.
@@ -28,18 +38,18 @@ pub fn disk_sectors(partition: u64) -> u64 {
 }
 
 /// A whole disk holding `volume` (whole sectors) as its EFI system partition.
-/// `name` seeds the GUIDs.
-pub fn disk(volume: &[u8], name: &str) -> Vec<u8> {
+/// `image_id` seeds the disk's and the partition's GUIDs.
+pub fn disk(volume: &[u8], image_id: &str) -> Vec<u8> {
     let partition = volume.len() as u64 / SECTOR as u64;
     let sectors = disk_sectors(partition);
     let esp = diskmap::Spec {
         kind: diskmap::ESP_TYPE,
-        guid: diskmap::Guid(guid(&format!("{name} partition"))),
+        guid: diskmap::Guid(unique(image_id, "partition")),
         first: FIRST_LBA,
         last: FIRST_LBA + partition - 1,
         name: "EFI system partition",
     };
-    let mut disk = laid_out(sectors, &guid(&format!("{name} disk")), &[esp]);
+    let mut disk = laid_out(sectors, &unique(image_id, "disk"), &[esp]);
     let at = (FIRST_LBA * SECTOR as u64) as usize;
     disk[at..at + volume.len()].copy_from_slice(volume);
     disk
@@ -83,6 +93,25 @@ mod tests {
         assert_ne!(guid("a"), guid("b"));
         assert_eq!(guid("a")[7] >> 4, 4);
         assert_eq!(guid("a")[8] >> 6, 2);
+    }
+
+    #[test]
+    fn an_image_id_seeds_the_disk_and_partition_guids_but_not_the_type() {
+        let volume = vec![0xAB; 4096 * 512];
+        let (a, again, b) = (disk(&volume, "a"), disk(&volume, "a"), disk(&volume, "b"));
+        assert_eq!(a, again);
+        let disk_guid = |d: &[u8]| d[512 + 56..512 + 72].to_vec();
+        let entry = |d: &[u8], at: usize| d[1024 + at..1024 + at + 16].to_vec();
+        assert_ne!(disk_guid(&a), disk_guid(&b));
+        assert_ne!(entry(&a, 16), entry(&b, 16));
+        assert_eq!(entry(&a, 0), ESP_TYPE.0);
+        assert_eq!(entry(&b, 0), ESP_TYPE.0);
+        // The bootable image's fixed id is the label it always used.
+        assert_eq!(unique("kernel-ai", "disk"), guid("kernel-ai disk"));
+        assert_eq!(
+            unique("kernel-ai", "partition"),
+            guid("kernel-ai partition")
+        );
     }
 
     #[test]
