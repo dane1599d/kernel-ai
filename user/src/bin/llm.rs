@@ -465,6 +465,11 @@ fn run_agent_job(
         }
         came.is_some()
     };
+    // What the job is charged, and told with its answer, is what it ran:
+    // never the count left from the person's last request.
+    if let Some(Ok(local)) = &mut backends.local {
+        local.forget_used();
+    }
     let local = matches!(backends.local, Some(Ok(_)));
     let mut response = vec![0u8; http::MAX_RESPONSE];
     let answer = match kind {

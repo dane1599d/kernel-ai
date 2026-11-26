@@ -33,8 +33,9 @@ pub enum Taken<'a> {
     Wait,
     /// llm does not know the ticket: plan the goal afresh.
     Replan,
-    /// The job's own answer.
-    Answer(&'a str),
+    /// The job's own answer, and the tokens llm says it used (`used <n> `
+    /// before the answer; none when it counted none).
+    Answer { text: &'a str, used: u64 },
 }
 
 /// Reads `agent-take`'s reply, or why the call got none.
@@ -43,7 +44,14 @@ pub fn taken<'a>(reply: Result<&'a str, &str>) -> Taken<'a> {
         Err(_) | Ok("pending") => Taken::Wait,
         Ok(busy) if busy.starts_with("busy ") => Taken::Wait,
         Ok("ended unknown ticket") => Taken::Replan,
-        Ok(answer) => Taken::Answer(answer),
+        Ok(answer) => {
+            let counted = answer
+                .strip_prefix("used ")
+                .and_then(|rest| rest.split_once(' '))
+                .and_then(|(n, text)| n.parse::<u64>().ok().map(|n| (text, n)));
+            let (text, used) = counted.unwrap_or((answer, 0));
+            Taken::Answer { text, used }
+        }
     }
 }
 
@@ -154,9 +162,9 @@ impl<L: Llm, C> Planner<C> for JobPlanner<L, C> {
                 self.jobs.remove(at);
                 (Plan::Later, 0)
             }
-            Taken::Answer(answer) => {
+            Taken::Answer { text, used } => {
                 self.jobs.remove(at);
-                ((self.read)(answer), 0)
+                ((self.read)(text), used)
             }
         }
     }

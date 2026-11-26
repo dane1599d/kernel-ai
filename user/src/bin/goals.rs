@@ -47,7 +47,7 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use goalcore::planner::{JobPlanner, Llm};
+use goalcore::planner::{self, JobPlanner, Llm, Taken};
 use goalcore::reply::{self, Reply};
 use goalcore::report::Report;
 use goalcore::runner::{Event, Outcome, Parts, Plan, Runner, Steps};
@@ -480,11 +480,17 @@ fn job(kind: &str, request: &str) -> Result<String, String> {
     println!("goals: {kind} job {ticket} queued");
     let began = sys::time_ns();
     loop {
-        let taken = call_llm(&format!("agent-take {ticket}"))?;
-        if taken != "pending" {
+        let reply = call_llm(&format!("agent-take {ticket}"))?;
+        // The answer without llm's `used <n> ` count, as the planner reads it.
+        let answer = match planner::taken(Ok(&reply)) {
+            Taken::Wait => None,
+            Taken::Replan => Some(reply.as_str()),
+            Taken::Answer { text, .. } => Some(text),
+        };
+        if let Some(answer) = answer {
             let ms = (sys::time_ns() - began) / 1_000_000;
             println!("goals: {kind} job {ticket} answered in {ms} ms");
-            return Ok(taken);
+            return Ok(String::from(answer));
         }
         if sys::time_ns() - began > ANSWER_MS * 1_000_000 {
             return Err(format!(
