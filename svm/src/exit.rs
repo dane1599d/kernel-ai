@@ -314,4 +314,4 @@ mod dispatch;
 mod msr;
 
 pub use dispatch::*;
-pub use msr::{MSR_ALLOWED, msr, msr_allowed};
+pub use msr::{MSR_ALLOWED, msr_allowed};

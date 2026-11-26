@@ -132,7 +132,9 @@ fn scattered_frames_map_page_by_page() {
     let mut pool = Pool::new(ram.tables() as usize);
     let root = pool.alloc().unwrap();
     ram.map(&shm, &mut pool, root).unwrap();
-    assert!(pool.tables.len() as u64 <= ram.tables());
+    // The worst case, reached: a root, a PDPT, a PD and 3 PTs.
+    assert_eq!(ram.tables(), 6);
+    assert_eq!(pool.tables.len(), 6);
     for page in 0..1024 {
         let gpa = 0x10_0000 + page * 4096 + 8;
         assert_eq!(
