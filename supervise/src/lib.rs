@@ -1199,6 +1199,10 @@ pub struct Record {
     /// When the running instance started (boot-relative ms), so a restarted
     /// supervisor can tell how long it ran.
     pub started_ms: u64,
+    /// The package version a `start=pkg` service runs (`p-` and 12 hex
+    /// digits), so a restarted supervisor still knows it: a withdraw ends it, a
+    /// second `run` of it is the same version, and an exit starts it again.
+    pub version: Option<String>,
 }
 
 impl Record {
@@ -1242,7 +1246,9 @@ impl Record {
     }
 }
 
-const STATE_MAGIC: &str = "supervisor-state 5";
+const STATE_MAGIC: &str = "supervisor-state 6";
+/// The state before `version`, still read: its records have none.
+const STATE_MAGIC_5: &str = "supervisor-state 5";
 /// The state before `keep`, still read so an update keeps the counts.
 const STATE_MAGIC_4: &str = "supervisor-state 4";
 /// The state before `stopped`, still read too.
@@ -1254,7 +1260,7 @@ pub fn encode(records: &[Record]) -> String {
     for record in records {
         text.push('\n');
         text.push_str(&format!(
-            "{} {} {} {} {} {} {} {}",
+            "{} {} {} {} {} {} {} {} {}",
             record.name,
             record.restarts,
             record.quick_failures,
@@ -1262,7 +1268,8 @@ pub fn encode(records: &[Record]) -> String {
             u8::from(record.stopped),
             u8::from(record.keep),
             record.pid,
-            record.started_ms
+            record.started_ms,
+            record.version.as_deref().unwrap_or("-")
         ));
         for at in &record.recent {
             text.push_str(&format!(" {at}"));
@@ -1278,10 +1285,11 @@ pub fn decode(bytes: &[u8]) -> Vec<Record> {
         return Vec::new();
     };
     let mut lines = text.lines();
-    let (has_stopped, has_keep) = match lines.next() {
-        Some(STATE_MAGIC) => (true, true),
-        Some(STATE_MAGIC_4) => (true, false),
-        Some(STATE_MAGIC_3) => (false, false),
+    let (has_stopped, has_keep, has_version) = match lines.next() {
+        Some(STATE_MAGIC) => (true, true, true),
+        Some(STATE_MAGIC_5) => (true, true, false),
+        Some(STATE_MAGIC_4) => (true, false, false),
+        Some(STATE_MAGIC_3) => (false, false, false),
         _ => return Vec::new(),
     };
     lines
@@ -1295,6 +1303,15 @@ pub fn decode(bytes: &[u8]) -> Vec<Record> {
             let keep = has_keep && words.next()? == "1";
             let pid = words.next()?.parse().ok()?;
             let started_ms = words.next()?.parse().ok()?;
+            let version = if has_version {
+                match words.next()? {
+                    "-" => None,
+                    label if kabi::live::is_package_label(label) => Some(label.to_string()),
+                    _ => return None,
+                }
+            } else {
+                None
+            };
             let recent = words
                 .map(str::parse)
                 .collect::<Result<Vec<u64>, _>>()
@@ -1309,6 +1326,7 @@ pub fn decode(bytes: &[u8]) -> Vec<Record> {
                 keep,
                 pid,
                 started_ms,
+                version,
             })
         })
         .collect()

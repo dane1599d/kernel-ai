@@ -63,9 +63,6 @@ struct Service {
     /// The shell's log entry whose `start` is the latest change to it, for its
     /// undo; cleared by any stop or restart.
     started_by: Option<StartedBy>,
-    /// A `start=pkg` service's package version, from the store holder's `run`;
-    /// until then it stays down.
-    version: Option<String>,
 }
 
 fn now_ms() -> u64 {
@@ -124,7 +121,6 @@ fn main() -> i32 {
                 withdrawn: false,
                 back_on_demand: false,
                 started_by: None,
-                version: None,
             }
         })
         .collect();
@@ -142,13 +138,16 @@ fn main() -> i32 {
             .find(|(_, name)| *name == service.spec.name)
             .map(|&(pid, _)| pid);
         service.record.pid = service.pid.unwrap_or(0);
-        // A `start=pkg` app waits for the store holder's `run`, and a
-        // `start=demand` service for the kernel's `demand`.
+        // A `start=pkg` app waits for the store holder's `run` unless its
+        // record names a version, and a `start=demand` service for the kernel's
+        // `demand`.
         if service.pid.is_none()
             && !service.record.gave_up
             && !service.record.stopped
             && service.start_at_ms.is_none()
-            && service.spec.start == Start::Boot
+            && (service.spec.start == Start::Boot
+                // A package version a predecessor ran, saved in its record.
+                || (service.spec.start == Start::Pkg && service.record.version.is_some()))
         {
             service.start_at_ms = Some(now);
         }
@@ -635,12 +634,12 @@ fn run_package(services: &mut [Service], run: supervise::Run, caller: u64) -> St
     let service = &mut services[index];
     let name = service.spec.name.clone();
     if service.pid.is_some() {
-        return match service.version.as_deref() == Some(run.version) {
+        return match service.record.version.as_deref() == Some(run.version) {
             true => String::from("ok"),
             false => String::from(supervise::RUNS_ANOTHER),
         };
     }
-    service.version = Some(String::from(run.version));
+    service.record.version = Some(String::from(run.version));
     service.record.stopped = false;
     service.record.gave_up = false;
     service.start_at_ms = Some(now_ms());
@@ -669,7 +668,7 @@ fn withdraw_package(services: &mut [Service], withdraw: supervise::Run, caller: 
         }
     };
     let service = &mut services[index];
-    if service.version.as_deref() != Some(withdraw.version) {
+    if service.record.version.as_deref() != Some(withdraw.version) {
         return String::from("ok");
     }
     let name = service.spec.name.clone();
@@ -681,7 +680,7 @@ fn withdraw_package(services: &mut [Service], withdraw: supervise::Run, caller: 
             return format!("err cannot end it: {error:?}");
         }
     }
-    service.version = None;
+    service.record.version = None;
     service.start_at_ms = None;
     println!(
         "{name} ends: pkg took package version {} back out",
@@ -694,7 +693,7 @@ fn withdraw_package(services: &mut [Service], withdraw: supervise::Run, caller: 
 /// Starts `service`; the kernel's refusal, for a caller that answers for it.
 /// A refused start is tried again a second later, as before.
 fn start(service: &mut Service, now: u64) -> Result<(), kabi::Error> {
-    let version = match (service.spec.start, &service.version) {
+    let version = match (service.spec.start, &service.record.version) {
         (Start::Boot | Start::Demand, _) => String::new(),
         (Start::Pkg, Some(version)) => format!(" version={version}"),
         (Start::Pkg, None) => {
