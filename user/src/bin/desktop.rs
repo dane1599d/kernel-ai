@@ -394,6 +394,9 @@ fn run(state: &mut State, screen: &Screen) -> Option<bool> {
             return None;
         };
         for (at, event) in events[..n].iter().enumerate() {
+            if event.kind == Kind::Screen && event.value == kabi::input::INPUT_LOST {
+                println!("desktop: the kernel dropped input; a release may be lost");
+            }
             if event.kind == Kind::Screen && event.value == 0 {
                 let back = events[at + 1..n]
                     .iter()

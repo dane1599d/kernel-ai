@@ -28,7 +28,10 @@ pub enum Kind {
     Wheel = 5,
     /// Ours, not ADR 0007's: the screen changed hands. `value` 0 when
     /// Ctrl+Alt+F12 gave it to the console (the claim is revoked), 1 when a
-    /// second press gives it back (claim it again).
+    /// second press gives it back (claim it again). Added 2026-11-25, with
+    /// no ABI bump: [`INPUT_LOST`] (2), events were dropped before this one.
+    /// A reader acts only on the values it knows and passes over any other,
+    /// as every reader in the tree does.
     Screen = 6,
 }
 
@@ -324,6 +327,12 @@ impl Set1 {
 /// [`Kind::Key`]'s value for a Super tap the kernel saw: the only Super
 /// event that opens Start.
 pub const TAP: i32 = 3;
+
+/// [`Kind::Screen`]'s value when the kernel's queue was full and dropped
+/// its oldest events since the last INPUT_READ: the read starts with it,
+/// once. A button's or a key's release may be among those dropped, so
+/// `desktop` ends what one held (a press in a window, a move).
+pub const INPUT_LOST: i32 = 2;
 
 /// The set 1 make code a USB keyboard's key with no set 1 code is sent as
 /// (its break with bit 7): it decodes to no usage, so it reaches no one, but
