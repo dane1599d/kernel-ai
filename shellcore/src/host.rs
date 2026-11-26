@@ -489,7 +489,7 @@ pub trait Host {
     fn triggers(&self) -> Option<&dyn standing::Triggers> {
         None
     }
-    /// Runs `request` ([`apart::request`]) in a `scriptrun` child of its own (P1
+    /// Runs `request` ([`crate::apart::request`]) in a `scriptrun` child of its own (P1
     /// task 14): `Ok` with the child's answer, or `Err` with why it ended without
     /// one (stopped for time or Ctrl-C, or it faulted). `None` when there is no
     /// child here, so the shell runs the script itself.
