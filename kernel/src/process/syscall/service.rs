@@ -39,6 +39,7 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
         }
         call::SVC_REPLY => {
             need(slot, cap::SERVE)?;
+            crate::edit_tests::hold_reply(slot);
             ipc::reply(slot, a[0], a[1])
         }
         call::RECV_H => {

@@ -209,7 +209,11 @@ impl Files {
         self.heard_dropped(home);
         let generation = match self.ledger.get().open() {
             Some(generation) => generation,
-            None => self.begin(home)?,
+            // Not after the line lost an action: this one would get its number.
+            None => {
+                self.ledger.get().may_begin()?;
+                self.begin(home)?
+            }
         };
         // A refused change leaves the action open; one `fs` dropped (its
         // writes found no room, or the disk failed) ends it: the next change
@@ -240,6 +244,8 @@ impl Files {
     /// short) is aborted, so nothing of it commits without its log entry.
     fn save(&self, change: FsChange) -> Result<u64, String> {
         let home = self.home()?;
+        self.heard_dropped(home);
+        self.ledger.get().may_begin()?;
         self.commit().map_err(|e| e.to_string())?;
         let generation = self.begin(home)?;
         if let Err(why) = make(home, change) {
@@ -330,6 +336,8 @@ impl Files {
             }
             Undo::Restore => {}
         }
+        // Its restore would commit as the number the line lost.
+        self.ledger.get().may_begin().map_err(FsRefused::Failed)?;
         // Another line's action still open (its log was not written) lands first.
         self.commit()
             .map_err(|e| FsRefused::Failed(e.to_string()))?;
