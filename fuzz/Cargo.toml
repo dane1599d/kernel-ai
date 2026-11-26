@@ -15,7 +15,9 @@ publish = false
 # deskcore/tests/hostile.rs too. Outside the workspace: libfuzzer-sys builds libFuzzer's C++, so these
 # run only in .github/workflows/fuzz.yml on a GitHub runner, never on a
 # developer's PC. Their bodies are ../fuzz/harness.rs, which kainet's host
-# tests also run (kainet/tests/fuzz_harness.rs).
+# tests also run (kainet/tests/fuzz_harness.rs);
+# and kaizip's archive reader (plan P6 M-7), in zip_harness.rs, run by
+# kaizip/tests/fuzz_harness.rs too.
 #
 # Being outside the workspace, this crate is outside `cargo deny`'s graph, so
 # its one dependency the workspace lacks is listed here (C's review of #677):
@@ -29,6 +31,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4.13"
 kainet = { path = "../kainet", features = ["testca"] }
+kaizip = { path = "../kaizip" }
 surfabi = { path = "../surfabi" }
 deskcore = { path = "../deskcore" }
 look = { path = "../look" }
@@ -132,6 +135,13 @@ bench = false
 [[bin]]
 name = "desk_agent"
 path = "fuzz_targets/desk_agent.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "zip_archive"
+path = "fuzz_targets/zip_archive.rs"
 test = false
 doc = false
 bench = false
