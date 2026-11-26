@@ -22,6 +22,9 @@ pub(crate) struct Landing {
     /// The note's own lines in the last reply, which the panel's history
     /// leaves out of what the line said.
     said_note: Vec<String>,
+    /// The reply was ok before the note made it not: the line ran without
+    /// error, so what it printed is real.
+    was_ok: bool,
 }
 
 impl Shell {
@@ -45,6 +48,7 @@ impl Shell {
         self.landing.lost.clear();
         self.landing.line = None;
         self.landing.said_note.clear();
+        self.landing.was_ok = false;
     }
 
     /// The line's reply, saying what of its file changes did not land.
@@ -61,7 +65,9 @@ impl Shell {
         // swapped in the whole text, not line by line.
         let mut text = reply.text.clone();
         if let Some(done) = done.as_deref()
-            && let Some(at) = text.find(done)
+            // The shell writes its done line after the script's output, which
+            // may print the same words: the last is the shell's.
+            && let Some(at) = text.rfind(done)
         {
             let mut end = at + done.len();
             if rest.is_none() && text[end..].starts_with('\n') {
@@ -84,6 +90,7 @@ impl Shell {
             None => note.clone(),
         });
         self.landing.said_note = note.lines().map(String::from).collect();
+        self.landing.was_ok = reply.ok;
         self.done_line = rest;
         Reply {
             ok: false,
@@ -98,9 +105,10 @@ impl Shell {
         self.landing.said_note.iter().any(|n| n == line)
     }
 
-    /// Whether the last line's file changes did not land.
-    pub(crate) fn line_did_not_land(&self) -> bool {
-        self.landing.line.is_some()
+    /// Whether the last line ran without error but its file changes did not
+    /// land: what it printed is real, and its error lines are not.
+    pub(crate) fn ran_but_did_not_land(&self) -> bool {
+        self.landing.line.is_some() && self.landing.was_ok
     }
 
     /// A change saved outside a line (the editor's): `Err` with what the log
