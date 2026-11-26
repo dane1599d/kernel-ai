@@ -619,3 +619,22 @@ fn retiring_the_carded_agent_brings_the_waiting_question_up_next() {
     let entry = shell.log.get(shell.log.last_id()).unwrap();
     assert_eq!(entry.agent.as_str(), "ops-agent", "{entry:?}");
 }
+
+/// #1478's review: an Allow whose ONCE is missing, or does not check, runs
+/// nothing. The agent's wait hears that it did not run, never "ran", so the
+/// goals agent does not bill it as a step that ran.
+#[test]
+fn an_allow_whose_once_is_missing_or_wrong_is_no_run_for_the_agent() {
+    for once in ["", " once=0000"] {
+        let (host, mut shell, badge) = with_agent();
+        let asked = step(&mut shell, badge, RR);
+        assert!(asked.starts_with("ok asked "), "{asked}");
+        let menu = take_agents_card(&mut shell);
+        let answered = shell.eval_console(&format!("answer {} allow{once}", menu.id));
+        assert!(answered.text.contains("not run"), "{once:?}: {answered:?}");
+        assert_eq!(host.policy.get(), None, "{once:?}: nothing ran");
+        let told = step(&mut shell, badge, &format!("wait {}", menu.id));
+        assert!(!told.starts_with("ok ran"), "{once:?}: {told}");
+        assert!(told.contains("not run"), "{once:?}: {told}");
+    }
+}
