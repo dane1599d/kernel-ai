@@ -71,11 +71,22 @@ pub(crate) fn row_in(rows: &[String], row: &str) -> bool {
 }
 
 /// Whether `path` is one of the folders or inside one. A path that is not a plain
-/// relative one is never inside any.
+/// relative one is never inside any. Empty and `.` parts are dropped first, as
+/// the shell's ceiling drops them (`goalscope::folder`), so `notes/` is the
+/// folder `notes` here too (H2-8): a path the shell admits is never a scope
+/// ask. A leading `/` or a `..` is never dropped, so neither is ever inside.
 pub(crate) fn path_in(folders: &[String], path: &str) -> bool {
-    path_ok(path)
+    if path.starts_with('/') {
+        return false;
+    }
+    let path = path
+        .split('/')
+        .filter(|part| !part.is_empty() && *part != ".")
+        .collect::<Vec<_>>()
+        .join("/");
+    path_ok(&path)
         && folders.iter().any(|folder| {
-            path == folder
+            path == *folder
                 || path
                     .strip_prefix(folder.as_str())
                     .is_some_and(|rest| rest.starts_with('/'))
