@@ -25,6 +25,9 @@ const GATEWAY: Ipv4Addr = Ipv4Addr::new(10, 0, 2, 2);
 const PINGS: u16 = 3;
 const SETUP_WAIT_MS: u64 = 20_000;
 const FAULT_WAIT_MS: u64 = 3_000;
+/// QEMU's IOMMU_WO in an IO_PAGE_FAULT's flags (amd_iommu.c passes its
+/// access bits there).
+const QEMU_WRITE: u16 = 0x2;
 
 bitflags! {
     /// The rng's features the spike accepts: version 1, and the IOMMU's.
@@ -168,10 +171,18 @@ fn rng_check() -> Result<(), &'static str> {
         || {
             let (events, _) = amdvi::events();
             for event in events {
-                log_event(&event);
+                if seen.len() < 3 {
+                    log_event(&event);
+                }
+                // QEMU 11.0.5 logs every event's address as 0: its
+                // amdvi_setevent_bits masks the second quadword by the
+                // absolute bit 64, not the bit in that word. Its flags are
+                // QEMU's access bits, 0x2 a write, with the I bit (0x8).
+                let at_canary = event.address & !0xFFF == canary || event.address == 0;
                 let hit = event.code == IO_PAGE_FAULT
                     && event.device == rng.id
-                    && event.address & !0xFFF == canary;
+                    && at_canary
+                    && event.flags & QEMU_WRITE != 0;
                 if hit && faulted.is_none() {
                     faulted = Some(event);
                 }
@@ -204,9 +215,12 @@ fn rng_check() -> Result<(), &'static str> {
     }
     log!(
         "amdvi: virtio-rng DMA to the canary at {canary:#x} faulted: IO_PAGE_FAULT for device \
-         {:#06x}, flags {:#05x}, canary intact, the device stopped",
+         {:#06x}, a write, logged address {:#x}, flags {:#05x}, {} events; canary intact, the \
+         device stopped",
         fault.device,
-        fault.flags
+        fault.address,
+        fault.flags,
+        seen.len()
     );
     Ok(())
 }
