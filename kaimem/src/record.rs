@@ -74,16 +74,30 @@ pub struct Memory {
 }
 
 /// Characters that change how text shows without showing themselves: the
-/// bidi controls and the zero-width ones (C on #650), so a question cannot
-/// show text other than what is kept.
+/// bidi controls and the zero-width ones (C on #650), and every other one the
+/// directive check reads as nothing (`directive::fold_char`): the soft hyphen,
+/// the grapheme joiner, the Arabic letter mark, Khmer and Mongolian
+/// ignorables, the format characters, variation selectors and the tag
+/// characters. Those could spell text the screen and the check skip and the
+/// model reads (bug hunt H2-5). The line and paragraph separators break the
+/// one line. So a question cannot show text other than what is kept.
 fn invisible(c: char) -> bool {
     matches!(
         c,
-        '\u{200B}'..='\u{200F}'
+        '\u{00AD}'
+            | '\u{034F}'
+            | '\u{061C}'
+            | '\u{17B4}'
+            | '\u{17B5}'
+            | '\u{180B}'..='\u{180F}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'
+            | '\u{2029}'
             | '\u{202A}'..='\u{202E}'
-            | '\u{2060}'..='\u{2064}'
-            | '\u{2066}'..='\u{2069}'
+            | '\u{2060}'..='\u{206F}'
+            | '\u{FE00}'..='\u{FE0F}'
             | '\u{FEFF}'
+            | '\u{E0000}'..='\u{E0FFF}'
     )
 }
 
