@@ -32,6 +32,8 @@ pub struct Function {
     pub name: String,
     pub bar: u64,
     pub bar_len: u64,
+    /// Turns the function's PCI bus mastering off.
+    pub bus_master_off: Box<dyn Fn() + Send>,
 }
 
 struct Disk {
@@ -104,6 +106,11 @@ impl block::Device for Disk {
             ReadError::TooLong => "nvme: a write longer than the staging buffer",
             ReadError::PastEnd => "nvme: a write past the end of the disk",
         })?;
+        // A command that timed out may still be moving data through the staging
+        // pages: do not write into them.
+        if self.controller.lock().failed() {
+            return Err("nvme: the controller was disabled after a command timed out");
+        }
         self.staging.bytes_mut(bytes as usize).copy_from_slice(data);
         self.transfer(sector, bytes, true)
     }
@@ -154,19 +161,20 @@ impl Disk {
 /// that fails is logged, and the kernel runs on without it.
 pub fn init(functions: Vec<Function>) {
     for function in functions {
-        if let Err(message) = start(&function) {
-            log!("{message} ({})", function.name);
+        let name = function.name.clone();
+        if let Err(message) = start(function) {
+            log!("{message} ({name})");
         }
     }
 }
 
-fn start(function: &Function) -> Result<(), &'static str> {
+fn start(function: Function) -> Result<(), &'static str> {
     let mapped = function.bar_len.min(BAR_MAP_BYTES);
     if mapped < PAGE_SIZE {
         return Err("nvme: BAR0 is smaller than a page");
     }
     let regs = memory::map_physical(function.bar, mapped, crate::virtio::hal::DEVICE)?;
-    let mut controller = Controller::start(regs, mapped as usize)?;
+    let mut controller = Controller::start(regs, mapped as usize, function.bus_master_off)?;
     let (major, minor, _) = controller.version();
     let id = controller.identify_controller()?;
     let serial = String::from_utf8_lossy(id.serial()).into_owned();
@@ -188,7 +196,14 @@ fn start(function: &Function) -> Result<(), &'static str> {
     let mut found = Vec::new();
     for nsid in namespaces {
         let ns = controller.identify_namespace(nsid)?;
-        if ns.block_bytes as u64 != SECTOR {
+        if ns.metadata_bytes != 0 {
+            log!(
+                "nvme: namespace {nsid} carries {} bytes of metadata a block; only plain 512-byte blocks are read",
+                ns.metadata_bytes
+            );
+            continue;
+        }
+        if !ns.is_plain(SECTOR as u32) {
             log!(
                 "nvme: namespace {nsid} has {}-byte blocks; only 512 are read",
                 ns.block_bytes

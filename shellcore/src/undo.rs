@@ -265,12 +265,18 @@ pub fn revert(
 ) -> Result<(String, Inverse), Refused> {
     match inverse {
         // A restore is a transaction of its own, so its redo restores that one.
-        Inverse::Fs { txn } => match host.fs_undo(txn, anyway) {
-            Ok(redo) => Ok((
-                String::from("files back as they were"),
-                Inverse::Fs { txn: redo },
+        // One that left files a later change touched still landed: its redo
+        // puts back what it did restore (bug-hunt-6 H6-22).
+        Inverse::Fs { txn } => match host.fs_undo(txn) {
+            Ok(crate::FsUndone { generation, left }) => Ok((
+                match left {
+                    0 => String::from("files back as they were"),
+                    n => format!(
+                        "files back as they were, but {n} changed since stay as they are now"
+                    ),
+                },
+                Inverse::Fs { txn: generation },
             )),
-            Err(crate::FsRefused::Later(what)) => Err(Refused::Moved(what)),
             Err(crate::FsRefused::Failed(why)) => Err(Refused::Failed(why)),
         },
         // An app's undo is kept as a call of its own, so its redo undoes that.

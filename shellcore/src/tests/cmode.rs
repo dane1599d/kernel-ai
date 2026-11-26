@@ -343,3 +343,85 @@ fn the_terminals_answer_finishes_a_c_entry_after_a_panel_line() {
     assert!(allowed.text.ends_with("= 0"), "{allowed:?}");
     assert!(host.procs.borrow().is_empty());
 }
+
+/// A desktop line's question while the console is at c>, on the card.
+fn on_the_card(host: &FakeHost, shell: &mut Shell) -> termcore::menu::Menu {
+    const STOP: &str = r#"{"name":"process_stop","arguments":{"name":"notes"}}"#;
+    *host.procs.borrow_mut() = alloc::vec![String::from("notes")];
+    host.calls
+        .borrow_mut()
+        .push_back(Ok(llmproto::act::parse(STOP).unwrap()));
+    assert_eq!(
+        shell.eval_panel("stop notes"),
+        PanelResult::Done(String::from(crate::deskask::ON_CARD))
+    );
+    let card = shell.eval_console(termcore::menu::TAKE_CARD);
+    termcore::menu::Menu::decode(&card.to_wire()).expect("the card opens")
+}
+
+/// bug-hunt-5 H5-8: while the console is at c>, the card's answer goes to
+/// the card's question, as at kai>, never to cc as C: an Allow runs the call
+/// and a Don't runs nothing, the panel is told each, and the next card opens.
+#[test]
+fn the_cards_answer_at_c_reaches_its_question() {
+    let host = FakeHost::new();
+    let mut shell = c_shell(&host);
+    let sent = host.cc_sent.borrow().len();
+    let menu = on_the_card(&host, &mut shell);
+    let once = host.mint(menu.id, menu.call());
+    let allowed = shell.eval_console(&format!("answer {} allow once={once}", menu.id));
+    assert!(allowed.ok, "{allowed:?}");
+    assert!(host.procs.borrow().is_empty());
+    assert!(
+        matches!(shell.take_card_result(), Some((true, _))),
+        "the panel is told it ran"
+    );
+    // Nothing of the first card waits: the next opens, and its Don't is heard.
+    let menu = on_the_card(&host, &mut shell);
+    let declined = shell.eval_console(&format!("answer {} deny", menu.id));
+    assert!(declined.ok, "{declined:?}");
+    assert_eq!(*host.procs.borrow(), alloc::vec![String::from("notes")]);
+    assert_eq!(
+        shell.take_card_result(),
+        Some((false, String::from(crate::deskask::DECLINED)))
+    );
+    assert!(!shell.card_waiting());
+    assert_eq!(host.cc_sent.borrow().len(), sent, "no answer went to cc");
+    // Still at c>, and C still runs.
+    assert!(shell.at_c());
+    assert_eq!(shell.eval("6 * 7").text, "= 42");
+}
+
+/// bug-hunt-5 H5-8: at c>, only the answer to a question the shell has open
+/// leaves C, so no C is ever taken as the card's answer: a line that names no
+/// open question, or another question than the card's, is C as before, and so
+/// is a line that continues an open entry; the card's question waits on.
+#[test]
+fn at_c_only_an_open_questions_answer_is_taken_as_one() {
+    let host = FakeHost::new();
+    let mut shell = c_shell(&host);
+    let to_cc = |shell: &mut Shell, line: &str| {
+        let sent = host.cc_sent.borrow().len();
+        let reply = shell.eval_console(line);
+        let last = host.cc_sent.borrow().last().cloned().unwrap_or_default();
+        assert!(host.cc_sent.borrow().len() > sent, "{line} went to cc");
+        assert!(last.contains("answer "), "{last}");
+        reply
+    };
+    assert!(!to_cc(&mut shell, "answer 1 allow").ok);
+    let menu = on_the_card(&host, &mut shell);
+    let once = host.mint(menu.id, menu.call());
+    let other = format!("answer {} allow once={once}", menu.id + 1);
+    assert!(!to_cc(&mut shell, &other).ok);
+    // An open entry takes its next line, whatever it reads.
+    let answer = format!("answer {} allow once={once}", menu.id);
+    assert!(shell.eval("I64 F(I64 x) {").more);
+    assert!(shell.eval_console(&answer).more);
+    assert!(!to_cc(&mut shell, "}").ok);
+    assert_eq!(*host.procs.borrow(), alloc::vec![String::from("notes")]);
+    assert_eq!(shell.take_card_result(), None);
+    // The card's question still waits for its own answer.
+    assert!(shell.eval_console(&answer).ok);
+    assert!(host.procs.borrow().is_empty());
+    assert!(matches!(shell.take_card_result(), Some((true, _))));
+}

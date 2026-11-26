@@ -1,9 +1,11 @@
 //! The network: HTTP to the LLM server, and host names.
 
 use super::{call_error, need};
+use crate::handle::grant::Kernel;
 use crate::process::uaccess;
 use crate::{ipc, llm, log, net};
 use alloc::vec::Vec;
+use captable::Live;
 use kabi::handle::{Handle, Kind, Rights};
 use kabi::{Error, HttpRequest, call, cap};
 
@@ -50,8 +52,8 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
             crate::clock::unix_seconds().ok_or(Error::NotFound)
         }
         call::RESOLVE_ON => {
-            let object = dest_object(slot, a[0], Rights::RESOLVE)?;
-            resolve(slot, object, a[1], a[2], a[3], a[4])
+            let dest = dest_entry(slot, a[0], Rights::RESOLVE)?;
+            resolve(slot, &dest, a[1], a[2], a[3], a[4])
         }
         call::NETDEST_NARROW => narrow(slot, a[0], a[1], a[2], a[3]),
         call::NET_CONNECT => connect(slot, a[0], a[1], a[2], a[3]),
@@ -71,12 +73,7 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
                 .unwrap_or(usize::MAX)
                 .min(net::stream::MAX_CALL);
             let mut data = alloc::vec![0u8; cap];
-            let n = net::stream::recv(owner(slot), id, &mut data)?;
-            // Counted as it arrives: it cannot be refused once here.
-            if let Some(meter) = net::stream::meter_of(owner(slot), id) {
-                let today = net::dest::today();
-                net::dest::with_meter(&meter, |m| m.received(n as u64, today));
-            }
+            let n = recv_metered(slot, id, &mut data)?;
             uaccess::copy_to_user(slot, a[1], &data[..n])?;
             Ok(n as u64)
         }
@@ -86,9 +83,13 @@ fn run(slot: usize, number: u64, a: &[u64; 6]) -> Result<u64, Error> {
             net::stream::poll(owner(slot), id, a[1], a[2], cancel)
         }
         call::NET_CLOSE => {
+            // Read as a close reads it: a revoked stream's handle still closes.
             let handle = handle_arg(a[0])?;
-            let id = stream_object(slot, a[0], Rights::empty())?;
-            net::stream::close(owner(slot), id)?;
+            let entry = crate::handle::entry(slot, handle)?;
+            if entry.kind != Kind::Stream {
+                return Err(Error::BadHandle);
+            }
+            net::stream::close(owner(slot), entry.object)?;
             crate::handle::with(slot, |h| h.table.close(handle))?.map_err(Error::from)?;
             Ok(0)
         }
@@ -118,6 +119,37 @@ fn send_metered(slot: usize, id: u64, data: &[u8]) -> Result<usize, Error> {
     let taken = *sent.as_ref().unwrap_or(&0) as u64;
     net::dest::with_meter(&meter, |m| m.refund(len.saturating_sub(taken), today));
     sent
+}
+
+/// NET_RECV on stream `id`: on an agent's `NetDest`, refused (Permission)
+/// once its day's bytes are spent, before anything is read, so what came
+/// stays in the stream, its window closes and the peer stops sending (bug
+/// hunt 5's H5-18). What a receive gives is counted as it is read: one
+/// receive may pass the budget by its own bytes, and then nothing more moves
+/// that day (`netdest::DayMeter`). A stream that ended with everything read
+/// still gives 0, and a revoked one Revoked, so the app can tell.
+fn recv_metered(slot: usize, id: u64, out: &mut [u8]) -> Result<usize, Error> {
+    let Some(meter) = net::stream::meter_of(owner(slot), id) else {
+        return net::stream::recv(owner(slot), id, out);
+    };
+    let today = net::dest::today();
+    if !net::dest::with_meter(&meter, |m| m.has_room(today)) {
+        // A receive into no room reads nothing: 0 only once the stream ended.
+        return match net::stream::recv(owner(slot), id, &mut []) {
+            Ok(0) => Ok(0),
+            Ok(_) | Err(Error::Busy) => {
+                crate::log!(
+                    "net: pid {} has spent its day's bytes: receive refused",
+                    owner(slot)
+                );
+                Err(Error::Permission)
+            }
+            Err(error) => Err(error),
+        };
+    }
+    let n = net::stream::recv(owner(slot), id, out)?;
+    net::dest::with_meter(&meter, |m| m.received(n as u64, today));
+    Ok(n)
 }
 
 /// Where a ring-3 exchange goes: the kernel picks the address, never the caller.
@@ -219,9 +251,10 @@ const STREAM_RIGHTS: Rights = Rights::READ
     .union(Rights::WAIT)
     .union(Rights::INSPECT);
 
-/// The stream `raw`, a `Stream` handle with `rights`, names.
+/// The stream `raw`, a `Stream` handle with `rights`, names: Revoked once
+/// the grant node its `NetDest` was given under is (bug hunt 2's H2-18).
 fn stream_object(slot: usize, raw: u64, rights: Rights) -> Result<u64, Error> {
-    let entry = crate::handle::entry(slot, handle_arg(raw)?)?;
+    let entry = crate::handle::live_entry(slot, handle_arg(raw)?)?;
     if entry.kind != Kind::Stream {
         return Err(Error::BadHandle);
     }
@@ -234,8 +267,11 @@ fn stream_object(slot: usize, raw: u64, rights: Rights) -> Result<u64, Error> {
 /// NET_CONNECT: a stream to `addr`:`port` (the address in network order in
 /// the low 32 bits) on the `NetDest` `raw`, which needs CONNECT and must
 /// allow it ([`net::dest::may_connect`]). `flags` may ask for a bulk stream.
+/// The stream and its handle are under the `NetDest`'s grant node, if any:
+/// revoking it aborts the stream ([`net::stream::on_revoke`]).
 fn connect(slot: usize, raw: u64, addr: u64, port: u64, flags: u64) -> Result<u64, Error> {
-    let object = dest_object(slot, raw, Rights::CONNECT)?;
+    let dest = dest_entry(slot, raw, Rights::CONNECT)?;
+    let object = dest.object;
     let addr = u32::try_from(addr).map_err(|_| Error::Invalid)?;
     let addr = core::net::Ipv4Addr::from(addr.to_be_bytes());
     let port = u16::try_from(port)
@@ -261,8 +297,11 @@ fn connect(slot: usize, raw: u64, addr: u64, port: u64, flags: u64) -> Result<u6
         }
     }
     let bulk = flags & kabi::net::STREAM_BULK != 0;
-    let id = net::stream::connect(owner(slot), addr, port, bulk, meter)?;
-    let entry = captable::Entry::new(Kind::Stream, STREAM_RIGHTS, id);
+    let id = net::stream::connect(owner(slot), addr, port, bulk, meter, dest.grant)?;
+    let entry = captable::Entry {
+        grant: dest.grant,
+        ..captable::Entry::new(Kind::Stream, STREAM_RIGHTS, id)
+    };
     match crate::handle::give(slot, alloc::vec![entry]).first() {
         Some(&handle) if handle != Handle::NONE => Ok(u64::from(handle.0)),
         _ => {
@@ -272,34 +311,31 @@ fn connect(slot: usize, raw: u64, addr: u64, port: u64, flags: u64) -> Result<u6
     }
 }
 
-/// The record `raw`, a `NetDest` handle with `rights`, names: Permission
-/// for another kind, a fixed destination or a right it lacks.
-fn dest_object(slot: usize, raw: u64, rights: Rights) -> Result<u64, Error> {
-    let handle = u32::try_from(raw)
-        .ok()
-        .filter(|&h| h != 0)
-        .ok_or(Error::BadHandle)?;
-    let entry = crate::handle::entry(slot, Handle(handle))?;
+/// The entry of `raw`, a `NetDest` handle with `rights` naming a record:
+/// Permission for another kind, a fixed destination or a right it lacks;
+/// Revoked once the grant node it was given under is (bug hunt 2's H2-18).
+fn dest_entry(slot: usize, raw: u64, rights: Rights) -> Result<captable::Entry, Error> {
+    let entry = crate::handle::live_entry(slot, handle_arg(raw)?)?;
     if entry.kind != Kind::NetDest
         || !entry.rights.contains(rights)
         || entry.object < net::dest::FIRST
     {
         return Err(Error::Permission);
     }
-    Ok(entry.object)
+    Ok(entry)
 }
 
 /// NETDEST_NARROW: a new handle, with `rights` (within the old one's), to a
 /// record that allows no more than the one `raw` names, read from the text at
-/// `spec_ptr`. Permission if it would allow more.
+/// `spec_ptr`. Permission if it would allow more. The new handle is under the
+/// old one's grant node, if any, so revoking it revokes the narrowing too.
 fn narrow(slot: usize, raw: u64, spec_ptr: u64, spec_len: u64, rights: u64) -> Result<u64, Error> {
-    let object = dest_object(slot, raw, Rights::DUPLICATE)?;
-    let held = crate::handle::entry(slot, Handle(raw as u32))?.rights;
+    let source = dest_entry(slot, raw, Rights::DUPLICATE)?;
     let rights = u32::try_from(rights)
         .ok()
         .and_then(Rights::from_bits)
         .ok_or(Error::Invalid)?;
-    if !held.contains(rights) {
+    if !source.rights.contains(rights) {
         return Err(Error::Permission);
     }
     let len = usize::try_from(spec_len).map_err(|_| Error::TooBig)?;
@@ -311,24 +347,31 @@ fn narrow(slot: usize, raw: u64, spec_ptr: u64, spec_len: u64, rights: u64) -> R
     let text = core::str::from_utf8(&text).map_err(|_| Error::Invalid)?;
     let narrower = netdest::Dest::parse(text).map_err(|_| Error::Invalid)?;
     let live = |object| crate::handle::names(Kind::NetDest, object);
-    let object = net::dest::narrow(object, narrower, live, owner(slot))?;
-    let entry = captable::Entry::new(Kind::NetDest, rights, object);
+    let object = net::dest::narrow(source.object, narrower, live, owner(slot))?;
+    let entry = captable::Entry {
+        grant: source.grant,
+        ..captable::Entry::new(Kind::NetDest, rights, object)
+    };
     match crate::handle::give(slot, alloc::vec![entry]).first() {
         Some(&handle) if handle != Handle::NONE => Ok(u64::from(handle.0)),
         _ => Err(Error::NoMemory),
     }
 }
 
-/// RESOLVE_ON: `host`'s addresses, if it is under the record `object`'s
-/// suffixes, which keeps them for its connects within their TTL.
+/// RESOLVE_ON: `host`'s addresses, if it is under the suffixes of the record
+/// the `NetDest` entry `dest` names, which keeps them for its connects within
+/// their TTL. A revoke of `dest`'s grant node during the lookup ends it with
+/// Revoked, and nothing is kept or given.
 fn resolve(
     slot: usize,
-    object: u64,
+    dest: &captable::Entry,
     host_ptr: u64,
     host_len: u64,
     out: u64,
     out_cap: u64,
 ) -> Result<u64, Error> {
+    let object = dest.object;
+    let revoked = || dest.grant.is_some_and(|grant| !Kernel.alive(grant));
     let host_len = usize::try_from(host_len).map_err(|_| Error::Invalid)?;
     if host_len == 0 || host_len > kabi::net::MAX_HOST + 1 {
         return Err(Error::Invalid);
@@ -343,14 +386,19 @@ fn resolve(
         return Err(Error::Permission);
     }
     let host = host.as_str();
-    let cancel = || crate::process::killed(slot) || crate::process::interrupt_pending(slot);
+    let cancel =
+        || crate::process::killed(slot) || crate::process::interrupt_pending(slot) || revoked();
     let found =
         net::resolve::resolve(host, kabi::net::RESOLVE_TIMEOUT_MS, cancel).map_err(|error| {
             match error {
+                _ if revoked() => Error::Revoked,
                 "net: cancelled" => call_error(slot, ipc::CallError::Cancelled),
                 other => net::error_code(other),
             }
         })?;
+    if revoked() {
+        return Err(Error::Revoked);
+    }
     // Only addresses a name's answer may lead to: none private, none of this
     // machine or the link (audit K #17). An answer that leads only there is
     // Private, so the app learns nothing about what sits at those addresses.

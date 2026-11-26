@@ -2,6 +2,7 @@
 //! processes, a scheduler window, canned answers and a trial that ends as told.
 
 use super::*;
+use alloc::boxed::Box;
 use kabi::sched::{SchedStats, ThreadRecord, TrialRequest, reason, state};
 use llmproto::chat::Completion;
 use llmproto::tune::{CARD_MAX_COLUMNS, CARD_MAX_LINES, TuneRequest};

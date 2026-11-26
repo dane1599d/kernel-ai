@@ -34,12 +34,27 @@ pub const SCRATCH_START: u64 = 0xFFFF_D000_0000_0000;
 pub const PHYS_WINDOW_START: u64 = 0xFFFF_D800_0000_0000;
 
 static NEXT_WINDOW_PAGE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+/// One past the highest physical address the CPU can map; set by [`init`].
+static PHYS_LIMIT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1 << 52);
+
+/// 2^MAXPHYADDR: CPUID 0x80000008 EAX bits 0-7, or 36 bits without the leaf.
+fn cpu_phys_limit() -> u64 {
+    use core::arch::x86_64::__cpuid;
+    let bits = if __cpuid(0x8000_0000).eax >= 0x8000_0008 {
+        (__cpuid(0x8000_0008).eax & 0xFF).clamp(32, 52)
+    } else {
+        36
+    };
+    1 << bits
+}
 
 /// Maps `len` bytes of physical memory starting at `phys` into the device window and
 /// returns the virtual address of `phys`. Mappings are permanent.
+/// A range past what the CPU can address (or past 2^64) is refused, never mapped.
 pub fn map_physical(phys: u64, len: u64, flags: PageTableFlags) -> Result<u64, &'static str> {
-    let first = phys / PAGE_SIZE * PAGE_SIZE;
-    let pages = (phys + len.max(1)).div_ceil(PAGE_SIZE) - first / PAGE_SIZE;
+    let limit = PHYS_LIMIT.load(core::sync::atomic::Ordering::Relaxed);
+    let (first, pages) = mm::physical_pages(phys, len, limit)
+        .ok_or("physical range past what the CPU can address")?;
     let start = NEXT_WINDOW_PAGE.fetch_add(pages, core::sync::atomic::Ordering::Relaxed);
     let base = PHYS_WINDOW_START + start * PAGE_SIZE;
     with(|m| {
@@ -99,6 +114,7 @@ pub fn phys_end() -> u64 {
 /// waiting for a TLB shootdown that a CPU spinning here with interrupts off would
 /// never acknowledge.
 pub fn with<R>(f: impl FnOnce(&mut Memory) -> R) -> R {
+    crate::threads::ready::not_in_ready(&"the memory manager");
     debug_assert!(
         !crate::threads::running() || x86_64::instructions::interrupts::are_enabled(),
         "memory::with called with interrupts off"
@@ -145,6 +161,7 @@ pub fn init(entries: &[&Entry], hhdm: u64) -> Result<(), &'static str> {
     // SAFETY: Limine's page tables are live in CR3 and reachable through the HHDM.
     let mut memory = unsafe { Memory::adopt(bitmap, hhdm) };
     HHDM_OFFSET.store(hhdm, core::sync::atomic::Ordering::Relaxed);
+    PHYS_LIMIT.store(cpu_phys_limit(), core::sync::atomic::Ordering::Relaxed);
     KERNEL_CR3.store(memory.kernel_cr3(), core::sync::atomic::Ordering::Relaxed);
     PHYS_END.store(frames * PAGE_SIZE, core::sync::atomic::Ordering::Relaxed);
     let ram: u64 = entries

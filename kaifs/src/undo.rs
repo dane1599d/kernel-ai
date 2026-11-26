@@ -8,13 +8,25 @@
 //! action of its own, so a restore can itself be undone):
 //! 1. An object changed after the action (its inode's `changed` is later) is never
 //!    touched. A file's version from before the action is written beside it as
-//!    `name (restored)`; a folder is left as it is.
+//!    `name (restored)`; a folder is left as it is. A file whose live version is
+//!    the very one the action left (its data, attributes, name and place, as a tree
+//!    from just after the action holds them) counts as not changed since, though
+//!    a later commit stamped it: the restore of a later action put it back as
+//!    this one left it, so restoring it loses no version (bug-hunt-6 H6-23).
 //! 2. An object the action made, and nothing changed since, is removed again,
 //!    deepest first; a folder that still holds names is left.
 //! 3. An object the action changed or removed, and nothing changed since, gets
 //!    its version from before the action back, shallowest first: its data and
 //!    attributes, and its place. If its old folder is gone it goes in the root; if
-//!    its old name is taken there it lands beside as `name (restored)`.
+//!    its old name is taken there it lands beside as `name (restored)`. An object
+//!    gone now comes back only if the action itself removed it: the volume's tree
+//!    as the action's commit left it (live, or in a later snapshot) must lack it,
+//!    and no later action may name it. One destroyed later (an emptied trash) is
+//!    left, and so is one whose removal no tree dates: a change outside any
+//!    action leaves no record, so a later removal for good cannot be told from
+//!    the action's own. That holds for the trash's folders too: an undo of a
+//!    restore from the trash, after such a change, leaves the item's trash
+//!    folder gone, so the item goes to the root, or a scoped restore is refused.
 //!
 //! Each object's outcome comes back, so the caller can say what happened.
 
@@ -325,6 +337,16 @@ impl<D: BlockDev> Fs<D> {
         Ok(Outcome::Beside { ino: copy, name })
     }
 
+    /// The active volume's tree as commit `txn` left it, if one is still at
+    /// hand: the last commit's, or a snapshot's taken before anything else
+    /// changed the volume. A root written by commit `txn` is born in it, and
+    /// any later change to the tree writes a new root.
+    fn tree_after(&self, txn: u64) -> Option<BlockPtr> {
+        core::iter::once(self.vol().base.0)
+            .chain(self.snapshots().values().map(|s| s.root))
+            .find(|root| !root.is_null() && root.birth == txn)
+    }
+
     /// Restores what the action committed as `txn` changed in the active volume,
     /// by the rules above. Returns each object's outcome.
     pub fn restore(&mut self, txn: u64) -> Result<Vec<(u64, Outcome)>, Error> {
@@ -335,14 +357,24 @@ impl<D: BlockDev> Fs<D> {
             .get(&undo.snapshot)
             .ok_or(Error::NotFound)?;
         let (root, then) = (snap.root, View::Tree(snap.root));
+        let after = self.tree_after(txn);
+        let later: BTreeSet<u64> = self
+            .undo_records_after(txn)?
+            .into_iter()
+            .flat_map(|u| u.objects)
+            .collect();
         let mut out = Vec::new();
         let mut made = Vec::new();
         let mut were = Vec::new();
         for &ino in &undo.objects {
             let old = self.inode_in(then, ino)?;
             let live = self.inode_in(View::Live, ino)?;
+            let changed_since = match live {
+                Some(l) => l.changed > txn && !self.as_left_by(txn, ino, &l)?,
+                None => false,
+            };
             match (old, live) {
-                (_, Some(l)) if l.changed > txn => {
+                (_, Some(l)) if changed_since => {
                     let outcome = match old {
                         Some(o) => self.keep_beside(root, ino, &o, &l)?,
                         None => Outcome::Left,
@@ -350,7 +382,22 @@ impl<D: BlockDev> Fs<D> {
                     out.push((ino, outcome));
                 }
                 (None, Some(l)) => made.push((self.depth_in(View::Live, ino)?, ino, l.kind)),
-                (Some(o), _) => were.push((self.depth_in(then, ino)?, ino, o)),
+                (Some(o), Some(_)) => were.push((self.depth_in(then, ino)?, ino, o)),
+                // Gone now: back only if the action itself removed it, as the
+                // tree its commit left shows, and no later action touched it.
+                // One a later change destroyed (an emptied trash) is a change
+                // after the action, and so is left; so is one whose removal no
+                // tree dates, as a change outside any action can leave it.
+                (Some(o), None) => {
+                    let removed = match after {
+                        Some(tree) => self.inode_in(View::Tree(tree), ino)?.is_none(),
+                        None => false,
+                    };
+                    match removed && !later.contains(&ino) {
+                        true => were.push((self.depth_in(then, ino)?, ino, o)),
+                        false => out.push((ino, Outcome::Left)),
+                    }
+                }
                 (None, None) => {}
             }
         }
@@ -370,6 +417,51 @@ impl<D: BlockDev> Fs<D> {
         }
         for (_, ino, _) in dirs {
             out.push((ino, self.unmake(ino)?));
+        }
+        Ok(out)
+    }
+
+    /// Whether file `ino`'s live version `live` is the one action `txn` left: a
+    /// tree whose `ino` was last changed by `txn` (the version that commit left)
+    /// holds the same data, attributes, size, mode, times, folder and name.
+    /// `ctime` is not compared: a restore stamps it.
+    fn as_left_by(&mut self, txn: u64, ino: u64, live: &Inode) -> Result<bool, Error> {
+        if live.kind != FileType::File {
+            return Ok(false);
+        }
+        let roots: Vec<BlockPtr> = core::iter::once(self.vol().base.0)
+            .chain(self.snapshots().values().map(|s| s.root))
+            .filter(|root| !root.is_null())
+            .collect();
+        for root in roots {
+            let then = View::Tree(root);
+            let Some(left) = self.inode_in(then, ino)? else {
+                continue;
+            };
+            if left.changed != txn {
+                continue;
+            }
+            let alike = left.kind == live.kind
+                && left.mode == live.mode
+                && left.nlink == live.nlink
+                && left.size == live.size
+                && left.parent == live.parent
+                && left.mtime == live.mtime
+                && left.crtime == live.crtime
+                && self.bytes_in(then, ino)? == self.bytes_in(View::Live, ino)?
+                && self.items_in(then, ino, K_XATTR)? == self.items_in(View::Live, ino, K_XATTR)?
+                && self.name_in(then, left.parent, ino)?.map(|e| e.name)
+                    == self.name_in(View::Live, live.parent, ino)?.map(|e| e.name);
+            return Ok(alike);
+        }
+        Ok(false)
+    }
+
+    /// File `ino`'s data in `view`, each item at its offset.
+    fn bytes_in(&mut self, view: View, ino: u64) -> Result<Vec<(u64, Vec<u8>)>, Error> {
+        let mut out = Vec::new();
+        for (key, raw) in self.items_in(view, ino, K_DATA)? {
+            out.push((key.off, decode_value(&raw, &mut self.io)?.into_bytes()));
         }
         Ok(out)
     }
@@ -476,5 +568,46 @@ impl<D: BlockDev> Fs<D> {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::fs::HOME;
+    use crate::io::Meta;
+    use crate::items::ROOT;
+    use crate::vol::undo_key;
+    use crate::{Fs, MemDisk};
+    use alloc::format;
+    use alloc::vec;
+    use alloc::vec::Vec;
+
+    /// A restore reads only the UNDO records after its action's, so an earlier
+    /// one that does not decode leaves it alone (#1365's review).
+    #[test]
+    fn a_restore_reads_no_undo_record_before_its_own() {
+        let mut fs = Fs::mkfs(MemDisk::new(4096), [3; 16], "restore").unwrap();
+        fs.set_volume(HOME).unwrap();
+        for i in 0..3u64 {
+            fs.begin(i + 1).unwrap();
+            let f = fs.create(ROOT, &format!("file {i}")).unwrap();
+            fs.write_file(f, &[i as u8; 300]).unwrap();
+            fs.commit().unwrap();
+        }
+        let txns: Vec<u64> = fs.undo_records().unwrap().iter().map(|u| u.txn).collect();
+        fs.volumes
+            .insert(
+                undo_key(HOME, txns[0], 0),
+                vec![0xEE; 40],
+                &mut Meta(&mut fs.io),
+            )
+            .unwrap();
+        fs.commit().unwrap();
+        assert!(fs.undo_records().is_err());
+        fs.begin(9).unwrap();
+        let restored = fs.restore(txns[2]);
+        assert!(restored.is_ok(), "{restored:?}");
+        fs.commit().unwrap();
+        assert!(fs.lookup(ROOT, "file 2").unwrap().is_none());
     }
 }

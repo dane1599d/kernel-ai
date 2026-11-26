@@ -195,7 +195,9 @@ pub const HANDLE_INFO: u64 = 40;
 /// Needs DUPLICATE on the source.
 pub const HANDLE_DUP: u64 = 41;
 /// `handle_replace(handle, rights) -> handle`: swaps a handle for one with fewer
-/// `rights` (a subset; Invalid otherwise); the old one is closed either way.
+/// `rights` (a subset; Invalid otherwise); the old one is closed either way,
+/// and a refused one is closed as [`HANDLE_CLOSE`] closes it (a `Stream`'s
+/// stream with it).
 pub const HANDLE_REPLACE: u64 = 42;
 /// `handle_close(handle) -> 0`: closes a handle for good. The right it carried is
 /// gone: a call that needs it fails with Permission from then on.
@@ -223,10 +225,15 @@ pub const GRANT_NEW: u64 = 47;
 /// `grant_revoke(grant) -> nodes`: revokes the node the `Grant` handle names
 /// (needs REVOKE) and every node below it. Every handle given under them answers
 /// Revoked from then on, and calls in flight through them fail with Revoked.
+/// So does every handle made from one: a duplicate, a [`NETDEST_NARROW`]
+/// narrowing, and a `Stream` connected on a `NetDest` (which is aborted at
+/// once).
 pub const GRANT_REVOKE: u64 = 48;
 /// `grant_dup(handle, rights, grant) -> handle`: as [`HANDLE_DUP`], with the new
 /// handle given under the node the `Grant` handle `grant` names (needs MINT), so
-/// revoking that node revokes it.
+/// revoking that node revokes it. A handle itself given under a node goes only
+/// under that node or one below it, so revoking its node still revokes the
+/// copy: Permission for any other (bug hunt 2's H2-18).
 pub const GRANT_DUP: u64 = 49;
 /// `once_check(badge, digest_ptr) -> 0`: whether the 32-byte digest at
 /// `digest_ptr` is the one the trusted path holds for the `ONCE` badge `badge`
@@ -257,10 +264,12 @@ pub const SHM_CREATE: u64 = 53;
 /// for an object with fewer, so a server mapping a client's `Shm` never faults
 /// past a short one (`shm_map_least`).
 /// Once the grant node its handle came through is revoked, every page reads as
-/// zero and writes reach no one.
+/// zero and writes reach no one. The page tables the mapping adds count against
+/// the caller's page quota: NoMemory when they would pass it.
 pub const SHM_MAP: u64 = 54;
-/// `shm_unmap(address) -> 0`: removes the mapping that starts at `address`. The
-/// pages are freed when no mapping and no handle is left.
+/// `shm_unmap(address) -> 0`: removes the mapping that starts at `address`, and
+/// the page tables it leaves empty. The pages are freed when no mapping and no
+/// handle is left.
 pub const SHM_UNMAP: u64 = 55;
 /// `job_spawn(job, &JobSpawn) -> pid`: starts the program the Job names
 /// (`scriptrun`) as the caller's child, with no capability bits and only the
@@ -393,14 +402,18 @@ pub const ENTROPY_MAX: usize = 256;
 /// for its connects until their TTL runs out. Addresses a
 /// name may not lead to (this machine, the link, a private network) are left
 /// out of the answer; Private when nothing else is left (Network stays a
-/// lookup that failed). Numbered at merge, K's block.
+/// lookup that failed). Revoked once the grant node `dest` was given under
+/// is, a lookup under way included: nothing is then kept or given. Numbered
+/// at merge, K's block.
 pub const RESOLVE_ON: u64 = 84;
 /// `netdest_narrow(dest, spec_ptr, spec_len, rights) -> handle`: a new
 /// `NetDest` handle, with `rights` (each held by `dest`), to a new record that
 /// allows no more than `dest`'s: the `netdest` crate's text form at
 /// `spec_ptr`. `dest` needs DUPLICATE. Permission if the new one would allow
 /// any address, port, protocol or host `dest`'s does not; Invalid for bad
-/// text or rights. A handle only shrinks. Numbered at merge, K's block.
+/// text or rights. A handle only shrinks. The new handle is under the grant
+/// node `dest` was given under, if any, so a [`GRANT_REVOKE`] that reaches
+/// `dest` reaches it too. Numbered at merge, K's block.
 pub const NETDEST_NARROW: u64 = 85;
 /// `power_reboot() -> !`: restarts the machine through the firmware's
 /// ResetSystem, as an update's restart does. Needs [`super::cap::POWER`]
@@ -571,7 +584,8 @@ pub const MEM_COMMIT: u64 = 161;
 pub const MEM_RELEASE: u64 = 162;
 /// `proc_quota_set(pid, pages) -> old`: process `pid`'s page quota, which its
 /// heap, `Shm` objects and MEM_COMMIT charge against, becomes `pages`; the old
-/// one. Pages held past a lower quota stay, and the next allocation fails.
+/// one. Pages held past a lower quota stay, and the next allocation fails; the
+/// admission rule counts them until they are given back.
 /// Invalid under 64 pages; Permission to lower the shell's, the supervisor's,
 /// the model service's or `desktop`'s. Needs SUPERVISE (P3 task 12). A third
 /// argument of [`QUOTA_LOWER_ONLY`] makes `pages` a ceiling (#517): a quota at
@@ -717,23 +731,31 @@ pub const PART_PEER_NAME: u64 = 191;
 /// does not allow it; Busy past [`super::net::STREAMS_PER_PROCESS`],
 /// [`super::net::STREAMS_MAX`], or 4 bulk streams in all or 2 of one
 /// process's; Unavailable with no address yet. Closing the handle closes the
-/// stream. Numbered at merge (P5 task 2).
+/// stream. The stream is under the grant node `dest` was given under, if any:
+/// a [`GRANT_REVOKE`] of it aborts the stream at once, and its handle answers
+/// Revoked from then on, as `dest` does. Numbered at merge (P5 task 2).
 pub const NET_CONNECT: u64 = 192;
 /// `net_send(stream, ptr, len) -> sent`: queues up to `len` bytes, at most
 /// [`super::net::STREAM_MAX_CALL`] (TooBig over it); 0 while the send buffer
-/// is full. Busy before it connected, Dead once it can no longer send.
+/// is full. Busy before it connected, Dead once it can no longer send,
+/// Revoked once its grant was; Permission, sending nothing, when the bytes
+/// would pass the day's of the agent `NetDest` it was connected on.
 pub const NET_SEND: u64 = 193;
 /// `net_recv(stream, ptr, cap) -> received`: up to `cap` bytes, at most
 /// [`super::net::STREAM_MAX_CALL`]; 0 once the peer closed and everything was
-/// read; Busy while nothing has come.
+/// read; Busy while nothing has come; Revoked once its grant was; Permission,
+/// with nothing read, once the day's bytes of the agent `NetDest` it was
+/// connected on are spent, as a send and a connect on it are refused then
+/// (a stream that ended with everything read still gives 0).
 pub const NET_RECV: u64 = 194;
 /// `net_poll(stream, want, timeout_ms) -> state`: waits up to `timeout_ms`
 /// (at most 60 s) until the stream is any of `want` (the `STREAM_*` bits of
 /// [`super::net`]) or has failed; its state then. Interrupted on Ctrl-C or a
-/// kill.
+/// kill; Revoked once its grant was, a wait under way included.
 pub const NET_POLL: u64 = 195;
 /// `net_close(stream) -> 0`: closes the stream and its handle; what was sent
-/// still goes out. A process that ends has its streams aborted.
+/// still goes out. A revoked stream's handle closes too. A process that ends
+/// has its streams aborted.
 pub const NET_CLOSE: u64 = 196;
 /// `net_time() -> seconds since 1970 UTC`: the date a TLS client checks
 /// certificates against, Limine's date at boot plus the time since, as

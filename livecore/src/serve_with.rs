@@ -42,6 +42,8 @@ impl<E: Env> Host<E> {
     /// Runs `f` on the serving version as one transaction, and commits what it
     /// did. `Ok(None)` if the version faulted (it was reported and reloaded from
     /// its checkpoint, and nothing `f` did is kept) or no version is serving.
+    /// An `Err` ends the host, as [`Host::handle`]'s does: it is left between
+    /// modes, and the caller must not call it again.
     ///
     /// A suspended app wakes first. During probation `f` runs on the candidate,
     /// the version whose window is shown, as one transaction the same way: its

@@ -7,6 +7,8 @@
 //! returned: a 64-bit read is kept only if it lies within [`WINDOW`] ticks of an
 //! earlier good value, and otherwise the halves are read high, low, high until the
 //! two high halves agree.
+//! A 32-bit main counter (CAPABILITIES bit 13 clear) cannot tear but wraps every
+//! 2^32 ticks (300 s at 14.318 MHz): [`extend32`] carries it into 64 bits.
 
 /// How far a 64-bit read may lie from the last good value and still be kept:
 /// half the distance of a torn read, and about 21 s at 100 MHz.
@@ -44,6 +46,19 @@ pub fn read(
     } else {
         (read_halves(low, high), true)
     }
+}
+
+/// Whether the main counter is 64 bits wide: CAPABILITIES bit 13, COUNT_SIZE_CAP.
+pub fn counter_is_64bit(capabilities: u64) -> bool {
+    capabilities & (1 << 13) != 0
+}
+
+/// A 32-bit counter's 64-bit count: the value within 2^31 ticks of `last` (an
+/// earlier count, maybe a little later from another CPU) whose low half is `low`.
+/// Right while the counter is read at least every 2^31 ticks (150 s at 14.3 MHz).
+pub fn extend32(low: u32, last: u64) -> u64 {
+    let step = low.wrapping_sub(last as u32) as i32;
+    last.wrapping_add_signed(i64::from(step))
 }
 
 #[cfg(test)]
@@ -141,5 +156,36 @@ mod tests {
             read_halves(|| device.low(), || device.high()),
             0x1_0000_0003
         );
+    }
+
+    #[test]
+    fn a_32_bit_counter_is_carried_across_its_wraps() {
+        assert_eq!(extend32(0x10, 0xFFFF_FFF0), 0x1_0000_0010);
+        assert_eq!(extend32(0x5, 0x7_FFFF_FFFE), 0x8_0000_0005);
+        // Another CPU's count may be a little ahead: the read stays behind it.
+        assert_eq!(extend32(0xFFFF_FFF0, 0x1_0000_0010), 0xFFFF_FFF0);
+        // Read every 2^30 ticks across 16 wraps, it follows the true count.
+        let mut last = 0x7;
+        for n in 1..64u64 {
+            last = extend32((n << 30 | 0x7) as u32, last);
+            assert_eq!(last, n << 30 | 0x7, "read {n}");
+        }
+    }
+
+    /// Why a 32-bit counter needs [`extend32`]: its upper half reads 0, so after
+    /// a wrap the 64-bit path drops 2^32 ticks the clock already counted.
+    #[test]
+    fn the_64_bit_path_drops_a_wrap_of_a_32_bit_counter() {
+        let (low, last) = (0x10, 0xFFFF_FFF0);
+        let got = read(|| u64::from(low), || low, || 0, last);
+        assert_eq!(got, (0x10, true));
+        assert_eq!(extend32(low, last), 0x1_0000_0010);
+    }
+
+    #[test]
+    fn the_capabilities_word_gives_the_counter_size() {
+        // QEMU's HPET (64-bit), then a 14.318 MHz one with bit 13 clear.
+        assert!(counter_is_64bit(0x0098_9680_8086_A201));
+        assert!(!counter_is_64bit(0x0429_B17F_1022_8210));
     }
 }
