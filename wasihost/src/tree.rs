@@ -84,6 +84,12 @@ impl Tree {
         }
     }
 
+    /// The same tree under `limits`: a host that keeps one `/kai` for runs
+    /// of different sizes sets each run's scratch limits on its copy.
+    pub fn set_limits(&mut self, limits: TreeLimits) {
+        self.limits = limits;
+    }
+
     /// Adds a read-only file under `/kai` from the host, with its parent
     /// directories. `path` is relative to `/kai`.
     pub fn add_kai(&mut self, path: &str, data: Vec<u8>) -> Result<(), Errno> {

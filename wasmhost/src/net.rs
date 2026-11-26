@@ -157,6 +157,10 @@ fn request_of(args: &[Val]) -> Result<NetRequest, &'static str> {
         },
         Some(_) => return Err("the range is out of shape"),
     };
+    // A HEAD has no body to range over, and fetch's line takes a range on a
+    // GET only: kept, the request would fail as `bad-url` after the person
+    // was asked about its host (bug-hunt-6 H6-15).
+    let range = range.filter(|_| !head);
     // A longer URL is kept empty: comphost answers it `bad-url`, and the
     // queue never holds more than its bound in URLs.
     let url = match url.len() <= MAX_URL {
