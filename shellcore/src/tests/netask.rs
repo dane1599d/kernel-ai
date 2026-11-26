@@ -679,3 +679,50 @@ fn a_put_back_picks_the_kept_grant_by_its_app_and_host_not_its_id_alone() {
     );
     assert_eq!(shell.net_connect("maps", TILES, MAPS), NetConnect::Asked);
 }
+
+/// Settings' `net` reads a page at a time: past what one answer holds, the
+/// reply was an error, and the page said no app may reach a host.
+#[test]
+fn settings_net_pages_every_grant_within_one_answer() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    for i in 0..120 {
+        allowed(
+            &host,
+            &mut shell,
+            "weather",
+            &format!("h{i}.weather.example"),
+            CEILING,
+        );
+    }
+    let mut listed = Vec::new();
+    let mut skip = 0;
+    loop {
+        let request = if skip == 0 {
+            String::from("net")
+        } else {
+            format!("net {skip}")
+        };
+        let page = shell.settings(SETTINGS_APP, &request, false).unwrap();
+        assert!(page.len() <= crate::settings::MAX_ANSWER, "{}", page.len());
+        let mut lines: Vec<&str> = page.lines().collect();
+        let more = lines.last().and_then(|l| l.strip_prefix("more "));
+        let next = more.map(|n| n.parse::<usize>().unwrap());
+        if next.is_some() {
+            lines.pop();
+        }
+        listed.extend(lines.iter().map(|l| l.to_string()));
+        match next {
+            Some(n) => {
+                assert!(n > skip, "the next page moves on");
+                skip = n;
+            }
+            None => break,
+        }
+    }
+    assert_eq!(listed.len(), 120);
+    assert!(skip > 0, "it took more than one page");
+    assert!(listed[0].starts_with("#1 weather h0.weather.example"));
+    assert!(listed[119].contains("h119.weather.example"));
+    assert!(shell.settings(SETTINGS_APP, "net x", false).is_err());
+}
