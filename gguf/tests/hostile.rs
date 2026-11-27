@@ -402,6 +402,34 @@ fn the_range_harness_is_fed_duplicate_names_and_overflowing_dims() {
         assert_eq!(Header::parse(&bytes).unwrap_err(), error);
         harness::gguf_file(&bytes);
         hostile::truncations(&bytes, |_, prefix| harness::gguf_file(prefix));
-        hostile::fuzz(&bytes, 0x1510, 500, harness::gguf_file);
+        hostile::fuzz(&bytes, 0x1510, 4000, harness::gguf_file);
     }
+}
+
+/// The duplicate file with its second "w" renamed in place: the same table,
+/// now accepted, so the harness's unique-name assert sees a real two-tensor
+/// table rather than waiting on a mutation to rename one.
+#[test]
+fn the_duplicate_file_renamed_is_accepted_with_unique_names() {
+    let mut twice = Writer::new();
+    twice
+        .tensor("w", &[1], TensorType::F32, &[0; 4])
+        .tensor("w", &[1], TensorType::F32, &[0; 4]);
+    let mut bytes = twice.finish();
+    // Each tensor's name: a u64 length of 1, then "w".
+    let name = [1, 0, 0, 0, 0, 0, 0, 0, b'w'];
+    let at: Vec<usize> = bytes
+        .windows(name.len())
+        .enumerate()
+        .filter(|(_, window)| *window == name)
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(at.len(), 2, "two tensor names in the table");
+    bytes[at[1] + 8] = b'v';
+    let header = Header::parse(&bytes).unwrap();
+    let names: Vec<&str> = header.tensors().iter().map(|t| t.name).collect();
+    assert_eq!(names, ["w", "v"]);
+    harness::gguf_file(&bytes);
+    hostile::truncations(&bytes, |_, prefix| harness::gguf_file(prefix));
+    hostile::fuzz(&bytes, 0x1521, 4000, harness::gguf_file);
 }
