@@ -76,19 +76,19 @@ jobs:
       QEMU_SHA256: 38a1a09f349660cb0e20b8fe5f224d6a53ec4235eb36f2e33a31e21bb6138147
     steps:
       - id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/qemu
           key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
           lookup-only: true
       - if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build QEMU ${{ env.QEMU_VERSION }}
         if: steps.cache.outputs.cache-hit != 'true'
         run: bash .github/actions/qemu/build.sh
       - name: Save QEMU ${{ env.QEMU_VERSION }}
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/qemu
           key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
@@ -100,7 +100,7 @@ jobs:
     needs: qemu
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/qemu
       - name: Allow KVM for the runner user
         if: env.ACCEL == 'kvm'
@@ -112,7 +112,7 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install the WebAssembly target for live components
         run: rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: qemu
           save-if: false
@@ -133,7 +133,7 @@ jobs:
     needs: qemu
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/qemu
       - name: Allow KVM for the runner user
         if: env.ACCEL == 'kvm'
@@ -145,7 +145,7 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install the WebAssembly target for live components
         run: rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: qemu-release
           save-if: false
