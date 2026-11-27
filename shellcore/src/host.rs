@@ -424,9 +424,11 @@ pub trait Host {
     fn rules_write(&self, _text: &str) -> Result<(), String> {
         Ok(())
     }
-    /// Keeps a rules file refused at start as `/system/state/rules.refused`, so
-    /// `rules` may be written again; an error leaves `rules` unwritten all run.
-    fn rules_set_aside(&self, _text: &str) -> Result<(), String> {
+    /// Keeps a rules file refused at start under `/system/state`, by the first
+    /// free name of [`refused_rules_name`], so `rules` may be written again and
+    /// no earlier refused file is written over; the name it was kept as. An
+    /// error leaves `rules` unwritten all run.
+    fn rules_set_aside(&self, _text: &str) -> Result<String, String> {
         Err(String::from("this host keeps no refused file"))
     }
     /// The keep-running list as `/system/state/keep` holds it, and why not
@@ -530,4 +532,22 @@ pub trait Host {
         self.set_policy(id)
     }
     fn sleep_ms(&self, _ms: u64) {}
+}
+
+/// The most refused rules files kept: `rules.refused`, then `rules.refused.2`
+/// to `rules.refused.9`.
+pub const MAX_REFUSED_RULES: usize = 9;
+
+/// The name a rules file refused at start is kept under: the first of
+/// `rules.refused`, `rules.refused.2` ... `rules.refused.9` that `taken` says is
+/// free, so a second refused file never writes over the first (#1512's
+/// review). `None` once all are taken: the file is then kept nowhere, and
+/// `rules` is not written that run.
+pub fn refused_rules_name(mut taken: impl FnMut(&str) -> bool) -> Option<String> {
+    (1..=MAX_REFUSED_RULES)
+        .map(|n| match n {
+            1 => String::from("rules.refused"),
+            n => format!("rules.refused.{n}"),
+        })
+        .find(|name| !taken(name))
 }

@@ -432,6 +432,36 @@ fn the_allows_rule_node_is_kept_and_rules_remove_revokes_it() {
     assert_eq!(*host.revoked.borrow(), [9]);
 }
 
+/// #1344's review: an Allow whose ONCE fails, or whose instruction the store
+/// refuses, kept the rule node the trusted path minted for it until a reboot.
+#[test]
+fn an_allow_that_makes_no_instruction_revokes_its_rule_node() {
+    let host = super::FakeHost::new();
+    host.triggers_on.set(true);
+    let mut shell = super::shell(&host);
+    shell.eval(&alloc::format!("rules_add {NOTES}"));
+    let once = host.mint(1, &alloc::format!("rules_add(\"{NOTES}\")"));
+    let wrong = once + 1;
+    let declined = shell.eval(&alloc::format!("answer 1 allow once={wrong} rule=9"));
+    assert!(
+        declined.text.starts_with("No standing instruction made: "),
+        "{declined:?}"
+    );
+    assert!(shell.standing.rules().is_empty());
+    assert_eq!(*host.revoked.borrow(), [9]);
+
+    // The store fills between the card and the Allow.
+    shell.eval(&alloc::format!("rules_add {NOTES}"));
+    let id = shell.pending.as_ref().map(|p| p.id).unwrap();
+    let once = host.mint(id, &alloc::format!("rules_add(\"{NOTES}\")"));
+    while shell.standing.rules().len() < crate::standing::MAX_RULES {
+        notes_rule(&mut shell.standing);
+    }
+    let refused = shell.eval(&alloc::format!("answer {id} allow once={once} rule=11"));
+    assert!(!refused.ok, "{refused:?}");
+    assert_eq!(*host.revoked.borrow(), [9, 11]);
+}
+
 /// What `desk-standing-undo` (kernel/src/standing_tests.rs) waits for in
 /// `log actlog`: the change line of the entry that took the rule away, as the
 /// log keeps it, not the reply's words.
