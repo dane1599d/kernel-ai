@@ -756,7 +756,7 @@ mod tests {
     fn the_release_disk_reports_each_slots_fill() {
         let esp = fake_esp("fill");
         let record = "kai-slot 1\nrelease_seq 1\nepoch 1\nversion 0.1.0\ncommit x\nchannel dev\n";
-        let plan = plan(&esp, "", record, Some(16), Room::Fixed).unwrap();
+        let plan = plan(&esp, "", record, Some(16), Room::Fixed, DISK_NAME).unwrap();
         let lines = fill_lines(&plan);
         assert_eq!(lines.len(), 3);
         for (line, name) in lines.iter().zip(SLOTS) {
