@@ -68,4 +68,6 @@ comp-models = { path = "../apps/models" }
 updatenet = { path = "../updatenet" }
 # The slot disk's tests read its kai-slot 1 back.
 bootslot = { path = "../bootslot" }
+# The on-device ESP writer (row G43), checked against image/fat32.rs both ways.
+espfat = { path = "../espfat" }
 wat = "1.262.0"
