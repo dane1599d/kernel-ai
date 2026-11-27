@@ -13,6 +13,7 @@ use crate::handle::{self, grant::Kernel};
 use crate::process::uaccess::{copy_from_user, copy_to_user};
 use alloc::vec::Vec;
 use captable::Entry;
+use core::sync::atomic::{AtomicU32, Ordering};
 use kabi::handle::{Handle, Kind, Rights};
 use kabi::part::{self, MAX_IO, SECTOR};
 use kabi::{Error, call};
@@ -60,6 +61,25 @@ fn partition(slot: usize, raw: u64, rights: Rights) -> Result<diskmap::Guid, Err
         part::DATA => Ok(diskmap::KAI_DATA_TYPE),
         _ => Err(Error::NotFound),
     }
+}
+
+/// Failed PART_* calls so far: [`failed`] logs the first few, then each power of
+/// two, so a dead disk that fails every call does not fill the log.
+static FAILED: AtomicU32 = AtomicU32::new(0);
+
+/// Logs a failed PART_READ, PART_WRITE or PART_FLUSH with its cause, which the
+/// caller sees only as an error number: `why` is the disk's own message when it
+/// gave one. Called outside the disk's lock, from the syscall (never from an
+/// interrupt), and only on failure.
+fn failed(call: &str, sector: u64, len: u64, error: Error, why: &str) -> Error {
+    let count = FAILED.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+    if count <= 8 || count.is_power_of_two() {
+        crate::log!(
+            "part: {call} failed: {error:?}{}{why} (sector {sector}, {len} bytes; failure {count})",
+            if why.is_empty() { "" } else { ", " }
+        );
+    }
+    error
 }
 
 /// Runs `f` on the partition, NotFound when the disk has none of that type.
@@ -121,21 +141,28 @@ pub(super) fn read_in(
 ) -> Result<u64, Error> {
     let mut data = Vec::new();
     data.try_reserve_exact(len.min(MAX_IO) as usize)
-        .map_err(|_| Error::NoMemory)?;
-    on(kind, |disk| {
+        .map_err(|_| failed("read", sector, len, Error::NoMemory, "the heap has no room"))?;
+    let mut why = "";
+    let read = on(kind, |disk| {
         let count = range(sector, len, disk.sectors())?;
         let step = disk.max_sectors().max(1);
         let mut at = sector;
         while at < sector + count {
             let n = step.min(sector + count - at);
-            let bytes = disk.read(at, n).map_err(|_| Error::Unavailable)?;
+            let bytes = disk.read(at, n).map_err(|message| {
+                why = message;
+                Error::Unavailable
+            })?;
             data.extend_from_slice(&bytes[..(n * SECTOR) as usize]);
             at += n;
         }
         Ok::<(), Error>(())
-    })??;
+    })
+    .and_then(|done| done);
+    read.map_err(|error| failed("read", sector, len, error, why))?;
     // Copied out once the disk is unlocked: a fault on `buf` never holds it.
-    copy_to_user(slot, buf, &data)?;
+    copy_to_user(slot, buf, &data)
+        .map_err(|error| failed("read", sector, len, error, "copying out to the caller"))?;
     Ok(len)
 }
 
@@ -157,11 +184,20 @@ pub(super) fn write_in(
         return Err(Error::Invalid);
     }
     let mut data = Vec::new();
-    data.try_reserve_exact(len as usize)
-        .map_err(|_| Error::NoMemory)?;
+    data.try_reserve_exact(len as usize).map_err(|_| {
+        failed(
+            "write",
+            sector,
+            len,
+            Error::NoMemory,
+            "the heap has no room",
+        )
+    })?;
     data.resize(len as usize, 0);
-    copy_from_user(slot, buf, &mut data)?;
-    on(kind, |disk| {
+    copy_from_user(slot, buf, &mut data)
+        .map_err(|error| failed("write", sector, len, error, "copying in from the caller"))?;
+    let mut why = "";
+    let wrote = on(kind, |disk| {
         range(sector, len, disk.sectors())?;
         if disk.read_only() {
             return Err(Error::Permission);
@@ -169,10 +205,15 @@ pub(super) fn write_in(
         let step = disk.max_sectors().max(1);
         for (index, chunk) in data.chunks((step * SECTOR) as usize).enumerate() {
             let at = sector + index as u64 * step;
-            disk.write(at, chunk).map_err(|_| Error::Unavailable)?;
+            disk.write(at, chunk).map_err(|message| {
+                why = message;
+                Error::Unavailable
+            })?;
         }
         Ok(len)
-    })?
+    })
+    .and_then(|done| done);
+    wrote.map_err(|error| failed("write", sector, len, error, why))
 }
 
 fn flush(slot: usize, raw: u64) -> Result<u64, Error> {
@@ -182,13 +223,19 @@ fn flush(slot: usize, raw: u64) -> Result<u64, Error> {
 
 /// Makes every write to the disk of the partition of type `kind` durable.
 pub(super) fn flush_in(kind: diskmap::Guid) -> Result<u64, Error> {
-    on(kind, |disk| {
+    let mut why = "";
+    let flushed = on(kind, |disk| {
         if disk.read_only() {
             return Err(Error::Permission);
         }
-        disk.flush().map_err(|_| Error::Unavailable)?;
+        disk.flush().map_err(|message| {
+            why = message;
+            Error::Unavailable
+        })?;
         Ok(0)
-    })?
+    })
+    .and_then(|done| done);
+    flushed.map_err(|error| failed("flush", 0, 0, error, why))
 }
 
 /// Whether `pid` still runs, for the holder of a `Partition` handle (`fs`).
