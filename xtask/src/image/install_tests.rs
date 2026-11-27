@@ -87,7 +87,7 @@ fn an_install_lays_out_as_a_release_image_with_its_id() {
     let esp = fake_esp("install-layout");
     let out = esp.join("release.img");
     let len = build_release(&esp, &out, RECORD, 32, "install-x").unwrap();
-    let release = installer::current(&mut open(&out)).unwrap();
+    let release = installer::current(&mut open(&out)).gpt().unwrap();
     let target = installer::Target {
         sectors: len / 512,
         sector_size: 512,
@@ -102,7 +102,7 @@ fn an_install_lays_out_as_a_release_image_with_its_id() {
             release_seq: 4,
         },
     };
-    let plan = installer::plan(target, source, None).unwrap();
+    let plan = installer::plan(target, source, &installer::Current::Blank).unwrap();
     assert_eq!(plan.disk_guid, release.disk_guid);
     for (n, (want, got)) in release.partitions.iter().zip(&plan.parts).enumerate() {
         assert_eq!(
@@ -126,8 +126,10 @@ fn an_install_from_a_release_disk_reads_back_and_checks() {
     let from = esp.join("release.img");
     let len = build_release(&esp, &from, RECORD, 32, DISK_NAME).unwrap();
     let mut source = open(&from);
-    let table = installer::current(&mut source).unwrap();
+    let table = installer::current(&mut source).gpt().unwrap();
     let b = table.find(diskmap::KAI_B_TYPE).unwrap().first;
+    // A release disk's slot never hashes to the signed slot.img (its boot
+    // sector holds the partition's start), so the device hashes it itself.
     let committed = installer::Committed {
         kind: diskmap::KAI_B_TYPE,
         sha256: volume_sha256(&mut source, b),
@@ -151,16 +153,16 @@ fn an_install_from_a_release_disk_reads_back_and_checks() {
         table: &table,
         committed,
     };
-    let plan = installer::plan(t, src, now.as_ref()).unwrap();
+    let plan = installer::plan(t, src, &now).unwrap();
     installer::apply(&plan, &mut source, &mut target).unwrap();
-    let got = installer::current(&mut target).unwrap();
+    let got = installer::current(&mut target).gpt().unwrap();
     assert!(!got.from_backup);
     assert_eq!(got.disk_guid, plan.disk_guid);
     assert_eq!(got.partitions.len(), 5);
     let a = got.find(diskmap::KAI_A_TYPE).unwrap().first;
     assert_eq!(volume_sha256(&mut target, a), committed.sha256);
     crate::fs_tool::main(&["check".into(), to.display().to_string()]).unwrap();
-    // A wrong release for the slot stops it before the table.
+    // A wrong release for the slot stops it before any write.
     let wrong = installer::Source {
         table: &table,
         committed: installer::Committed {
@@ -173,12 +175,15 @@ fn an_install_from_a_release_disk_reads_back_and_checks() {
         .unwrap()
         .set_len(sectors * 512)
         .unwrap();
-    let plan = installer::plan(t, wrong, None).unwrap();
+    let plan = installer::plan(t, wrong, &installer::Current::Blank).unwrap();
     let refused = installer::apply(&plan, &mut source, &mut open(&again));
     assert!(
-        matches!(refused, Err(installer::Error::Verify(_))),
+        matches!(refused, Err(installer::Error::Source(_))),
         "{refused:?}"
     );
-    assert_eq!(installer::current(&mut open(&again)), None);
+    assert_eq!(
+        installer::current(&mut open(&again)),
+        installer::Current::Blank
+    );
     fs::remove_dir_all(&esp).unwrap();
 }

@@ -59,10 +59,62 @@ impl espfat::Disk for ReadOnly<'_> {
     }
 }
 
-/// The table `disk` holds now, if it holds a valid one: what [`crate::plan`]
-/// takes as the target's current table.
-pub fn current(disk: &mut dyn Disk) -> Option<diskmap::Table> {
-    diskmap::read(&mut ReadOnly(disk)).ok()
+/// What a target holds before an install: what [`crate::plan`] records as
+/// [`Plan::wipes`], for the device to show the user before it asks to go on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Current {
+    /// No GPT, no GPT header and no boot signature at sector 0.
+    Blank,
+    /// A valid GPT, read from the primary or the backup.
+    Gpt(diskmap::Table),
+    /// Something that is not a GPT the installer can read: why, such as an
+    /// MBR disk, a GPT with bad checksums or a disk that fails to read.
+    Unreadable(&'static str),
+}
+
+impl Current {
+    /// The table, for a valid GPT.
+    pub fn gpt(self) -> Option<diskmap::Table> {
+        match self {
+            Current::Gpt(t) => Some(t),
+            _ => None,
+        }
+    }
+}
+
+/// What `disk` holds now: what [`crate::plan`] takes as the target's current
+/// contents.
+pub fn current(disk: &mut dyn Disk) -> Current {
+    let why = match diskmap::read(&mut ReadOnly(disk)) {
+        Ok(table) => return Current::Gpt(table),
+        Err(diskmap::Error::NoTable) => None,
+        Err(diskmap::Error::Read) => Some("the disk fails to read"),
+        Err(diskmap::Error::Small) => Some("the disk is too small for a GPT"),
+        Err(diskmap::Error::BadPartitions) => {
+            Some("a GPT header names partitions that are not valid")
+        }
+        Err(diskmap::Error::BadLayout) => Some("the GPT cannot be read"),
+    };
+    if let Some(why) = why {
+        return Current::Unreadable(why);
+    }
+    // No valid header: blank, or a header with bad checksums, or an MBR.
+    let mut sector = [0u8; S];
+    for lba in [1, disk.sectors() - 1] {
+        if disk.read(lba, &mut sector).is_err() {
+            return Current::Unreadable("the disk fails to read");
+        }
+        if sector.starts_with(b"EFI PART") {
+            return Current::Unreadable("a GPT header or its array fails its checksum");
+        }
+    }
+    if disk.read(0, &mut sector).is_err() {
+        return Current::Unreadable("the disk fails to read");
+    }
+    if sector[510..] == [0x55, 0xAA] {
+        return Current::Unreadable("an MBR or a whole-disk filesystem, no GPT");
+    }
+    Current::Blank
 }
 
 /// The sectors of the FAT32 volume at `from` on `disk`, checked by espfat's
@@ -115,12 +167,39 @@ pub fn apply(plan: &Plan, source: &mut dyn Disk, target: &mut dyn Disk) -> Resul
     if target.sectors() != plan.sectors || current(target) != plan.wipes {
         return Err(Error::Target);
     }
+    let mut piece = vec![0u8; PIECE as usize * S];
     for step in &plan.steps {
-        if let Step::Copy { from, most, .. } = *step {
-            volume_sectors(source, from, most)?;
+        match *step {
+            Step::Copy { from, most, .. } => {
+                volume_sectors(source, from, most)?;
+            }
+            // The running slot must be the committed one before anything is
+            // written; the copy is checked again once durable.
+            Step::Check {
+                from,
+                most,
+                expect:
+                    Expect::Slot {
+                        sha256,
+                        release_seq: seq,
+                    },
+                ..
+            } => {
+                let sectors = volume_sectors(source, from, most)?;
+                if hash(source, from, sectors, &mut piece)? != sha256 {
+                    return Err(Error::Source(
+                        "the running slot's SHA-256 is not the committed slot's",
+                    ));
+                }
+                if release_seq(source, from, most).ok() != Some(seq) {
+                    return Err(Error::Source(
+                        "the running slot's record does not name the committed release",
+                    ));
+                }
+            }
+            _ => {}
         }
     }
-    let mut piece = vec![0u8; PIECE as usize * S];
     for step in &plan.steps {
         match *step {
             Step::Zero { lba, sectors } => {

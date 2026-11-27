@@ -29,7 +29,7 @@ extern crate alloc;
 mod apply;
 mod data;
 
-pub use apply::{Disk, IoError, Window, apply, current};
+pub use apply::{Current, Disk, IoError, Window, apply, current};
 pub use data::{FOLDERS, format_data};
 
 use alloc::format;
@@ -104,7 +104,8 @@ pub enum Error {
     /// The running image cannot be copied: a partition missing, or one larger
     /// than its place on the target, or a volume that does not fit it.
     Source(&'static str),
-    /// The target is the running disk: it has the running disk's GUID.
+    /// The target has the running disk's GUID: it is the running disk, or
+    /// another disk written from the same image (which shares its GUIDs).
     RunningDisk,
     /// The target is not the size the plan was made for, or its table is not
     /// the one the plan was made over (and the user agreed to wipe).
@@ -179,10 +180,10 @@ pub enum Expect {
 pub struct Plan {
     /// The target's size in sectors.
     pub sectors: u64,
-    /// The table the target held when the plan was made, which the install
-    /// wipes: what the device shows the user before it asks to go on.
-    /// [`apply`] refuses a target whose table is no longer this one.
-    pub wipes: Option<Table>,
+    /// What the target held when the plan was made, which the install wipes:
+    /// what the device shows the user before it asks to go on. [`apply`]
+    /// refuses a target that no longer holds this.
+    pub wipes: Current,
     pub disk_guid: Guid,
     /// The five partitions, in disk order.
     pub parts: Vec<Part>,
@@ -202,8 +203,9 @@ pub struct Target<'a> {
     pub now: u64,
 }
 
-/// The running system's committed slot, as the boot record and the release's
-/// signed metadata give it: the install's `kai-a` is a copy of it.
+/// The running system's committed slot, as the boot record gives it: the
+/// install's `kai-a` is a copy of it. Where `sha256` comes from is in decision
+/// row `2026-11-27-installer-plan`.
 #[derive(Clone, Copy, Debug)]
 pub struct Committed {
     /// `diskmap::KAI_A_TYPE` or `diskmap::KAI_B_TYPE`.
@@ -261,12 +263,9 @@ fn parts(sectors: u64, id: &str) -> Vec<Part> {
 
 /// The plan that installs the running disk `source` to `target`, whose table
 /// now is `current` ([`current`] reads it). Nothing is read or written:
-/// [`apply`] does that. A target with the running disk's GUID is refused.
-pub fn plan(
-    target: Target<'_>,
-    source: Source<'_>,
-    current: Option<&Table>,
-) -> Result<Plan, Error> {
+/// [`apply`] does that. A target with the running disk's GUID is refused,
+/// so another disk written from the same image is refused too.
+pub fn plan(target: Target<'_>, source: Source<'_>, current: &Current) -> Result<Plan, Error> {
     if target.sector_size != SECTOR {
         return Err(Error::SectorSize(target.sector_size));
     }
@@ -274,7 +273,7 @@ pub fn plan(
         return Err(Error::BadId);
     }
     let sectors = target.sectors;
-    if current.is_some_and(|t| t.disk_guid == source.table.disk_guid) {
+    if matches!(current, Current::Gpt(t) if t.disk_guid == source.table.disk_guid) {
         return Err(Error::RunningDisk);
     }
     if sectors < minimum_sectors() {
@@ -375,7 +374,7 @@ pub fn plan(
     }
     Ok(Plan {
         sectors,
-        wipes: current.cloned(),
+        wipes: current.clone(),
         disk_guid,
         parts,
         steps,
