@@ -119,8 +119,10 @@ const SLOT_A_NVME: TestCase = slot(
 
 /// Part C: the whole system on disks of 4 KiB blocks. The boot disk holds
 /// the slots and `kai-data` as partition 5, and the model is on a disk of
-/// its own; NVMe for both when `nvme`. R installs, A commits, then A writes
-/// files through `fs` and, booted again, reads them back.
+/// its own; NVMe for both when `nvme`. R installs, A commits, then a boot
+/// writes files through `fs` and the next reads them back. `test=files` runs
+/// no slot lever (`kernel/src/main.rs`), so those two boots print no `slots:`
+/// line, and what they show is the boot disk's `kai-data` kept across boots.
 const fn os(
     name: &'static str,
     cmdline: &'static str,
@@ -136,27 +138,24 @@ const fn os(
     }
 }
 
-/// A committed A, booted again: the lever arms it for the next boot too.
-const A_UP: &str = "slots: up in kai-a (committed, 0 tries left)";
 const WROTE: &str =
     "filecheck: boot 1 wrote notes/plan.txt and a 20 KiB file through its Dir handle";
 const READ_BACK: &str = "filecheck: boot 2 read back what boot 1 wrote, byte for byte";
 
 const OS_4: TestCase = os(
-    "os-4k (4: kai-a reads the files back)",
+    "os-4k (4: the files read back)",
     "test=files reread",
     false,
-    &[A_UP, MODEL, READ_BACK],
+    &[MODEL, READ_BACK],
 );
 const OS_3: TestCase = TestCase {
     then: Some(&OS_4),
     ..os(
-        "os-4k (3: kai-a writes files)",
+        "os-4k (3: files written)",
         "test=files",
         false,
         &[
             "block: kai-data is blk disk \"kai-boot\"",
-            A_UP,
             MODEL,
             "fs: up; kai-data has ",
             WROTE,
@@ -169,21 +168,20 @@ const OS_2: TestCase = TestCase {
     ..os("os-4k (2: kai-a commits)", SLOT_A.cmdline, false, A_COMMITS)
 };
 const OS_NVME_4: TestCase = os(
-    "os-4k-nvme (4: kai-a reads the files back)",
+    "os-4k-nvme (4: the files read back)",
     "test=files reread",
     true,
-    &[A_UP, MODEL, READ_BACK],
+    &[MODEL, READ_BACK],
 );
 const OS_NVME_3: TestCase = TestCase {
     then: Some(&OS_NVME_4),
     ..os(
-        "os-4k-nvme (3: kai-a writes files)",
+        "os-4k-nvme (3: files written)",
         "test=files",
         true,
         &[
             // The NVMe serial is padded to 20 bytes; the prefix is the point.
             "block: kai-data is nvme disk \"kai-boot",
-            A_UP,
             MODEL,
             "fs: up; kai-data has ",
             WROTE,
