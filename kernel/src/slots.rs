@@ -20,7 +20,7 @@
 
 use crate::efi::{self, Guid, KAI, NV_BS_RT};
 use crate::{bootfiles, ipc, log, threads};
-use bootslot::{InR, Nv, Reason, Record, Slot};
+use bootslot::{ArmFailed, InR, Nv, Reason, Record, Refused, Slot, UpFailed};
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
@@ -43,8 +43,10 @@ const FAULT_PANIC: u8 = 1;
 /// The record as this boot found it and the slot it runs in, once read: what the
 /// fault path writes from.
 static BOOTED: Mutex<Option<(Nv, Slot)>> = Mutex::new(None);
-/// Held across BOOTREC_SET's writes (the record, then the one-shot), so
-/// POWER_REBOOT's reset ([`reset_when_set`]) never lands between them.
+/// Held across BOOTREC_SET's read of the record and its writes (the record,
+/// then the one-shot), and across probation's commit from the record it reads,
+/// so POWER_REBOOT's reset ([`reset_when_set`]) never lands between the writes
+/// and each change is made to the record as the firmware holds it.
 static SETTING: Mutex<()> = Mutex::new(());
 
 /// The BLI entry id of a slot, as `limine.conf` names it.
@@ -102,19 +104,12 @@ fn write(before: &Nv, after: &Nv) -> Result<(), efi::Error> {
 
 /// R's arm, in [`bootslot::arm_writes`]'s order: the one-shot first only to
 /// re-arm the slot it found armed (a cut between the writes spares its try),
-/// and the record stored even when the one-shot fails.
-fn write_arm(before: &Nv, after: &Nv, next: Slot) -> Result<(), efi::Error> {
-    bootslot::arm_writes(
-        before.record.armed,
-        next,
-        || {
-            if after.one_shot == before.one_shot {
-                return Ok(());
-            }
-            write_one_shot(after.one_shot)
-        },
-        || write_record(before, after),
-    )
+/// the record stored even when the one-shot fails, and the one-shot deleted
+/// again when the record fails after it.
+fn write_arm(before: &Nv, after: &Nv, next: Slot) -> Result<(), ArmFailed<efi::Error>> {
+    bootslot::arm_writes(before.record.armed, next, write_one_shot, || {
+        write_record(before, after)
+    })
 }
 
 /// Writes `after`'s record if it changed from `before`'s.
@@ -312,27 +307,31 @@ fn lever(test: bool) {
         }
         Action::Restart | Action::Panic | Action::EfiFault => {}
     }
-    // The fault path is told *up*'s record before it is written, as
-    // BOOTREC_SET tells it ([`bootslot::set_writes`]): a fault after the
-    // write must not put the record before back, which would give the try
-    // back to a trial whose one-shot is still set.
-    *BOOTED.lock() = Some((nv, slot));
-    if test {
-        finish(&nv, write(&before, &nv));
-    }
-    // A normal boot writes the one-shot that *up* armed and keeps running:
-    // [`write`]'s two writes, apart so a lost record is known.
-    match write_record(&before, &nv) {
-        Err(error) => {
-            log!("slots: SetVariable failed: {error:?}");
-            UP_LOST.store(true, Ordering::SeqCst);
-        }
-        Ok(()) if nv.one_shot != before.one_shot => {
-            if let Err(error) = write_one_shot(nv.one_shot) {
-                log!("slots: SetVariable failed: {error:?}");
+    // In [`bootslot::up_writes`]'s order: the fault path is told *up*'s
+    // record before it is written, as BOOTREC_SET tells it, so a fault after
+    // the write never puts the record before back (that would give the try
+    // back to a trial whose one-shot is still set). A lost record is kept in
+    // UP_LOST, so this boot never arms its slot again as a trial.
+    let written = bootslot::up_writes(
+        || *BOOTED.lock() = Some((nv, slot)),
+        || write_record(&before, &nv),
+        || {
+            if nv.one_shot == before.one_shot {
+                return Ok(());
             }
-        }
-        Ok(()) => {}
+            write_one_shot(nv.one_shot)
+        },
+    );
+    if let Err(UpFailed::Record(_)) = written {
+        UP_LOST.store(true, Ordering::SeqCst);
+    }
+    let written = written.map_err(|(UpFailed::Record(error) | UpFailed::OneShot(error))| error);
+    if test {
+        finish(&nv, written);
+    }
+    // A normal boot keeps running.
+    if let Err(error) = written {
+        log!("slots: SetVariable failed: {error:?}");
     }
     let trial = !nv.record.slot(slot).successful;
     // A trial slot runs on probation until it commits (ADR 0008 §5).
@@ -404,9 +403,11 @@ fn probation(raw: usize) {
     }
 }
 
-/// *commit*: from the record as the firmware holds it now, so a change
-/// `updated` made since boot stays.
+/// *commit*: from the record as the firmware holds it now, read and written
+/// under SETTING, so a change `updated` made since boot stays and no
+/// BOOTREC_SET lands between the read and the write.
 fn commit(slot: Slot, calls: u64, elapsed_ms: u64) {
+    let _setting = SETTING.lock();
     let Ok(Some(record)) = read_record() else {
         log!("slots: no record to commit {} in", entry_id(slot));
         return;
@@ -417,7 +418,7 @@ fn commit(slot: Slot, calls: u64, elapsed_ms: u64) {
     };
     let epoch = own_release().map_or(0, |(_, epoch)| epoch);
     bootslot::commit(&mut nv, slot, epoch);
-    match set(nv.record, nv.one_shot) {
+    match set_held(nv.record, nv.one_shot) {
         Ok(()) => {
             log!(
                 "slots: {} passed probation ({calls} requests, {} s) and is committed",
@@ -451,7 +452,15 @@ fn in_r(had_record: bool, before: Nv, mut nv: Nv) {
                 entry_id(slot),
                 describe(&nv.record, slot)
             );
-            finish(&nv, write_arm(&before, &nv, slot))
+            match write_arm(&before, &nv, slot) {
+                // Nothing R writes sticks: a reset would only bring it back
+                // to the same record, so it stays up.
+                Err(ArmFailed::Record(error)) => {
+                    log!("slots: SetVariable failed: {error:?}; R stays up");
+                }
+                Err(ArmFailed::OneShot(error)) => finish(&nv, Err(error)),
+                Ok(()) => finish(&nv, Ok(())),
+            }
         }
         InR::Stay => {
             log!("slots: nothing bootable; R stays up");
@@ -528,19 +537,30 @@ pub fn active_committed() -> bool {
     }
 }
 
-/// BOOTREC_SET: writes `record` as given and the one-shot for `one_shot`, and
+/// Why BOOTREC_SET did not set the record.
+#[derive(Clone, Copy, Debug)]
+pub enum SetError {
+    /// [`bootslot::may_set`] refuses it.
+    Refused(Refused),
+    /// The record the firmware holds cannot be read.
+    Unreadable,
+    Efi(efi::Error),
+}
+
+/// BOOTREC_SET: writes `record` as given and the one-shot for `one_shot`, if
+/// [`bootslot::may_set`] allows them over the record the firmware holds, and
 /// keeps them as what the fault path writes from.
-pub fn set(record: Record, one_shot: Option<Slot>) -> Result<(), efi::Error> {
+pub fn set(record: Record, one_shot: Option<Slot>) -> Result<(), SetError> {
     let _setting = SETTING.lock();
-    // A boot whose *up* the firmware never stored has not spent its try
-    // there: arming its slot again as a trial would give the try back.
-    if UP_LOST.load(Ordering::SeqCst)
-        && let Some(next) = one_shot
-        && this_slot() == Some(next)
-        && !record.slot(next).successful
-    {
-        return Err(efi::Error::Unavailable);
-    }
+    set_held(record, one_shot)
+}
+
+/// [`set`], with SETTING held.
+fn set_held(record: Record, one_shot: Option<Slot>) -> Result<(), SetError> {
+    let now = read_record().map_err(|_| SetError::Unreadable)?;
+    let up_lost = UP_LOST.load(Ordering::SeqCst);
+    bootslot::may_set(now.as_ref(), &record, one_shot, this_slot(), up_lost)
+        .map_err(SetError::Refused)?;
     // In [`bootslot::set_writes`]'s order: the fault path is told the record
     // before it is written, so a fault just after the write never writes the
     // record before back (a commit's floors would fall), and told the old one
@@ -561,6 +581,7 @@ pub fn set(record: Record, one_shot: Option<Slot>) -> Result<(), efi::Error> {
         || efi::set_variable(&KAI, RECORD, NV_BS_RT, &record.encode()),
         || write_one_shot(one_shot),
     )
+    .map_err(SetError::Efi)
 }
 
 /// POWER_REBOOT's reset: once a BOOTREC_SET under way has written both its
@@ -627,9 +648,8 @@ pub fn on_fault() {
     bootslot::fault(&mut after, slot, FAULT_PANIC, 0);
     // The one-shot is deleted whatever BOOTED remembers of it (a fault just
     // after set() wrote one may come before BOOTED was told), so R boots next.
-    let record = write_record(&before, &after);
-    let one_shot = write_one_shot(None);
-    match record.and(one_shot) {
+    let written = bootslot::fault_writes(|| write_record(&before, &after), || write_one_shot(None));
+    match written {
         Ok(()) => log!("slots: fault recorded in {}; R boots next", entry_id(slot)),
         Err(error) => log!("slots: cannot record the fault: {error:?}"),
     }
