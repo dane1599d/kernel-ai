@@ -99,6 +99,9 @@ fn main() -> i32 {
             n * 100
         ),
     }
+    // `step=rebase` reads its record now, before reconcile and the model
+    // channel, which take long enough for an idle probation to commit first.
+    let stale = (step == Some("rebase")).then(|| rebase_read(handle));
     // Every start first settles an update left in flight (`restore.rs`).
     let reconciled = restore::reconcile(handle);
     if let Ok(outcome) = reconciled
@@ -125,7 +128,10 @@ fn main() -> i32 {
     let result = match (step, reconciled) {
         (_, Err(why)) => Err(why),
         (Some("check"), _) => check(handle),
-        (Some("rebase"), _) => rebase_check(handle).map(|()| restart_here(handle)),
+        (Some("rebase"), _) => stale
+            .unwrap_or_else(|| Err(String::from("rebase: no record read")))
+            .and_then(|(running, stale)| rebase_check(handle, running, &stale))
+            .map(|()| restart_here(handle)),
         (Some("models"), _) => models_check(channel.as_mut()),
         (Some("download"), _) => download_check(channel.as_mut()),
         (Some("probation"), _) => probation_check(channel.as_mut()),
@@ -221,7 +227,11 @@ const REBASE_WAIT_MS: u64 = 120_000;
 /// has committed the slot. BOOTREC_SET answers Busy, since the set would drop
 /// the commit, and [`set`] rebases it onto the commit and sets it again; the
 /// next boot finds the slot committed.
-fn rebase_check(handle: Handle) -> Result<(), String> {
+///
+/// The read is [`rebase_read`], right after the boot lever: by the time the
+/// step runs, after reconcile and the model channel, probation may well have
+/// committed the slot (#1598's review).
+fn rebase_read(handle: Handle) -> Result<(Slot, Nv), String> {
     let running = sys::slot_info(handle, 1)
         .map_err(|e| format!("SLOT_INFO: {e:?}"))
         .and_then(|info| slot_of(info.active))?;
@@ -233,6 +243,11 @@ fn rebase_check(handle: Handle) -> Result<(), String> {
         return Err(format!("rebase: {running:?} is committed already"));
     }
     println!("updated: rebase: read the record while {running:?} is a trial");
+    Ok((running, stale))
+}
+
+/// The rest of `step=rebase`: waits for the commit, then sets `stale`.
+fn rebase_check(handle: Handle, running: Slot, stale: &Nv) -> Result<(), String> {
     let mut waited = 0;
     while !record(handle)?.slot(running).successful {
         if waited >= REBASE_WAIT_MS {
@@ -242,7 +257,7 @@ fn rebase_check(handle: Handle) -> Result<(), String> {
         waited += 500;
     }
     println!("updated: rebase: {running:?} is committed; setting the record read before");
-    set(handle, &stale, false)?;
+    set(handle, stale, false)?;
     if !record(handle)?.slot(running).successful {
         return Err(format!("rebase: the set dropped {running:?}'s commit"));
     }
@@ -392,11 +407,15 @@ fn tick(channel: &mut Option<models::Channel>) {
 
 /// Restarts into the slot this boot runs in, with the record as it stands.
 fn restart_here(handle: Handle) {
-    let (Ok(record), Ok(info)) = (record(handle), sys::slot_info(handle, 1)) else {
-        return;
-    };
-    let Ok(active) = slot_of(info.active) else {
-        return;
+    let active = sys::slot_info(handle, 1)
+        .map_err(|e| format!("SLOT_INFO: {e:?}"))
+        .and_then(|info| slot_of(info.active));
+    let (record, active) = match (record(handle), active) {
+        (Ok(record), Ok(active)) => (record, active),
+        (Err(why), _) | (_, Err(why)) => {
+            println!("updated: FAIL restart here: {why}");
+            return;
+        }
     };
     println!("updated: restarting into the running slot");
     let nv = Nv {

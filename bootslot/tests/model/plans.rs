@@ -148,8 +148,9 @@ impl Up {
     /// [`Up::commit`], with `updated`'s BOOTREC_SET of `racing` (from the
     /// record the firmware holds when it runs) trying to land just after the
     /// commit reads the record: while SETTING is held it waits until the
-    /// commit's set is done.
-    fn commit_racing(&mut self, tape: &Tape, racing: Option<fn(&mut Nv, Slot)>) {
+    /// commit's set is done. `racing` gives the set's tag, or `None` when
+    /// `updated` would not set at all.
+    fn commit_racing(&mut self, tape: &Tape, racing: Option<Racer>) {
         if committed(&self.fw, self.slot) {
             return;
         }
@@ -163,8 +164,9 @@ impl Up {
                     record: up.fw,
                     one_shot: None,
                 };
-                change(&mut nv, up.slot);
-                up.user_set(tape, nv, Tag::Other, false);
+                if let Some(tag) = change(&mut nv, up.slot) {
+                    up.user_set(tape, nv, tag, false);
+                }
             }
         };
         let _ = (self.k.commit_step)(
@@ -188,6 +190,10 @@ impl Up {
         race(self);
     }
 }
+
+/// A change `updated` makes to the record it reads, racing probation's
+/// commit, and the tag of its set; `None` when it would not set.
+type Racer = fn(&mut Nv, Slot) -> Option<Tag>;
 
 /// R's boot: what it may write, and the record it means to store if that
 /// changed. Checks rule 7.
@@ -279,16 +285,25 @@ fn tails(up: Up) -> Vec<Vec<Write>> {
     if trial {
         run(&|up, tape| up.commit(tape));
         // `updated`'s set racing probation's commit for SETTING (#1567's
-        // review): a recovery request, and a rollback.
-        run(&|up, tape| up.commit_racing(tape, Some(|nv, _| recovery(nv))));
-        run(&|up, tape| {
-            up.commit_racing(
-                tape,
-                Some(|nv, slot| {
-                    rollback(nv, slot);
-                }),
-            )
-        });
+        // review): a recovery request, a rollback (none when `rollback`
+        // finds nothing to go back to), and a stage's beginning, the one
+        // that leaves this slot's state as the commit read it, so rule 9
+        // sees a commit the race undid (#1598's review).
+        let racers: [Racer; 3] = [
+            |nv, _| {
+                recovery(nv);
+                Some(Tag::Other)
+            },
+            |nv, slot| rollback(nv, slot).then_some(Tag::Other),
+            |nv, slot| {
+                let other = slot.other()?;
+                stage_begin(nv, other);
+                Some(Tag::StageBegin(other))
+            },
+        ];
+        for racer in racers {
+            run(&|up, tape| up.commit_racing(tape, Some(racer)));
+        }
     }
     let commits: &[bool] = if trial { &[false, true] } else { &[false] };
     for &commits in commits {

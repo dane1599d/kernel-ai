@@ -93,8 +93,8 @@ fn every_sequence_of_ten_boots_keeps_the_floors_and_the_rule() {
 
 /// The walk's size, from its own run.
 const STARTS: usize = 4_883;
-const STATES: usize = 425_904;
-const TRANSITIONS: u64 = 2_795_031;
+const STATES: usize = 426_586;
+const TRANSITIONS: u64 = 2_851_033;
 
 /// [`budget`]'s bound is reached: a trial of 3 tries that comes up and is
 /// reset, then dies before *up*, three times over, boots 5 times before R

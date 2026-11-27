@@ -559,11 +559,12 @@ pub fn set(record: Record, one_shot: Option<Slot>) -> Result<(), SetError> {
 /// [`set`], with SETTING held.
 fn set_held(record: Record, one_shot: Option<Slot>) -> Result<(), SetError> {
     // In [`bootslot::glue::bootrec_set`]: checked against the record the
-    // firmware holds now and UP_LOST. In [`bootslot::set_writes`]'s order: the fault path is told the record
-    // before it is written, so a fault just after the write never writes the
-    // record before back (a commit's floors would fall), and told the old one
-    // again if the write fails. The fault path deletes the one-shot whatever
-    // BOOTED holds, so only the record is kept.
+    // firmware holds now and UP_LOST. In [`bootslot::set_writes`]'s order:
+    // the fault path is told the record before it is written, so a fault just
+    // after the write never writes the record before back (a commit's floors
+    // would fall), and told the old one again if the write fails. The fault
+    // path deletes the one-shot whatever BOOTED holds, so only the record is
+    // kept.
     let mut old = None;
     bootslot::glue::bootrec_set(
         bootslot::may_set,

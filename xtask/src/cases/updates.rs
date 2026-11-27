@@ -311,11 +311,13 @@ const REBASE_KEPT: TestCase = boot(
 /// `slot-rebase` boot 2 (#1567's review): `updated` reads the record while
 /// kai-a is a trial and sets it only after probation commits it, so
 /// BOOTREC_SET answers Busy and `updated`'s `set` rebases onto the commit.
+/// `probation_ms=15000` puts the idle commit about 60 s in, well after the
+/// read and inside `updated`'s 120 s wait.
 const REBASE_SETS: TestCase = TestCase {
     then: Some(&REBASE_KEPT),
     ..boot(
         "slot-rebase (2: a set from before the commit is rebased)",
-        "test=update updated=rebase probation_calls=1000 probation_ms=1000 panic=reset",
+        "test=update updated=rebase probation_calls=1000 probation_ms=15000 panic=reset",
         &[
             "slots: up in kai-a (trial, 2 tries left)",
             "updated: rebase: read the record while A is a trial",
