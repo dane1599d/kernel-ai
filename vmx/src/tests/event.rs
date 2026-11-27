@@ -79,3 +79,44 @@ fn exit_information_decodes_or_is_refused() {
     assert_eq!(EventType::from_raw(1), Err(Refusal::ReservedType(1)));
     assert_eq!(EventType::from_raw(8), Err(Refusal::ReservedType(8)));
 }
+
+/// #1492's review: with unrestricted guest and CR0.PE clear (real mode), VM
+/// entry refuses an error code on #GP and the like (26.2.1.3).
+#[test]
+fn a_real_mode_guest_takes_exceptions_without_error_codes() {
+    // Protected mode, as before.
+    assert!(Event::exception_in(13, Some(0), true).is_ok());
+    assert_eq!(
+        Event::exception_in(13, None, true),
+        Err(Refusal::ErrorCode(13))
+    );
+    // Real mode: #GP, #PF, #DF, #TS, #NP, #SS and #AC carry none.
+    for vector in [8, 10, 11, 12, 13, 14, 17, 21] {
+        assert_eq!(
+            Event::exception_in(vector, Some(0), false),
+            Err(Refusal::ErrorCode(vector)),
+            "#{vector}"
+        );
+        let event = Event::exception_in(vector, None, false).unwrap();
+        assert_eq!(event.encode() & 1 << 11, 0, "no error-code bit");
+        assert_eq!(event.check_in(false), Ok(()));
+        // The same event is refused for a protected-mode guest.
+        assert_eq!(event.check(), Err(Refusal::ErrorCode(vector)));
+    }
+    // Vectors that deliver none are the same in both modes.
+    assert!(Event::exception_in(6, None, false).is_ok());
+    assert!(Event::exception_in(6, Some(0), false).is_err());
+    // The mode does not touch other event types: an interrupt, an NMI and an
+    // INTn are checked as before.
+    assert_eq!(Event::interrupt(0x20).check_in(false), Ok(()));
+    assert_eq!(Event::nmi().check_in(false), Ok(()));
+    let coded = Event {
+        error_code: Some(1),
+        ..Event::interrupt(0x30)
+    };
+    assert_eq!(coded.check_in(false), Err(Refusal::ErrorCode(0x30)));
+    assert_eq!(
+        Event::exception_in(32, None, false),
+        Err(Refusal::Vector(32))
+    );
+}
