@@ -44,6 +44,12 @@ pub trait Device: Send {
     fn read_only(&self) -> bool;
     /// Sectors one [`Device::read`] or [`Device::write`] moves at most.
     fn max_sectors(&self) -> u64;
+    /// The device's block in 512-byte sectors: 1, or 8 for 4 KiB blocks
+    /// (G58). Its own reads and writes take whole blocks only; the block
+    /// layer widens a read to whole blocks and refuses a write of part of one.
+    fn block_sectors(&self) -> u64 {
+        1
+    }
     /// Reads `sectors` sectors from `sector`; the bytes stay valid until the next
     /// call on the disk.
     fn read(&mut self, sector: u64, sectors: u64) -> Result<&[u8], &'static str>;
@@ -79,15 +85,40 @@ impl Device for Disk {
     fn read_only(&self) -> bool {
         !self.writable
     }
+    /// On a disk of 4 KiB blocks, whole blocks and a power of two that fits
+    /// the device once a read is widened (`dma::step`), so a file read at it
+    /// never has a piece cross a 2 MiB run.
     fn max_sectors(&self) -> u64 {
-        self.device.max_sectors()
+        dma::step(self.device.max_sectors(), self.device.block_sectors())
     }
+    fn block_sectors(&self) -> u64 {
+        self.device.block_sectors()
+    }
+    /// A read of part of a block reads the whole blocks around it and gives
+    /// back the sectors asked for, so a caller may read one 512-byte sector of
+    /// a disk of 4 KiB blocks.
     fn read(&mut self, sector: u64, sectors: u64) -> Result<&[u8], &'static str> {
-        self.device.read(sector, sectors)
+        let block = self.device.block_sectors();
+        if block == 1 {
+            return self.device.read(sector, sectors);
+        }
+        let wide =
+            dma::widen(sector, sectors, block).ok_or("block: a read past the end of the disk")?;
+        let bytes = self.device.read(wide.sector, wide.sectors)?;
+        let skip = wide.skip as usize;
+        Ok(&bytes[skip..skip + (sectors * dma::SECTOR) as usize])
     }
+    /// A write must be whole blocks: one of part of a block would need the
+    /// rest read first, and is refused instead.
     fn write(&mut self, sector: u64, data: &[u8]) -> Result<(), &'static str> {
         if !self.writable {
             return Err("block: the disk is read-only");
+        }
+        let block = self.device.block_sectors();
+        let whole =
+            sector.is_multiple_of(block) && (data.len() as u64).is_multiple_of(block * dma::SECTOR);
+        if !whole {
+            return Err("block: a write of part of a block");
         }
         self.device.write(sector, data)
     }
@@ -122,11 +153,12 @@ pub fn register(device: Box<dyn Device>) {
     let info = device.info();
     let writable = !device.read_only() && durable(info);
     log!(
-        "{}: disk {:?}, {} sectors ({} KiB), {}",
+        "{}: disk {:?}, {} sectors ({} KiB, {}-byte blocks), {}",
         device.kind(),
         device.serial(),
         device.sectors(),
         device.sectors() / 2,
+        device.block_sectors() * dma::SECTOR,
         match (device.read_only(), writable) {
             (true, _) => "read-only",
             (false, true) if info.volatile_cache => "writable, write-back cache with flush",
@@ -217,16 +249,25 @@ const KNOWN: [(diskmap::Guid, &str); 5] = [
     (diskmap::KAI_B_TYPE, "kai-b"),
 ];
 
-/// `diskmap` reading through a disk.
+/// `diskmap` reading through a disk, in the disk's own LBAs: on a disk of
+/// 4 KiB blocks, a GPT's LBAs are 4 KiB blocks (G58).
 struct Reader<'a>(&'a mut dyn Device);
 
 impl diskmap::Disk for Reader<'_> {
     fn sectors(&self) -> u64 {
-        self.0.sectors()
+        self.0.sectors() / self.0.block_sectors()
+    }
+
+    fn sector_size(&self) -> usize {
+        (self.0.block_sectors() * dma::SECTOR) as usize
     }
 
     fn read(&mut self, lba: u64, out: &mut [u8]) -> Result<(), diskmap::Error> {
-        let max = self.0.max_sectors() as usize * dma::SECTOR as usize;
+        let block = self.0.block_sectors();
+        // Whole blocks per piece, so no read is widened.
+        let max_sectors = self.0.max_sectors() / block * block;
+        let max = max_sectors as usize * dma::SECTOR as usize;
+        let lba = lba * block;
         for (index, chunk) in out.chunks_mut(max).enumerate() {
             let at = lba + (index * max / dma::SECTOR as usize) as u64;
             let sectors = (chunk.len() / dma::SECTOR as usize) as u64;
@@ -268,10 +309,18 @@ pub fn scan() {
                 Err(_) => continue,
             }
         };
+        // The table's LBAs are the disk's blocks; the block layer's are
+        // 512-byte sectors.
+        let block = disk.lock().block_sectors();
         for (kind, name) in KNOWN {
             let Some(part) = table.find(kind) else {
                 continue;
             };
+            let (first, last, sectors) = (
+                part.first * block,
+                (part.last + 1) * block - 1,
+                part.sectors() * block,
+            );
             if found.iter().any(|f| f.kind == kind) {
                 log!("block: a second {name} partition; the first one found is used");
                 continue;
@@ -281,16 +330,16 @@ pub fn scan() {
                 "block: {name} is {} disk {:?}, sectors {} to {} ({} MiB)",
                 locked.kind(),
                 locked.serial(),
-                part.first,
-                part.last,
-                part.sectors() / 2048
+                first,
+                last,
+                sectors / 2048
             );
             drop(locked);
             found.push(Found {
                 kind,
                 disk: disk.clone(),
-                first: part.first,
-                sectors: part.sectors(),
+                first,
+                sectors,
             });
         }
     }
@@ -328,6 +377,9 @@ impl Device for Part<'_> {
     }
     fn max_sectors(&self) -> u64 {
         self.disk.max_sectors()
+    }
+    fn block_sectors(&self) -> u64 {
+        self.disk.block_sectors()
     }
     fn read(&mut self, sector: u64, sectors: u64) -> Result<&[u8], &'static str> {
         let at = self.inside(sector, sectors)?;
@@ -378,7 +430,9 @@ pub fn stream(
     if dma::sectors_for(len) > disk.sectors() {
         return Err("disk: the image is longer than the disk");
     }
-    let max = disk.max_sectors();
+    // Whole pages per read (8 sectors), so every read but the last starts on
+    // a page and is whole 4 KiB blocks; the block layer widens the last.
+    let max = (disk.max_sectors() / 8 * 8).max(8);
     for chunk in dma::chunks(len, max) {
         let data = disk.read(chunk.sector, chunk.sectors)?;
         // keep <= sectors * SECTOR, the length of `data`.

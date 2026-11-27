@@ -28,6 +28,11 @@ const ID_LEN: usize = 20;
 /// returns Ok without sending anything when it was not negotiated; so the kernel
 /// reads the offer itself, before setting the device up (ADR 0004 §6).
 const F_FLUSH: u64 = 1 << 9;
+/// VIRTIO_BLK_F_BLK_SIZE (§5.2.3): `blk_size`, at config offset 20, is the
+/// device's block. Requests still number 512-byte sectors, but QEMU refuses
+/// one that is not whole blocks; virtio-drivers never reads it (G58).
+const F_BLK_SIZE: u64 = 1 << 6;
+const BLK_SIZE_AT: usize = 20;
 
 type Device = VirtIOBlk<KernelHal, PciTransport>;
 
@@ -36,6 +41,8 @@ pub struct Disk {
     /// The device ID QEMU sets with `serial=`.
     serial: String,
     sectors: u64,
+    /// The device's block in 512-byte sectors: 1, or 8 for 4 KiB.
+    block: u64,
     read_only: bool,
     /// Whether the device offered FLUSH, and so negotiated it.
     flush: bool,
@@ -50,7 +57,21 @@ unsafe impl Send for Disk {}
 
 impl Disk {
     fn new(mut transport: PciTransport) -> Result<Disk, &'static str> {
-        let flush = transport.read_device_features() & F_FLUSH != 0;
+        let features = transport.read_device_features();
+        let flush = features & F_FLUSH != 0;
+        let block = match features & F_BLK_SIZE != 0 {
+            true => {
+                let size: u32 = transport
+                    .read_config_space(BLK_SIZE_AT)
+                    .map_err(|_| "blk: cannot read blk_size")?;
+                match size {
+                    512 => 1,
+                    4096 => 8,
+                    _ => return Err("blk: a block size other than 512 or 4096 bytes"),
+                }
+            }
+            false => 1,
+        };
         let mut device = Device::new(transport).map_err(|_| "blk: virtio-blk setup failed")?;
         device.disable_interrupts();
         let mut id = [0u8; ID_LEN];
@@ -68,6 +89,7 @@ impl Disk {
         };
         Ok(Disk {
             sectors: device.capacity(),
+            block,
             read_only: device.readonly(),
             flush,
             device,
@@ -99,6 +121,10 @@ impl block::Device for Disk {
         MAX_SECTORS
     }
 
+    fn block_sectors(&self) -> u64 {
+        self.block
+    }
+
     /// Reads `sectors` sectors from `sector` into the staging buffer.
     fn read(&mut self, sector: u64, sectors: u64) -> Result<&[u8], &'static str> {
         let bytes = dma::check_read(sector, sectors, self.sectors, STAGING_BYTES as u64).map_err(
@@ -108,6 +134,9 @@ impl block::Device for Disk {
                 ReadError::PastEnd => "blk: a read past the end of the disk",
             },
         )?;
+        if !sector.is_multiple_of(self.block) || !sectors.is_multiple_of(self.block) {
+            return Err("blk: a read of part of a block");
+        }
         // Both fit: bytes is at most STAGING_BYTES, and sector is below capacity.
         let bytes = bytes as usize;
         let block = usize::try_from(sector).map_err(|_| "blk: sector number out of range")?;
@@ -133,6 +162,9 @@ impl block::Device for Disk {
                 ReadError::PastEnd => "blk: a write past the end of the disk",
             },
         )? as usize;
+        if !sector.is_multiple_of(self.block) || !sectors.is_multiple_of(self.block) {
+            return Err("blk: a write of part of a block");
+        }
         let block = usize::try_from(sector).map_err(|_| "blk: sector number out of range")?;
         self.staging[..bytes].copy_from_slice(data);
         self.device

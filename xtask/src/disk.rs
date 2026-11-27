@@ -19,6 +19,10 @@ pub const BASE_MEMORY_MIB: u64 = kabi::model::GUEST_BASE_MIB;
 /// (`kernel/src/model.rs`).
 pub const MODEL_MODULE: &str = "kai.model";
 const MIB: u64 = 1024 * 1024;
+/// A 4 KiB block (G58).
+pub const FOUR_K: u64 = 4096;
+/// What a disk of 4 KiB blocks adds to its `-device` (G58).
+pub const BLOCKS_4K: &str = ",logical_block_size=4096,physical_block_size=4096";
 const RAW_LEN: usize = 3 * MIB as usize + 777;
 pub(crate) const GGUF_LEN: usize = 2 * MIB as usize + 4093;
 const GGUF_2_LEN: usize = 2 * MIB as usize + 8189;
@@ -37,6 +41,8 @@ pub struct ModelDisk {
     golden: Option<Golden>,
     /// Attached as an NVMe controller rather than virtio-blk.
     nvme: bool,
+    /// On a disk of 4 KiB blocks, the file padded to whole blocks.
+    four_k: bool,
 }
 
 /// What the `local-ask` and `local-script` cases' model must make the guest show.
@@ -89,6 +95,7 @@ impl ModelDisk {
             sha256: None,
             golden: None,
             nvme: false,
+            four_k: false,
         })
     }
 
@@ -103,6 +110,22 @@ impl ModelDisk {
     /// The same file, attached as an NVMe controller whose serial is `kai-model`.
     pub fn on_nvme(self) -> Self {
         Self { nvme: true, ..self }
+    }
+
+    /// The same file on a disk of 4 KiB blocks (G58): padded with zeros to
+    /// whole blocks, since neither device reads part of one, while the length
+    /// on the command line stays the file's own.
+    pub fn on_4k(self) -> Result<Self, String> {
+        let file = fs::OpenOptions::new()
+            .write(true)
+            .open(&self.path)
+            .map_err(|e| format!("cannot open {}: {e}", self.path.display()))?;
+        file.set_len(self.len.next_multiple_of(FOUR_K))
+            .map_err(|e| format!("cannot pad {}: {e}", self.path.display()))?;
+        Ok(Self {
+            four_k: true,
+            ..self
+        })
     }
 
     /// What `run` prints about the disk.
@@ -138,6 +161,10 @@ impl ModelDisk {
         let device = match self.nvme {
             true => format!("nvme,drive={SERIAL},serial={SERIAL}"),
             false => format!("virtio-blk-pci,drive={SERIAL},serial={SERIAL}"),
+        };
+        let device = match self.four_k {
+            true => format!("{device}{BLOCKS_4K}"),
+            false => device,
         };
         vec![
             "-blockdev".into(),
@@ -201,7 +228,11 @@ pub fn for_case(
         .disk
         .map(|fixture| fixture.write(&target_dir.join("fixtures")))
         .transpose()?;
-    Ok(disk.map(|disk| if case.nvme { disk.on_nvme() } else { disk }))
+    let disk = disk.map(|disk| if case.nvme { disk.on_nvme() } else { disk });
+    match disk {
+        Some(disk) if case.four_k => disk.on_4k().map(Some),
+        disk => Ok(disk),
+    }
 }
 
 /// The deterministic, odd-sized files the boot cases attach.
@@ -342,6 +373,7 @@ mod tests {
             sha256: None,
             golden: None,
             nvme: false,
+            four_k: false,
         }
     }
 

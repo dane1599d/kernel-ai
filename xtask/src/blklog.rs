@@ -134,14 +134,21 @@ pub fn partitions(data_sectors: u64, cache_mib: u64) -> ([diskmap::Spec<'static>
 
 /// Makes a zeroed (sparse) data disk and an empty log for QEMU to fill.
 pub fn prepare(target: &Path, data: Data) -> Result<(), String> {
-    prepare_sized(target, data, None)
+    prepare_sized(target, data, None, false)
 }
 
-/// [`prepare`], with a `kai-data` of `data_mib` on a GPT disk when given.
-pub fn prepare_sized(target: &Path, data: Data, data_mib: Option<u64>) -> Result<(), String> {
+/// [`prepare`], with a `kai-data` of `data_mib` on a GPT disk when given,
+/// and with its GPT in 4 KiB LBAs when `four_k` (G58).
+pub fn prepare_sized(
+    target: &Path,
+    data: Data,
+    data_mib: Option<u64>,
+    four_k: bool,
+) -> Result<(), String> {
     let cache = data.gpt.then_some(CACHE_MIB);
     let sectors = data_mib.map_or(DATA_SECTORS, |mib| mib * 2048);
-    make_disk_sized(&target.join(IMAGE), cache, sectors)?;
+    let sector = if four_k { 4096 } else { SECTOR };
+    make_disk_in(&target.join(IMAGE), cache, sectors, sector)?;
     fs::write(target.join(LOG), b"").map_err(|e| format!("{LOG}: {e}"))
 }
 
@@ -154,7 +161,20 @@ pub fn make_disk(path: &Path, cache_mib: Option<u64>) -> Result<(), String> {
 
 /// [`make_disk`] with a GPT `kai-data` of `data_sectors`.
 fn make_disk_sized(path: &Path, cache_mib: Option<u64>, data_sectors: u64) -> Result<(), String> {
+    make_disk_in(path, cache_mib, data_sectors, SECTOR)
+}
+
+/// [`make_disk_sized`] for a disk of `sector`-byte sectors: the same
+/// partitions at the same bytes, the GPT's LBAs in `sector`s (G58).
+fn make_disk_in(
+    path: &Path,
+    cache_mib: Option<u64>,
+    data_sectors: u64,
+    sector: usize,
+) -> Result<(), String> {
     use std::io::{Seek, SeekFrom, Write as _};
+    // 512-byte sectors in one of the disk's.
+    let per = (sector / SECTOR) as u64;
     let name = path.display();
     let mut image = fs::File::create(path).map_err(|e| format!("{name}: {e}"))?;
     let sectors = match cache_mib {
@@ -166,12 +186,17 @@ fn make_disk_sized(path: &Path, cache_mib: Option<u64>, data_sectors: u64) -> Re
         .map_err(|e| format!("{name}: {e}"))?;
     if let Some(mib) = cache_mib {
         let disk_guid = crate::image::gpt::guid("ci kai-data disk");
-        let parts = partitions(data_sectors, mib).0;
-        let layout = diskmap::layout(sectors, diskmap::Guid(disk_guid), &parts)
+        let mut parts = partitions(data_sectors, mib).0;
+        // Every partition starts and ends on a MiB, so whole disk sectors.
+        for p in &mut parts {
+            p.first /= per;
+            p.last = (p.last + 1) / per - 1;
+        }
+        let layout = diskmap::layout_in(sector, sectors / per, diskmap::Guid(disk_guid), &parts)
             .map_err(|e| format!("{name}: {e:?}"))?;
         for (lba, bytes) in layout {
             image
-                .seek(SeekFrom::Start(lba * SECTOR as u64))
+                .seek(SeekFrom::Start(lba * sector as u64))
                 .and_then(|_| image.write_all(&bytes))
                 .map_err(|e| format!("{name}: {e}"))?;
         }
@@ -194,6 +219,11 @@ pub fn run_args(path: &str) -> Vec<String> {
 /// device offers FLUSH, and NVMe reports a volatile write cache) and never
 /// `-snapshot`; with `data.log`, behind blklogwrites with the log on a second file.
 pub fn qemu_args(data: Data) -> Vec<String> {
+    qemu_args_in(data, false)
+}
+
+/// [`qemu_args`], on a device of 4 KiB blocks when `four_k` (G58).
+pub fn qemu_args_in(data: Data, four_k: bool) -> Vec<String> {
     let mut args = vec![
         String::from("-blockdev"),
         format!("driver=file,filename={IMAGE},node-name=kai-data-file"),
@@ -215,6 +245,10 @@ pub fn qemu_args(data: Data) -> Vec<String> {
     let device = match data.nvme {
         true => format!("nvme,drive={node},serial={SERIAL},write-cache=on"),
         false => format!("virtio-blk-pci,drive={node},serial={SERIAL},write-cache=on"),
+    };
+    let device = match four_k {
+        true => format!("{device}{}", crate::disk::BLOCKS_4K),
+        false => device,
     };
     args.extend([String::from("-device"), device]);
     args

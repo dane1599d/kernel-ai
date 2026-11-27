@@ -104,12 +104,6 @@ pub struct Namespace {
 }
 
 impl Namespace {
-    /// Whether the namespace is plain `sector`-byte blocks with no metadata: the
-    /// only kind the driver's commands describe correctly.
-    pub fn is_plain(&self, sector: u32) -> bool {
-        self.block_bytes == sector && self.metadata_bytes == 0
-    }
-
     pub fn parse(page: &[u8]) -> Result<Self, IdentifyError> {
         if page.len() < IDENTIFY_BYTES {
             return Err(IdentifyError::Short);
@@ -209,17 +203,18 @@ mod tests {
         id[26] = 0;
         id[128..132].copy_from_slice(&(9u32 << 16).to_le_bytes());
         let plain = Namespace::parse(&id).unwrap();
-        assert_eq!(plain.metadata_bytes, 0);
-        assert!(plain.is_plain(512));
-        assert!(!plain.is_plain(4096));
+        assert_eq!((plain.block_bytes, plain.metadata_bytes), (512, 0));
         // 512 bytes of data and 8 of metadata, separate then extended (FLBAS
         // bit 4): neither is something the driver's PRPs describe.
         id[128..132].copy_from_slice(&((9u32 << 16) | 8).to_le_bytes());
         for flbas in [0, 0x10] {
             id[26] = flbas;
             let ns = Namespace::parse(&id).unwrap();
-            assert_eq!((ns.block_bytes, ns.metadata_bytes), (512, 8));
-            assert!(!ns.is_plain(512), "flbas {flbas:#x}");
+            assert_eq!(
+                (ns.block_bytes, ns.metadata_bytes),
+                (512, 8),
+                "flbas {flbas:#x}"
+            );
         }
     }
 

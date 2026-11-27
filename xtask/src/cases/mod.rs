@@ -9,6 +9,7 @@ mod cc;
 mod components;
 mod desksends;
 mod devices;
+mod fourk;
 pub(crate) mod https;
 mod kernel;
 mod modeldl;
@@ -90,6 +91,10 @@ pub struct TestCase {
     /// Attach the disk as an NVMe controller (`-device nvme`) instead of
     /// virtio-blk.
     pub nvme: bool,
+    /// The model disk and the data disk have 4 KiB logical and physical
+    /// blocks (G58): `logical_block_size=4096`, the data disk's GPT in 4 KiB
+    /// LBAs, and the model file padded to whole blocks.
+    pub four_k: bool,
     /// Boot from the GPT disk image (`image/`) built from the ESP, not from QEMU's
     /// directory ESP.
     pub image: bool,
@@ -317,6 +322,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         memory_mib: None,
         kvm_only: false,
         nvme: false,
+        four_k: false,
         image: false,
         dns: false,
         echo: false,
@@ -401,6 +407,7 @@ const LANES: &[&[TestCase]] = &[
     network::CASES,
     https::CASES,
     storage::CASES,
+    fourk::CASES,
     updates::CASES,
     rotate::CASES,
     pkg::CASES,
@@ -472,6 +479,7 @@ mod tests {
             network::CASES,
             https::CASES,
             storage::CASES,
+            fourk::CASES,
             updates::CASES,
             rotate::CASES,
             pkg::CASES,

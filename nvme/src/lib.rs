@@ -9,6 +9,7 @@
 
 #![no_std]
 
+pub mod blocks;
 pub mod command;
 pub mod identify;
 pub mod prp;
