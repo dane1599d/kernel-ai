@@ -510,10 +510,15 @@ fn inside_a_name(words: &[Word], at: usize, len: usize, row: &Action) -> bool {
 /// its place under home: "trash-delete" in "open my trash-delete folder" for
 /// fs_trash on `/home/user/trash-delete`, "trash" in "open my trash folder"
 /// on `/home/user/trash`. A cue said apart from it still counts ("trash
-/// trash-delete"), and so does one where the target is said again apart
-/// from it ("trash the trash folder", #1556's review). Not an option or an
-/// enum's value ("light" in "switch to light-mode" is how it sets), nor a
-/// cue that is a word of the target's aliases.
+/// trash-delete"). Not an option or an enum's value ("light" in "switch to
+/// light-mode" is how it sets), nor a cue that is a word of the target's
+/// aliases.
+///
+/// A cue inside any match of the target is skipped, even where the target is
+/// said twice: "trash the trash folder" asks. Its first "trash" reads alike
+/// to a second naming of the folder ("open my trash folder and tidy my trash
+/// folder"), and a word's place does not tell a verb from a name, so the
+/// line that may be either asks (#1577's review).
 fn inside_argument(
     words: &[Word],
     at: usize,
@@ -542,13 +547,9 @@ fn inside_argument(
             if value_len < len {
                 return false;
             }
-            let starts = matches(words, text, false);
-            let apart = |a: usize, b: usize| a + value_len <= b || b + value_len <= a;
-            starts.iter().any(|&start| {
-                start <= at
-                    && at + len <= start + value_len
-                    && !starts.iter().any(|&other| apart(start, other))
-            })
+            matches(words, text, false)
+                .into_iter()
+                .any(|start| start <= at && at + len <= start + value_len)
         })
 }
 
