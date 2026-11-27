@@ -67,8 +67,16 @@ jobs:
           if [ "$(echo $targets)" = all ]; then
             targets=$(ls fuzz/fuzz_targets/*.rs | xargs -n1 basename | sed 's/\.rs$//' | xargs)
           fi
+          # Each target is a file and a [[bin]] of fuzz/Cargo.toml with that
+          # file as its path, so a file with no [[bin]] fails here, not in its
+          # own job (#1517's review).
+          bins=$(awk '/^\[\[bin\]\]/ { name = ""; next }
+            /^name *=/ { name = $3 }
+            /^path *=/ && name != "" { print name, $3 }' fuzz/Cargo.toml | tr -d '"')
           for t in $targets; do
             [ -f "fuzz/fuzz_targets/$t.rs" ] || { echo "::error::no fuzz target $t (fuzz/fuzz_targets/$t.rs)"; exit 1; }
+            echo "$bins" | grep -qxF "$t fuzz_targets/$t.rs" \
+              || { echo "::error::fuzz target $t has no [[bin]] in fuzz/Cargo.toml with path fuzz_targets/$t.rs"; exit 1; }
           done
           [ -n "$targets" ] || { echo "::error::no fuzz targets"; exit 1; }
           matrix=$(printf '%s\n' $targets | sort -u | jq -R . | jq -sc '{target: .}')
@@ -85,6 +93,9 @@ jobs:
     strategy:
       # One target's crash must not cancel the others' runs.
       fail-fast: false
+      # At most 8 builds at once, so the weekly run does not take every runner
+      # the repository may use; the rest queue (#1517's review).
+      max-parallel: 8
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -96,34 +107,51 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --version 0.13.2 --locked
-      # The P3 and kaimedia targets start from their hostile tests' samples.
-      - name: Seed the P3 and kaimedia corpora
+      # The P3, P8 and kaimedia targets start from their tests' samples: each
+      # job builds and runs only the test that writes its own target's corpus
+      # (#1517's review). A target that gains a `write_fuzz_seeds` joins here.
+      - name: Seed the corpus
         env:
-          FUZZ_SEED_DIR: ${{ github.workspace }}/fuzz/corpus
-        run: cargo test -p surfabi -p look -p deskcore -p kaimedia --test hostile write_fuzz_seeds -- --ignored
-      # The P8 targets start from their harness tests' samples.
-      - name: Seed the P8 corpora
-        env:
+          TARGET: ${{ matrix.target }}
           FUZZ_SEED_DIR: ${{ github.workspace }}/fuzz/corpus
         run: |
-          cargo test -p kaipkg -p fsproto --test fuzz_harness write_fuzz_seeds -- --ignored
-          cargo test -p kaigrants -p kaiagent --test hostile write_fuzz_seeds -- --ignored
-          cargo test -p shellcore --test actlog_hostile write_fuzz_seeds -- --ignored
+          set -eu
+          case "$TARGET" in
+            surfabi_stream | header_page | tree_records) seed="-p surfabi --test hostile" ;;
+            kai_theme) seed="-p look --test hostile" ;;
+            desk_server | desk_queues | desk_parsers | desk_agent) seed="-p deskcore --test hostile" ;;
+            media_decode) seed="-p kaimedia --test hostile" ;;
+            kpkg | tuf_metadata) seed="-p kaipkg --test fuzz_harness" ;;
+            fsproto_request | fsproto_reply) seed="-p fsproto --test fuzz_harness" ;;
+            kai_grants) seed="-p kaigrants --test hostile" ;;
+            agent_manifest) seed="-p kaiagent --test hostile" ;;
+            actlog) seed="-p shellcore --test actlog_hostile" ;;
+            *) echo "$TARGET has no seeding test: it starts from an empty corpus"; exit 0 ;;
+          esac
+          # shellcheck disable=SC2086 # $seed is the words of cargo's arguments.
+          cargo test $seed write_fuzz_seeds -- --ignored --exact
+          [ -n "$(ls -A "$FUZZ_SEED_DIR/$TARGET" 2>/dev/null)" ] \
+            || { echo "::error::the seeding test wrote no corpus for $TARGET"; exit 1; }
       - name: Fuzz
         env:
           TARGET: ${{ matrix.target }}
           SECONDS_EACH: ${{ inputs.seconds || 300 }}
+        # The summary is written whatever the run's result, so a crash's
+        # summary shows its report too (#1517's review); the step then fails
+        # with the run's own status.
         run: |
-          set -o pipefail
+          set +e
           cargo fuzz run --fuzz-dir fuzz "$TARGET" -- -max_total_time="$SECONDS_EACH" -rss_limit_mb=2048 \
-            | tail -n 20 | tee fuzz-summary.txt
+            2>&1 | tee fuzz.log
+          status=${PIPESTATUS[0]}
           {
             echo "### $TARGET"
-            echo "Runner: $RUNNER_NAME, run $GITHUB_RUN_ID, commit $GITHUB_SHA."
+            echo "Runner: $RUNNER_NAME, run $GITHUB_RUN_ID, commit $GITHUB_SHA. Exit status $status."
             echo '```'
-            cat fuzz-summary.txt
+            tail -n 20 fuzz.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
       - if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
