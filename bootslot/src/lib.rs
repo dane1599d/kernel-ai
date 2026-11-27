@@ -103,9 +103,12 @@ pub struct Record {
     /// fault after it spends none in R. In byte 51, which records before it
     /// left zero and the CRC covers: an older decoder reads the record the same
     /// and an older encoder writes it clear, which only spends the try in R.
-    /// The kernel never runs [`boot`] (the firmware picks the slot), so a mark
-    /// an earlier boot left can spare one more try in R, once: R clears it
-    /// whenever it reads it, so it never loops.
+    /// The kernel never runs [`boot`] (the firmware picks the slot), so the
+    /// mark a boot that came up and was then reset leaves can spare the try of
+    /// the next boot, if that one dies before *up*. R clears it whenever it
+    /// reads it, so it never loops, but it can spare one try in R after each
+    /// *up*: a trial of `TRIES` tries boots at most `2 * TRIES - 1` times
+    /// (`tests/model.rs` walks every way there).
     pub came_up: bool,
 }
 
