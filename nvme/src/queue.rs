@@ -37,13 +37,19 @@ impl SubmissionQueue {
         Some((slot, self.tail))
     }
 
-    /// Records the head a completion reported. A head outside the queue is
-    /// ignored, and then the queue keeps the room it thought it had: `false`.
-    /// With commands run one at a time, every completion that reports a head
-    /// inside the queue leaves it empty, so a queue looks full only after
+    /// Records the head a completion reported, if it is one the queue can have:
+    /// from the old head up to the tail, going round (the controller has taken
+    /// no more than was submitted and never un-takes). Any other head, outside
+    /// the queue, behind the old one or past the tail, is ignored and the queue
+    /// keeps the room it thought it had: `false`. With commands run one at a
+    /// time the only right head is the tail, so a queue looks full only after
     /// reports like that ([`SubmissionQueue::full`] would be stale, not true).
     pub fn advance_head(&mut self, head: u16) -> bool {
-        let inside = head < self.entries;
+        if head >= self.entries {
+            return false;
+        }
+        let ahead = |to: u16| (to + self.entries - self.head) % self.entries;
+        let inside = ahead(head) <= ahead(self.tail);
         if inside {
             self.head = head;
         }
@@ -118,6 +124,36 @@ mod tests {
         assert!(!sq.advance_head(9));
         assert!(sq.full());
         assert_eq!((sq.tail(), sq.head()), (1, 2));
+    }
+
+    /// A head the controller cannot have: past the tail, or behind the head it
+    /// reported before. The queue keeps its head, so it does not look full.
+    #[test]
+    fn a_head_past_the_tail_or_behind_the_head_is_ignored() {
+        let mut sq = SubmissionQueue::new(8);
+        for _ in 0..5 {
+            sq.push().expect("room");
+        }
+        assert_eq!((sq.head(), sq.tail()), (0, 5));
+        assert!(!sq.advance_head(6));
+        assert!(!sq.advance_head(7));
+        assert_eq!(sq.head(), 0);
+        assert!(sq.advance_head(3));
+        assert!(!sq.advance_head(2));
+        assert!(!sq.advance_head(0));
+        assert_eq!(sq.head(), 3);
+        assert!(sq.advance_head(3));
+        assert!(sq.advance_head(5));
+        // Round the end: tail 1 after wrapping, head 5 may move to 7, 0 or 1.
+        for _ in 0..4 {
+            sq.push().expect("room");
+        }
+        assert_eq!((sq.head(), sq.tail()), (5, 1));
+        assert!(!sq.advance_head(2));
+        assert!(!sq.advance_head(4));
+        assert!(sq.advance_head(7));
+        assert!(sq.advance_head(0));
+        assert!(sq.advance_head(1));
     }
 
     /// One command at a time, as the driver runs them: each completion reports

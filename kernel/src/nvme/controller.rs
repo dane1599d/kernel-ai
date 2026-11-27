@@ -266,10 +266,12 @@ impl Controller {
                 }
                 if !done.ok() {
                     let (kind, code) = done.status_parts();
-                    crate::log!(
-                        "nvme: opcode {:#04x} failed with status type {kind} code {code:#04x}",
-                        command.dwords[0] & 0xFF
-                    );
+                    if noted() {
+                        crate::log!(
+                            "nvme: opcode {:#04x} failed with status type {kind} code {code:#04x}",
+                            command.dwords[0] & 0xFF
+                        );
+                    }
                     return Err("nvme: a command failed");
                 }
                 return Ok(done);

@@ -69,17 +69,13 @@ static FAILED: AtomicU32 = AtomicU32::new(0);
 
 /// Logs a failed disk call (`call`: "part read", "slot write", ...) with its
 /// cause, which the caller sees only as an error number: `why` is the disk's
-/// own message when it gave one. Only the kinds nothing else reports are
-/// logged: NoMemory, Fault, NotFound and Unavailable (the disk). Invalid and
-/// Permission are `fs`'s own range and rights checks, answered at once to a
-/// caller that sees them; logging them used up the unthrottled lines before
-/// the first bench. Called outside the disk's lock, from the syscall (never
+/// own message when it gave one. Every kind is logged but Invalid and
+/// Permission, which are `fs`'s own range and rights checks, answered at once
+/// to a caller that sees them (logging them used up the unthrottled lines
+/// before the first bench); a kind added to these paths later shows. Called outside the disk's lock, from the syscall (never
 /// from an interrupt), and only on failure.
 fn failed(call: &str, sector: u64, len: u64, error: Error, why: &str) -> Error {
-    if !matches!(
-        error,
-        Error::NoMemory | Error::Fault | Error::NotFound | Error::Unavailable
-    ) {
+    if matches!(error, Error::Invalid | Error::Permission) {
         return error;
     }
     let count = FAILED.fetch_add(1, Ordering::Relaxed).saturating_add(1);
@@ -196,15 +192,8 @@ pub(super) fn write_in(
         return Err(Error::Invalid);
     }
     let mut data = Vec::new();
-    data.try_reserve_exact(len as usize).map_err(|_| {
-        failed(
-            "write",
-            sector,
-            len,
-            Error::NoMemory,
-            "the heap has no room",
-        )
-    })?;
+    data.try_reserve_exact(len as usize)
+        .map_err(|_| failed(call, sector, len, Error::NoMemory, "the heap has no room"))?;
     data.resize(len as usize, 0);
     copy_from_user(slot, buf, &mut data)
         .map_err(|error| failed(call, sector, len, error, "copying in from the caller"))?;
