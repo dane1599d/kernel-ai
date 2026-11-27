@@ -388,6 +388,9 @@ fn each_version_s_line_reads_as_its_own_layout() {
         read("supervisor-state 5\nnotes 0 0 2 01 true 3 0\nshort 0 0 0 0 0 0\nbad 0 x 0 0 0 0 0"),
         [kept]
     );
+    // A number is digits only: `str::parse`'s leading `+` is damage too.
+    assert_eq!(read("supervisor-state 6\nsigned +3 0 0 0 0 0 0 -"), []);
+    assert_eq!(read("supervisor-state 6\nsigned 0 0 0 0 0 0 0 - +3"), []);
     // v6 adds the version after started: `-` is none, a label is kept, and
     // any other word drops the line.
     let mut pkg = one("notes");
@@ -407,5 +410,36 @@ fn each_version_s_line_reads_as_its_own_layout() {
         "supervisor-state 5\nnotes 0 0 2 01 true 3 0\nshort 0 0 0 0 0 0",
     ] {
         state::supervisor_state(text.as_bytes());
+    }
+}
+
+/// The field-by-field check in `state::supervisor_state` catches a decode
+/// that reads a version's lines with the layout before it (the mutation run
+/// by hand for #1554, kept here): each such misreading gives records that
+/// `state::expected` does not, while the right layout gives the same.
+#[test]
+fn a_decode_with_the_layout_before_is_caught() {
+    use supervise::decode;
+    for (magic, before, line) in [
+        (
+            "supervisor-state 6",
+            "supervisor-state 5",
+            "notes 2 1 0 1 1 4 9 p-0123456789ab 2 7",
+        ),
+        (
+            "supervisor-state 5",
+            "supervisor-state 4",
+            "notes 2 1 0 1 1 4 9 2",
+        ),
+        (
+            "supervisor-state 4",
+            "supervisor-state 3",
+            "notes 2 1 0 1 4 9 2",
+        ),
+    ] {
+        let text = format!("{magic}\n{line}");
+        let misread = decode(format!("{before}\n{line}").as_bytes());
+        assert_eq!(decode(text.as_bytes()), state::expected(&text), "{text:?}");
+        assert_ne!(misread, state::expected(&text), "{text:?}");
     }
 }

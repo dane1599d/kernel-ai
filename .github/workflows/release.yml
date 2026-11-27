@@ -152,6 +152,13 @@ jobs:
       - run: cargo xtask release-image --out "$OUT/kernel-ai.img" | tee "$OUT/build.log"
       # The image is gigabytes, most of them kai-data's free space: it travels
       # compressed, and the same zstd on the same bytes writes the same file.
+      # How full each slot is, per PR that touches the image: one runner, since
+      # both build the same bytes. A slot past 80% also gets a warning.
+      - name: Slot fill in the summary
+        if: matrix.runner == 'a'
+        run: |
+          { echo "### Slot fill"; echo; echo '```'; grep '^xtask: slot ' "$OUT/build.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          grep '^xtask: slot .* WARNING' "$OUT/build.log" | while read -r line; do echo "::warning::${line#xtask: }"; done || true
       - run: zstd -19 --single-thread -q --rm "$OUT/kernel-ai.img" -o "$OUT/kernel-ai.img.zst"
       - name: The build left the tree clean
         run: test -z "$(git status --porcelain)"
@@ -162,6 +169,12 @@ jobs:
         run: |
           cargo install --locked --version "$CYCLONEDX_VERSION" cargo-cyclonedx
           .github/release/sbom.sh "$OUT/kernel-ai.cdx.json"
+          # Both runners share a checkout path, so cmp in `assemble` cannot show
+          # a path leaking into the file: look for it here.
+          if grep -nF -e "$PWD" -e /home/runner "$OUT/kernel-ai.cdx.json"; then
+            echo "::error::the SBOM holds a path of this runner"
+            exit 1
+          fi
           cargo xtask notices --check-sbom "$OUT/kernel-ai.cdx.json"
           test -z "$(git status --porcelain)"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

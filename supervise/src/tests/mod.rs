@@ -668,3 +668,51 @@ fn a_withdrawn_version_is_saved_cleared_before_the_app_is_ended() {
     );
     assert_eq!(cx.version.as_deref(), Some("1.0"));
 }
+
+/// What the supervisor says and answers when a withdraw fails: a failed
+/// save ends nothing, so only an app with a pid is said to keep running, and
+/// pkg resends only after NOT_SAVED or NOT_ENDED (#1551 follow-ups 1, 2, 4).
+#[test]
+fn a_failed_withdraw_says_what_runs_and_may_be_sent_again() {
+    let version = "p-0123456789ab";
+    let (line, reply) = WithdrawError::NotSaved(9u8).report("notes", version, Some(12));
+    assert_eq!(
+        line,
+        "notes keeps running package version p-0123456789ab (pid 12): \
+         cannot save it withdrawn: 9"
+    );
+    assert_eq!(reply, "err cannot save it: 9");
+    let (line, reply) = WithdrawError::NotSaved(9u8).report("notes", version, None);
+    assert_eq!(
+        line,
+        "notes keeps package version p-0123456789ab, not running now: \
+         cannot save it withdrawn: 9"
+    );
+    assert!(!line.contains("running package"), "{line}");
+    assert_eq!(reply, "err cannot save it: 9");
+    let (line, reply) = WithdrawError::NotEnded(7u8).report("notes", version, Some(12));
+    assert_eq!(
+        line,
+        "cannot end notes (pid 12) on package version p-0123456789ab: 7"
+    );
+    assert_eq!(reply, "err cannot end it: 7");
+
+    for error in [WithdrawError::NotSaved(9u8), WithdrawError::NotEnded(7)] {
+        for pid in [None, Some(12)] {
+            assert!(withdraw_may_retry(&error.report("notes", version, pid).1));
+        }
+    }
+    for reply in [
+        "ok",
+        RUNS_ANOTHER,
+        NOT_FROM_PKG,
+        NOT_PLANNED,
+        "err only the holder of /system/pkg may run a package",
+        NOT_SAVED,
+        "err cannot save itself: 9",
+        "err cannot end it",
+        "",
+    ] {
+        assert!(!withdraw_may_retry(reply), "{reply:?}");
+    }
+}

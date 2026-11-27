@@ -10,7 +10,8 @@
 //! (ADR 0001 D8), until `powerbox` owns `/system/grants`. The file is read as
 //! hostile: a record for an action this shell does not have is set aside on its
 //! own, and any other bad line refuses the whole file, which the shell then
-//! keeps as `rules.refused` and starts with none. A rule read back is a record with
+//! keeps under its own name (`rules.refused`, then `rules.refused.2` ...) and
+//! starts with none. A rule read back is a record with
 //! no grant node: only the trusted path makes one, on the keystroke. So until
 //! "Always allow" is chosen again, it waives no ask whose owner checks the rule
 //! itself (the stops), and the shell's own asks only.

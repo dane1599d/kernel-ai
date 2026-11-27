@@ -26,6 +26,16 @@ pub const DEVICE_BYTES: u16 = 18;
 pub const CONFIGURATION_BYTES: u16 = 9;
 
 pub const CLASS_HID: u8 = 3;
+pub const CLASS_HUB: u8 = 9;
+/// The hub descriptor (USB 2.0 11.23.2.1). A SuperSpeed hub's is 0x2A, which the
+/// driver does not read: it leaves such hubs alone.
+pub const HUB: u8 = 0x29;
+
+/// Hub class features (USB 2.0 table 11-17) and the change bits that go with them.
+pub const PORT_RESET: u16 = 4;
+pub const PORT_POWER: u16 = 8;
+pub const C_PORT_CONNECTION: u16 = 16;
+pub const C_PORT_RESET: u16 = 20;
 
 fn request(kind: u8, request: u8, value: u16, index: u16, length: u16) -> Request {
     let [v0, v1] = value.to_le_bytes();
@@ -82,6 +92,26 @@ pub fn clear_endpoint_halt(address: u8) -> Request {
     request(0x02, CLEAR_FEATURE, ENDPOINT_HALT, u16::from(address), 0)
 }
 
+/// GET_DESCRIPTOR(Hub) from a hub, `length` bytes.
+pub fn get_hub_descriptor(length: u16) -> Request {
+    request(0xA0, GET_DESCRIPTOR, u16::from(HUB) << 8, 0, length)
+}
+
+/// GET_STATUS of hub port `port` (1-based): four bytes, status then change.
+pub fn get_port_status(port: u8) -> Request {
+    request(0xA3, 0, 0, u16::from(port), 4)
+}
+
+/// SET_FEATURE on hub port `port`.
+pub fn set_port_feature(port: u8, feature: u16) -> Request {
+    request(0x23, 3, feature, u16::from(port), 0)
+}
+
+/// CLEAR_FEATURE on hub port `port`.
+pub fn clear_port_feature(port: u8, feature: u16) -> Request {
+    request(0x23, CLEAR_FEATURE, feature, u16::from(port), 0)
+}
+
 /// Whether a request moves data from the device.
 pub fn reads(request: &Request) -> bool {
     request[0] & 0x80 != 0
@@ -130,6 +160,87 @@ impl Device {
             product: u16::from_le_bytes([bytes[10], bytes[11]]),
             configurations: bytes[17],
         })
+    }
+}
+
+/// What the driver takes from a hub descriptor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HubDescriptor {
+    pub ports: u8,
+    /// Time from a port's power-on to its power being good, in ms.
+    pub power_good_ms: u16,
+    /// The think time of the hub's transaction translator, 0 to 3 for 8, 16, 24
+    /// and 32 full-speed bit times.
+    pub think_time: u8,
+}
+
+/// The most a hub descriptor takes: 7 bytes and two bit masks of 255 ports.
+/// Asked for whole, since a hub of 8 ports or more is longer than 9 bytes.
+pub const HUB_DESCRIPTOR_MAX: u16 = 71;
+
+/// Ports a hub may have (USB 2.0 11.23.2.1: 255), and the most the driver walks.
+pub const MAX_HUB_PORTS: u8 = 15;
+
+impl HubDescriptor {
+    pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
+        // bLength, type, ports, wHubCharacteristics (2), power-on to good,
+        // control current, then the removable and power masks.
+        // A hub of 8 ports or more sends more than the 7 bytes read here; what
+        // follows (the removable and power masks) is not used.
+        if bytes.len() < 7 || bytes[1] != HUB || bytes[0] < 7 {
+            return Err(Error::BadDescriptor);
+        }
+        if bytes[2] == 0 {
+            return Err(Error::BadDescriptor);
+        }
+        let characteristics = u16::from_le_bytes([bytes[3], bytes[4]]);
+        Ok(Self {
+            ports: bytes[2],
+            power_good_ms: u16::from(bytes[5]) * 2,
+            think_time: ((characteristics >> 5) & 0x3) as u8,
+        })
+    }
+}
+
+/// A hub port's status (USB 2.0 table 11-21): wPortStatus and wPortChange.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PortStatus {
+    pub status: u16,
+    pub change: u16,
+}
+
+impl PortStatus {
+    pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
+        match bytes {
+            [s0, s1, c0, c1, ..] => Ok(Self {
+                status: u16::from_le_bytes([*s0, *s1]),
+                change: u16::from_le_bytes([*c0, *c1]),
+            }),
+            _ => Err(Error::BadDescriptor),
+        }
+    }
+
+    pub fn connected(&self) -> bool {
+        self.status & 1 != 0
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.status & (1 << 1) != 0
+    }
+
+    /// Whether the reset finished (C_PORT_RESET).
+    pub fn reset_done(&self) -> bool {
+        self.change & (1 << 4) != 0
+    }
+
+    /// The device's speed as the xHCI numbers it: low, high or else full.
+    pub fn speed(&self) -> u8 {
+        use crate::regs::speed;
+        match (self.status & (1 << 9) != 0, self.status & (1 << 10) != 0) {
+            (true, _) => speed::LOW,
+            (_, true) => speed::HIGH,
+            _ => speed::FULL,
+        }
     }
 }
 
@@ -355,5 +466,59 @@ mod tests {
         bytes[27] = 0;
         assert_eq!(Configuration::parse(&bytes), Err(Error::BadDescriptor));
         assert_eq!(configuration_length(&[9, 4, 0]), Err(Error::BadDescriptor));
+    }
+
+    #[test]
+    fn hub_requests_encode_as_the_hub_class_says() {
+        assert_eq!(get_hub_descriptor(71), [0xA0, 6, 0, 0x29, 0, 0, 71, 0]);
+        assert_eq!(get_port_status(3), [0xA3, 0, 0, 0, 3, 0, 4, 0]);
+        assert_eq!(set_port_feature(2, PORT_POWER), [0x23, 3, 8, 0, 2, 0, 0, 0]);
+        assert_eq!(set_port_feature(2, PORT_RESET), [0x23, 3, 4, 0, 2, 0, 0, 0]);
+        assert_eq!(
+            clear_port_feature(2, C_PORT_RESET),
+            [0x23, 1, 20, 0, 2, 0, 0, 0]
+        );
+        assert!(reads(&get_port_status(1)) && !reads(&set_port_feature(1, PORT_POWER)));
+    }
+
+    #[test]
+    fn a_hub_descriptor_gives_its_ports_power_good_time_and_think_time() {
+        // QEMU's usb-hub (hw/usb/dev-hub.c): 8 ports, so bLength is 10, and
+        // 2 ms to power good.
+        let qemu = [10, 0x29, 8, 0x0A, 0x00, 1, 0, 0x00, 0xFF, 0xFF];
+        let hub = HubDescriptor::parse(&qemu).unwrap();
+        assert_eq!((hub.ports, hub.power_good_ms, hub.think_time), (8, 2, 0));
+        // The first 7 bytes are enough, whatever bLength says of the rest.
+        assert_eq!(HubDescriptor::parse(&qemu[..7]), Ok(hub));
+        // Think time is bits 6:5 of the characteristics.
+        let mut slow = qemu;
+        slow[3] = 0x60;
+        assert_eq!(HubDescriptor::parse(&slow).unwrap().think_time, 3);
+        // No ports, a wrong type, and one that says it is under 7 bytes are refused.
+        let mut none = qemu;
+        none[2] = 0;
+        assert_eq!(HubDescriptor::parse(&none), Err(Error::BadDescriptor));
+        let mut wrong = qemu;
+        wrong[1] = 0x2A;
+        assert_eq!(HubDescriptor::parse(&wrong), Err(Error::BadDescriptor));
+        assert_eq!(HubDescriptor::parse(&qemu[..6]), Err(Error::BadDescriptor));
+        let mut short = qemu;
+        short[0] = 6;
+        assert_eq!(HubDescriptor::parse(&short), Err(Error::BadDescriptor));
+    }
+
+    #[test]
+    fn a_port_status_reads_its_bits_and_its_speed() {
+        use crate::regs::speed;
+        // Connected, enabled, powered, high speed; the reset change is set.
+        let status = PortStatus::parse(&[0x03, 0x05, 0x10, 0x00]).unwrap();
+        assert!(status.connected() && status.enabled() && status.reset_done());
+        assert_eq!(status.speed(), speed::HIGH);
+        let low = PortStatus::parse(&[0x03, 0x03, 0, 0]).unwrap();
+        assert_eq!(low.speed(), speed::LOW);
+        assert!(!low.reset_done());
+        let full = PortStatus::parse(&[0x01, 0x01, 0, 0]).unwrap();
+        assert_eq!((full.speed(), full.enabled()), (speed::FULL, false));
+        assert_eq!(PortStatus::parse(&[1, 0, 0]), Err(Error::BadDescriptor));
     }
 }

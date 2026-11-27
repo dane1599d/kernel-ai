@@ -632,6 +632,24 @@ mod tests {
 
     /// #1557's review: the release's build runners have no cargo-about, so
     /// `--check-sbom` through `main`'s dispatch must never render the notices.
+    /// A temp directory that goes when the test ends, a failed assert included.
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("kai-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn check_sbom_runs_no_cargo_about() {
         let root = crate::workspace_root();
@@ -641,8 +659,8 @@ mod tests {
             .iter()
             .map(|(name, version)| (name.as_str(), version.as_str(), "MIT"))
             .collect();
-        let dir = std::env::temp_dir().join(format!("kai-sbom-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
+        let scratch = Scratch::new("check-sbom-no-cargo-about");
+        let dir = &scratch.0;
         let (good, short) = (dir.join("good.cdx.json"), dir.join("short.cdx.json"));
         fs::write(&good, sbom(&components)).unwrap();
         fs::write(&short, sbom(&components[1..])).unwrap();
@@ -651,7 +669,6 @@ mod tests {
         assert_eq!(dispatch(&root, &args(&good), never), Ok(()));
         let err = dispatch(&root, &args(&short), never).unwrap_err();
         assert!(err.contains("(1 problems)"), "{err}");
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

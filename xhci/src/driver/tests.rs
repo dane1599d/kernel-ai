@@ -102,6 +102,7 @@ fn keyboard() -> Controller<FakeHal> {
         devices: [const { None }; MAX_DEVICES],
         endpoints: [const { None }; MAX_ENDPOINTS],
         errors: 0,
+        hub_deadline: 0,
     };
     controller.devices[0] = Some(device);
     controller.endpoints[0] = Some(endpoint);

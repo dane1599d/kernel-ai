@@ -240,8 +240,9 @@ fn unique_guids_must_be_unique() {
 #[test]
 fn the_type_guids_are_the_ones_shipped() {
     // Fixed for good: an install's partitions are found by them. These are
-    // the bytes main had when per-image GUIDs came (G35), as the GUIDs'
-    // text forms in the doc comments.
+    // the bytes main had when per-image GUIDs came (G35), as GPT stores them:
+    // the first three fields little-endian, unlike the text forms in the doc
+    // comments.
     let shipped: [&str; 6] = [
         "28732ac11ff8d211ba4b00a0c93ec93b",
         "b65d4aed458a434ba62c43439c248fac",
@@ -253,5 +254,28 @@ fn the_type_guids_are_the_ones_shipped() {
     for (kind, hex) in TYPES.iter().zip(shipped) {
         let text: std::string::String = kind.0.iter().map(|b| std::format!("{b:02x}")).collect();
         assert_eq!(text, hex);
+    }
+}
+
+/// `TYPES` is kept by hand, and `layout`'s unique-GUID check trusts it: every
+/// `pub const ..._TYPE: Guid` in this crate must be in it.
+#[test]
+fn every_type_constant_is_in_types() {
+    let source = include_str!("lib.rs");
+    let list = &source[source.find("pub const TYPES").unwrap()..];
+    let list = &list[..list.find("];").unwrap()];
+    let names: Vec<&str> = source
+        .lines()
+        .filter_map(|l| l.strip_prefix("pub const "))
+        .filter_map(|l| l.split_once(": Guid ="))
+        .map(|(name, _)| name)
+        .filter(|name| name.ends_with("_TYPE"))
+        .collect();
+    assert_eq!(names.len(), TYPES.len(), "{names:?}");
+    for name in names {
+        assert!(
+            list.contains(&std::format!("{name},")),
+            "{name} is not in TYPES"
+        );
     }
 }

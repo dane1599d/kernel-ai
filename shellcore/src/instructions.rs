@@ -59,10 +59,14 @@ impl Shell {
     }
 
     /// The answer to a standing instruction's card: an Allow whose ONCE checks
-    /// makes it.
+    /// makes it. A rule node the answer carried that no instruction keeps, as
+    /// when its ONCE fails or the store refuses it, is revoked, so it holds no
+    /// kernel rule slot until a reboot (#1344's review).
     pub(crate) fn answer_instruction(&mut self, pending: Pending, text: &str) -> Reply {
         let id = pending.id;
+        let carried = read_answer(text.trim()).and_then(|(_, granted)| granted.rule);
         let Some(draft) = pending.standing.clone() else {
+            self.revoke_unkept(carried);
             return Reply::err("nothing to confirm");
         };
         let allowed = match (read_answer(text.trim()), &pending.menu) {
@@ -81,6 +85,7 @@ impl Shell {
             _ => Err(String::new()),
         };
         if let Err(why) = allowed {
+            self.revoke_unkept(carried);
             self.record(id, &pending.request, &pending.checked.script, "declined");
             let why = match why.is_empty() {
                 true => why,
@@ -98,7 +103,10 @@ impl Shell {
         );
         let rule = match made {
             Ok(rule) => rule,
-            Err(refused) => return Reply::err(refusal(&refused)),
+            Err(refused) => {
+                self.revoke_unkept(carried);
+                return Reply::err(refusal(&refused));
+            }
         };
         if let Ok(Some(grant)) = allowed {
             self.standing.set_grant(rule, grant);

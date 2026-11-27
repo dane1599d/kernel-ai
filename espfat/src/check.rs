@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 
 use crate::bpb::PER_SECTOR;
 use crate::dir::ATTR_DIR;
-use crate::fat::BAD;
+use crate::fat::kept;
 use crate::volume::{UNKNOWN, Volume};
 use crate::{Disk, Error, SECTOR, u32_at};
 
@@ -16,9 +16,10 @@ pub struct Usage {
     /// Clusters that a file's or directory's chain names, the root's included.
     pub named: u32,
     /// Clusters that some FAT copy in use marks used and no chain names, and
-    /// no copy marks bad.
+    /// no copy marks bad or reserved.
     pub leaked: u32,
-    /// Clusters that some FAT copy in use marks bad. A reclaim keeps them.
+    /// Clusters that some FAT copy in use marks bad, or with a reserved value
+    /// (0x0FFF_FFF0 to 0x0FFF_FFF6). A reclaim keeps them.
     pub bad: u32,
 }
 
@@ -114,8 +115,9 @@ impl<D: Disk> Volume<D> {
     }
 
     /// Clusters that some FAT copy in use marks used but `named` does not hold
-    /// and no copy marks bad, and how many clusters some copy marks bad. A bad
-    /// mark is never freed: it is the only record that the cluster is bad.
+    /// and no copy marks bad or reserved, and how many clusters some copy marks
+    /// so. Those marks are never freed: a bad mark is the only record that the
+    /// cluster is bad, and a reserved one is not espfat's to clear.
     fn leaked(&mut self, named: &Named) -> Result<(Vec<u32>, u32), Error> {
         let g = self.geometry;
         let entries = g.last_cluster() + 1;
@@ -131,7 +133,7 @@ impl<D: Disk> Volume<D> {
                 for slot in 0..PER_SECTOR as usize {
                     let link = u32_at(&sector, slot * 4) & 0x0FFF_FFFF;
                     used[slot] |= link != 0;
-                    bad[slot] |= link == BAD;
+                    bad[slot] |= kept(link, g.last_cluster());
                 }
             }
             for slot in 0..PER_SECTOR as usize {
@@ -164,7 +166,7 @@ impl<D: Disk> Volume<D> {
     /// Frees every leaked cluster in every FAT copy in use, after the same
     /// check, and returns how many it freed. No chain names them, so a cut
     /// anywhere loses nothing; FSInfo's count is "unknown" until the frees
-    /// are durable, and right again after. Clusters marked bad stay marked.
+    /// are durable, and right again after. Clusters marked bad or reserved stay marked.
     pub fn reclaim(&mut self) -> Result<u32, Error> {
         let named = self.named()?;
         let (leaked, bad) = self.leaked(&named)?;

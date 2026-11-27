@@ -19,7 +19,7 @@ use alloc::boxed::Box;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, Ordering};
 use gfxcore::Rect;
-use gfxcore::pixel::{Format, Packer, swap_red_blue};
+use gfxcore::pixel::{Format, Packer};
 use gpu::Gpu;
 use limine::framebuffer::Framebuffer;
 use spin::Mutex;
@@ -76,6 +76,21 @@ static DISPLAY: Mutex<Option<Display>> = Mutex::new(None);
 static BEHIND: AtomicBool = AtomicBool::new(false);
 /// [`surface`] made a shadow: see [`shadowed`].
 static SHADOWED: AtomicBool = AtomicBool::new(false);
+/// Test-only: [`surface`] makes a shadow even over a `0x00RRGGBB` framebuffer,
+/// so a boot on QEMU's GOP (which is) runs the shadow path.
+static FORCE_SHADOW: AtomicBool = AtomicBool::new(false);
+
+/// Makes the next [`surface`] shadow the framebuffer whatever its format. For a
+/// boot case only (`test=display-claim`): call it before the first claim.
+pub fn force_shadow() {
+    FORCE_SHADOW.store(true, Ordering::Relaxed);
+}
+
+/// The framebuffer or virtio-gpu scanout itself, which a shadow is packed onto.
+/// For a boot case that looks at what reached the screen.
+pub fn screen() -> Option<Surface> {
+    DISPLAY.lock().as_ref().map(|display| display.surface)
+}
 
 /// The pixel format Limine reports for `fb`: its red, green and blue sizes and
 /// shifts. Masks that make no pixel (none reported, or overlapping) leave the
@@ -127,6 +142,7 @@ pub fn init_gop(fb: &Framebuffer) -> Option<Surface> {
         stride: (fb.pitch / 4) as usize,
         format: format_of(fb),
     };
+    SHADOWED.store(false, Ordering::Release);
     *DISPLAY.lock() = Some(Display {
         surface,
         backend: Backend::Gop,
@@ -179,6 +195,8 @@ pub fn init_gpu(
     if let Some((width, height)) = gpu.size_mm() {
         log!("display: the EDID says {width}x{height} mm; a virtual screen's size is unknown");
     }
+    // A new display has no shadow yet, whatever the one it replaces had.
+    SHADOWED.store(false, Ordering::Release);
     *DISPLAY.lock() = Some(Display {
         surface,
         backend: Backend::Gpu(Box::new(gpu)),
@@ -206,7 +224,7 @@ pub fn size_mm() -> (u32, u32) {
 pub fn surface() -> Option<Surface> {
     let mut guard = DISPLAY.lock();
     let display = guard.as_mut()?;
-    if display.surface.format.is_native() {
+    if display.surface.format.is_native() && !FORCE_SHADOW.load(Ordering::Relaxed) {
         return Some(display.surface);
     }
     if !display.shadow_tried {
@@ -251,8 +269,9 @@ fn make_shadow(screen: Surface) -> Option<Surface> {
     })
 }
 
-/// Rows packed under one hold of the display lock: a band of a 1920-pixel row
-/// is 123 Ki pixels, so whoever waits for the screen waits that long at most.
+/// Rows packed under one hold of the display lock: a band of 1920-pixel rows is
+/// 120 Ki pixels, so whoever waits for the screen waits that long at most. The
+/// bound grows with the width (2560 pixels: 160 Ki).
 pub const BAND_ROWS: u32 = 64;
 
 /// The rectangle a [`present`] of `rect` packs: the whole screen if an earlier
@@ -327,7 +346,10 @@ fn pack_rows(from: Surface, to: Surface, rect: Rect) {
         match packer {
             Packer::Rgbx => {
                 while src < end {
-                    unsafe { dst.write_volatile(swap_red_blue(src.read())) };
+                    // swap_red_blue by hand: unoptimised, a call a pixel.
+                    let rgb = unsafe { src.read() };
+                    let swapped = ((rgb >> 16) & 0xFF) | (rgb & 0xFF00) | ((rgb & 0xFF) << 16);
+                    unsafe { dst.write_volatile(swapped) };
                     (src, dst) = (src.wrapping_add(1), dst.wrapping_add(1));
                 }
             }

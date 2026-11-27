@@ -185,6 +185,7 @@ mod version;
 mod virtio;
 mod wait_reads_tests;
 mod wake_tests;
+mod watchdog;
 mod workload;
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -335,6 +336,10 @@ extern "C" fn boot_continue() -> ! {
         .map_or(SelfTest::None, |r| selftest::from_cmdline(r.cmdline()));
     if test == SelfTest::TuneAb {
         console::status::keep_off();
+    }
+    if test == SelfTest::DisplayClaim {
+        // QEMU's GOP needs no shadow; this case runs the shadow path on it.
+        display::force_shadow();
     }
     // Not in kmain: configuring allocates, and the heap is mapped only by init_memory.
     if let Some(cmdline) = CMDLINE.response() {

@@ -158,7 +158,9 @@ fn parse(args: &[String]) -> Result<Args, String> {
         match flag.as_str() {
             "--test-root" if !parsed.test_root => parsed.test_root = true,
             "--image-id" if parsed.image_id.is_none() => {
-                parsed.image_id = Some(rest.next().ok_or(USAGE)?.clone());
+                let seed = rest.next().ok_or(USAGE)?;
+                image::image_id(seed)?;
+                parsed.image_id = Some(seed.clone());
             }
             "--out" if parsed.out.is_none() => {
                 parsed.out = Some(PathBuf::from(rest.next().ok_or(USAGE)?));
@@ -338,6 +340,8 @@ mod tests {
         for bad in [
             &["--image-id"][..],
             &["--image-id", "a", "--image-id", "b"],
+            &["--image-id", "--test-root"],
+            &["--image-id", "--out", "x.img"],
             &["--out"],
             &["--test-root", "--test-root"],
             &["extra"],
@@ -345,7 +349,7 @@ mod tests {
             assert!(parse(&args(bad)).is_err(), "{bad:?}");
         }
         assert!(image::image_id("pc-1").is_ok());
-        for seed in ["", "a b", "é", &"x".repeat(65)] {
+        for seed in ["", "a b", "é", &"x".repeat(65), "-x", "--test-root"] {
             assert!(image::image_id(seed).is_err(), "{seed:?}");
         }
     }
