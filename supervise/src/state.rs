@@ -172,6 +172,16 @@ pub fn encode(records: &[Record]) -> String {
     text
 }
 
+/// A number in the saved state: ASCII digits only, as [`encode`] writes it.
+/// `str::parse` also takes a leading `+`, which no supervisor writes, so a
+/// word with one is damage and drops its line like any other bad number.
+fn saved_number(word: &str) -> Option<u64> {
+    if word.is_empty() || !word.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    word.parse().ok()
+}
+
 /// Decodes saved records. Anything unreadable yields no records rather than an error:
 /// a supervisor must still start when its saved state is damaged.
 pub fn decode(bytes: &[u8]) -> Vec<Record> {
@@ -190,13 +200,13 @@ pub fn decode(bytes: &[u8]) -> Vec<Record> {
         .filter_map(|line| {
             let mut words = line.split_whitespace();
             let name = words.next()?.to_string();
-            let restarts = words.next()?.parse().ok()?;
-            let quick_failures = words.next()?.parse().ok()?;
+            let restarts = saved_number(words.next()?)?;
+            let quick_failures = saved_number(words.next()?)?;
             let gave_up = words.next()? == "1";
             let stopped = has_stopped && words.next()? == "1";
             let keep = has_keep && words.next()? == "1";
-            let pid = words.next()?.parse().ok()?;
-            let started_ms = words.next()?.parse().ok()?;
+            let pid = saved_number(words.next()?)?;
+            let started_ms = saved_number(words.next()?)?;
             let version = if has_version {
                 match words.next()? {
                     "-" => None,
@@ -206,10 +216,7 @@ pub fn decode(bytes: &[u8]) -> Vec<Record> {
             } else {
                 None
             };
-            let recent = words
-                .map(str::parse)
-                .collect::<Result<Vec<u64>, _>>()
-                .ok()?;
+            let recent = words.map(saved_number).collect::<Option<Vec<u64>>>()?;
             Some(Record {
                 name,
                 restarts,
