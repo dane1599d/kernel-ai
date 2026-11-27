@@ -85,10 +85,11 @@ impl Device for Disk {
     fn read_only(&self) -> bool {
         !self.writable
     }
-    /// Less than the device's on a disk of 4 KiB blocks, so a read widened
-    /// to whole blocks still fits it.
+    /// On a disk of 4 KiB blocks, whole blocks and a power of two that fits
+    /// the device once a read is widened (`dma::step`), so a file read at it
+    /// never has a piece cross a 2 MiB run.
     fn max_sectors(&self) -> u64 {
-        dma::widened_max(self.device.max_sectors(), self.device.block_sectors())
+        dma::step(self.device.max_sectors(), self.device.block_sectors())
     }
     fn block_sectors(&self) -> u64 {
         self.device.block_sectors()
@@ -117,7 +118,7 @@ impl Device for Disk {
         let whole =
             sector.is_multiple_of(block) && (data.len() as u64).is_multiple_of(block * dma::SECTOR);
         if !whole {
-            return Err("block: a write of part of a 4 KiB block");
+            return Err("block: a write of part of a block");
         }
         self.device.write(sector, data)
     }

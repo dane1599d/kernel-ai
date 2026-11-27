@@ -115,6 +115,25 @@ pub fn widened_max(max: u64, block: u64) -> u64 {
     max.saturating_sub(2 * (block - 1)).max(1)
 }
 
+/// Sectors in a 2 MiB run, the model copy's unit.
+const RUN_SECTORS: u64 = (2 << 20) / SECTOR;
+
+/// What a disk of `block`-sector blocks, whose driver moves `max` sectors at
+/// most, offers as its most sectors a read: `max` on a disk of 512-byte
+/// blocks; on one of 4 KiB blocks, the largest power of two of whole blocks
+/// that still fits once a read is widened. A power of two, so pieces of a file
+/// read at that step never cross a 2 MiB run (1024 sectors on a 512-byte
+/// disk, 512 on a 4 KiB one).
+pub fn step(max: u64, block: u64) -> u64 {
+    if block <= 1 {
+        return max;
+    }
+    // At most a 2 MiB run's sectors, which a power of two below divides.
+    let fits = widened_max(max, block).min(RUN_SECTORS);
+    let pow = 1u64 << (63 - fits.leading_zeros());
+    pow.max(block)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,6 +154,27 @@ mod tests {
         let whole = widen(16, 8, 8).unwrap();
         assert_eq!((whole.sector, whole.sectors, whole.skip), (16, 8, 0));
         assert_eq!(widen(u64::MAX - 1, 4, 8), None);
+    }
+
+    /// A 4 KiB disk's step is whole blocks and a power of two, and pieces of
+    /// a file read at it never cross a 2 MiB run (#1615's review).
+    #[test]
+    fn a_4k_step_is_whole_blocks_and_never_crosses_a_run() {
+        const RUN: u64 = 2 << 20;
+        assert_eq!(step(1024, 1), 1024);
+        assert_eq!(step(1024, 8), 512);
+        for max in [64, 256, 1000, 1024, 4096, 1 << 16] {
+            let s = step(max, 8);
+            assert!(s.is_power_of_two() && s.is_multiple_of(8), "max {max}: {s}");
+            assert!(widen(1, s, 8).unwrap().sectors <= max, "max {max}");
+            // A 9 MiB file in pieces of `s` sectors, as `block::stream` and
+            // the model fill read it.
+            let len = 9 * (1 << 20) + 777;
+            for chunk in chunks(len, s) {
+                let end = chunk.offset + chunk.keep;
+                assert_eq!(chunk.offset / RUN, (end - 1) / RUN, "max {max}: {chunk:?}");
+            }
+        }
     }
 
     #[test]

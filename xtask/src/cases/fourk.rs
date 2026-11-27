@@ -76,6 +76,7 @@ pub(super) const CASES: &[TestCase] = &[
             true,
             &[
                 "blocks of 4096 bytes",
+                "4096-byte blocks), writable",
                 "block: kai-data is nvme disk ",
                 MODEL,
                 "fs: up; kai-data has ",

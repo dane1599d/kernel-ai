@@ -281,9 +281,9 @@ fn every_type_constant_is_in_types() {
 }
 
 /// A disk of `size`-byte sectors.
-struct Sized(Vec<u8>, usize);
+struct SizedDisk(Vec<u8>, usize);
 
-impl Disk for Sized {
+impl Disk for SizedDisk {
     fn sectors(&self) -> u64 {
         (self.0.len() / self.1) as u64
     }
@@ -326,23 +326,23 @@ fn a_4kn_table_reads_back_in_4k_lbas() {
     }
     assert_eq!(&bytes[S4..S4 + 8], b"EFI PART");
     assert_eq!(&bytes[510..512], &[0x55, 0xAA]);
-    let table = read(&mut Sized(bytes.clone(), S4)).unwrap();
+    let table = read(&mut SizedDisk(bytes.clone(), S4)).unwrap();
     assert!(!table.from_backup);
     let data = table.find(KAI_DATA_TYPE).unwrap();
     assert_eq!((data.first, data.last), (256, sectors - 6));
     // The primary gone: the backup, at the last 4 KiB LBA.
     bytes[S4..2 * S4].fill(0);
-    let backup = read(&mut Sized(bytes.clone(), S4)).unwrap();
+    let backup = read(&mut SizedDisk(bytes.clone(), S4)).unwrap();
     assert!(backup.from_backup);
     assert_eq!(backup.partitions, table.partitions);
     // Read as 512-byte sectors, the 4Kn disk has no table.
-    assert!(read(&mut Sized(bytes, SECTOR)).is_err());
+    assert!(read(&mut SizedDisk(bytes, SECTOR)).is_err());
 }
 
 #[test]
 fn other_sector_sizes_are_refused() {
     assert_eq!(
-        read(&mut Sized(vec![0; 2048 * 64], 2048)),
+        read(&mut SizedDisk(vec![0; 2048 * 64], 2048)),
         Err(Error::SectorSize)
     );
     assert_eq!(layout_in(1024, 1 << 16, g(9), &[]), Err(Error::SectorSize));
