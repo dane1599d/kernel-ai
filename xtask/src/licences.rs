@@ -62,6 +62,11 @@ impl Rules {
                 .is_some_and(|ids| ids.iter().any(|a| a == id))
     }
 
+    /// The expression `deny.toml` gives crate `name` in place of its metadata's.
+    pub fn clarified(&self, name: &str) -> Option<&str> {
+        self.clarify.get(name).map(String::as_str)
+    }
+
     /// Lower is preferred; exceptions come after the whole free class.
     fn rank(&self, id: &str) -> usize {
         self.allow
