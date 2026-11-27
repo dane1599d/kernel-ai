@@ -424,6 +424,11 @@ pub trait Host {
     fn rules_write(&self, _text: &str) -> Result<(), String> {
         Ok(())
     }
+    /// Keeps a rules file refused at start as `/system/state/rules.refused`, so
+    /// `rules` may be written again; an error leaves `rules` unwritten all run.
+    fn rules_set_aside(&self, _text: &str) -> Result<(), String> {
+        Err(String::from("this host keeps no refused file"))
+    }
     /// The keep-running list as `/system/state/keep` holds it, and why not
     /// when it could not be read.
     fn keep_read(&self) -> Result<Option<String>, String> {
