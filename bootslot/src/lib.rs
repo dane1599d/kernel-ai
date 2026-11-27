@@ -328,6 +328,42 @@ pub fn arm_writes<E>(
     }
 }
 
+/// Which of *up*'s writes failed ([`up_writes`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpFailed<E> {
+    /// The record was not stored: the firmware still holds the try this boot
+    /// spent, so this boot must never arm its slot again while it is a trial
+    /// ([`may_set`]'s `up_lost`).
+    Record(E),
+    OneShot(E),
+}
+
+/// *Up*'s steps, in the kernel's order: the fault path is told the new record
+/// first (`tell`), so a fault just after the record's write never writes the
+/// record before back (that would give a trial its try back while its
+/// one-shot is still set), then the record, then the one-shot.
+pub fn up_writes<E>(
+    tell: impl FnOnce(),
+    record: impl FnOnce() -> Result<(), E>,
+    one_shot: impl FnOnce() -> Result<(), E>,
+) -> Result<(), UpFailed<E>> {
+    tell();
+    record().map_err(UpFailed::Record)?;
+    one_shot().map_err(UpFailed::OneShot)
+}
+
+/// The fault path's writes: the fault in the record it was last told, then
+/// the one-shot deleted, so R boots next. The one-shot goes whether or not the
+/// record was stored. The first error, if any.
+pub fn fault_writes<E>(
+    record: impl FnOnce() -> Result<(), E>,
+    one_shot: impl FnOnce() -> Result<(), E>,
+) -> Result<(), E> {
+    let stored = record();
+    let deleted = one_shot();
+    stored.and(deleted)
+}
+
 /// What a BOOTREC_SET tells the fault path, which writes the record it was
 /// last told ([`set_writes`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -20,7 +20,7 @@
 
 use crate::efi::{self, Guid, KAI, NV_BS_RT};
 use crate::{bootfiles, ipc, log, threads};
-use bootslot::{InR, Nv, Reason, Record, Refused, Slot};
+use bootslot::{InR, Nv, Reason, Record, Refused, Slot, UpFailed};
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
@@ -314,27 +314,31 @@ fn lever(test: bool) {
         }
         Action::Restart | Action::Panic | Action::EfiFault => {}
     }
-    // The fault path is told *up*'s record before it is written, as
-    // BOOTREC_SET tells it ([`bootslot::set_writes`]): a fault after the
-    // write must not put the record before back, which would give the try
-    // back to a trial whose one-shot is still set.
-    *BOOTED.lock() = Some((nv, slot));
-    if test {
-        finish(&nv, write(&before, &nv));
-    }
-    // A normal boot writes the one-shot that *up* armed and keeps running:
-    // [`write`]'s two writes, apart so a lost record is known.
-    match write_record(&before, &nv) {
-        Err(error) => {
-            log!("slots: SetVariable failed: {error:?}");
-            UP_LOST.store(true, Ordering::SeqCst);
-        }
-        Ok(()) if nv.one_shot != before.one_shot => {
-            if let Err(error) = write_one_shot(nv.one_shot) {
-                log!("slots: SetVariable failed: {error:?}");
+    // In [`bootslot::up_writes`]'s order: the fault path is told *up*'s
+    // record before it is written, as BOOTREC_SET tells it, so a fault after
+    // the write never puts the record before back (that would give the try
+    // back to a trial whose one-shot is still set). A lost record is kept in
+    // UP_LOST, so this boot never arms its slot again as a trial.
+    let written = bootslot::up_writes(
+        || *BOOTED.lock() = Some((nv, slot)),
+        || write_record(&before, &nv),
+        || {
+            if nv.one_shot == before.one_shot {
+                return Ok(());
             }
-        }
-        Ok(()) => {}
+            write_one_shot(nv.one_shot)
+        },
+    );
+    if let Err(UpFailed::Record(_)) = written {
+        UP_LOST.store(true, Ordering::SeqCst);
+    }
+    let written = written.map_err(|(UpFailed::Record(error) | UpFailed::OneShot(error))| error);
+    if test {
+        finish(&nv, written);
+    }
+    // A normal boot keeps running.
+    if let Err(error) = written {
+        log!("slots: SetVariable failed: {error:?}");
     }
     let trial = !nv.record.slot(slot).successful;
     // A trial slot runs on probation until it commits (ADR 0008 §5).
@@ -643,9 +647,8 @@ pub fn on_fault() {
     bootslot::fault(&mut after, slot, FAULT_PANIC, 0);
     // The one-shot is deleted whatever BOOTED remembers of it (a fault just
     // after set() wrote one may come before BOOTED was told), so R boots next.
-    let record = write_record(&before, &after);
-    let one_shot = write_one_shot(None);
-    match record.and(one_shot) {
+    let written = bootslot::fault_writes(|| write_record(&before, &after), || write_one_shot(None));
+    match written {
         Ok(()) => log!("slots: fault recorded in {}; R boots next", entry_id(slot)),
         Err(error) => log!("slots: cannot record the fault: {error:?}"),
     }
