@@ -183,7 +183,10 @@ fn a_refused_rules_file_is_kept_aside_and_rules_save_again() {
     host.calls.borrow_mut().push_back(call(STOP_BUILD3));
     host.procs.borrow_mut().push(String::from("build-3"));
     let mut shell = shell(&host);
-    assert_eq!(host.rules_aside.borrow().as_deref(), Some(bad));
+    assert_eq!(
+        *host.rules_aside.borrow(),
+        [(String::from("rules.refused"), String::from(bad))]
+    );
     shell.eval("stop build-3");
     let once = host.mint(1, "process_stop(\"build-3\")");
     let added = shell.eval(&format!("answer 1 always-kind once={once}"));
@@ -193,6 +196,52 @@ fn a_refused_rules_file_is_kept_aside_and_rules_save_again() {
     );
     let saved = host.rules_disk.borrow().clone().unwrap_or_default();
     assert!(saved.contains("action=process_stop"), "{saved:?}");
+}
+
+/// #1512's review: a second refused rules file wrote over the first refused
+/// copy. Each is kept under its own name, and the audit says which.
+#[test]
+fn a_second_refused_rules_file_keeps_the_first() {
+    let first = "kai-grants 1\nrule 1 action=set_policy target=a target=b from=prompt:3 made=2026-11-02T10:20:00Z\n";
+    let second = "kai-grants 1\nrule 2 action=set_policy target=c target=d from=prompt:4 made=2026-11-03T10:20:00Z\n";
+    let host = FakeHost::new();
+    host.rules_aside_ok.set(true);
+    *host.rules_disk.borrow_mut() = Some(String::from(first));
+    let _shell = shell(&host);
+    *host.rules_disk.borrow_mut() = Some(String::from(second));
+    let _shell = shell(&host);
+    assert_eq!(
+        *host.rules_aside.borrow(),
+        [
+            (String::from("rules.refused"), String::from(first)),
+            (String::from("rules.refused.2"), String::from(second)),
+        ]
+    );
+    let audits = host.audit.borrow().join("\n");
+    assert!(
+        audits.contains("they are kept as rules.refused.2,"),
+        "{audits}"
+    );
+}
+
+/// The names a refused rules file may take, first free first; none once
+/// all [`crate::MAX_REFUSED_RULES`] are taken.
+#[test]
+fn a_refused_rules_file_takes_the_first_free_name() {
+    assert_eq!(
+        crate::refused_rules_name(|_| false).as_deref(),
+        Some("rules.refused")
+    );
+    let taken = ["rules.refused", "rules.refused.2"];
+    assert_eq!(
+        crate::refused_rules_name(|n| taken.contains(&n)).as_deref(),
+        Some("rules.refused.3")
+    );
+    assert_eq!(
+        crate::refused_rules_name(|n| n != "rules.refused.9").as_deref(),
+        Some("rules.refused.9")
+    );
+    assert_eq!(crate::refused_rules_name(|_| true), None);
 }
 
 /// #1344's review: an "Always allow" whose rule was not saved said "added" as if

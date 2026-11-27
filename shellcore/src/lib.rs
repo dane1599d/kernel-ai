@@ -106,7 +106,10 @@ pub use effects::EffectDone;
 pub use engine::Exec;
 use engine::Line;
 pub use guard::placeholder_target;
-pub use host::{Consent, FsChange, FsRead, FsRefused, FsUndone, Host, NO_FILES, NO_NET, Proof};
+pub use host::{
+    Consent, FsChange, FsRead, FsRefused, FsUndone, Host, MAX_REFUSED_RULES, NO_FILES, NO_NET,
+    Proof, refused_rules_name,
+};
 pub use ledger::LogFailed;
 pub use panel::PanelResult;
 use rhai::{AST, Dynamic, Engine, EvalAltResult, Scope};

@@ -18,10 +18,12 @@ impl Shell {
 
     /// The log `/system/log` holds, so `undo` works across a reboot; a text that
     /// is not `actlog 1` is set aside, and the log starts again.
-    /// The rules `/system/state/rules` holds. A file refused whole is set
-    /// aside: the shell starts with none and never writes over it this run, so
-    /// the next rule change cannot make the loss permanent (#10). A rule whose
-    /// action is not in the registry is set aside alone, and audited.
+    /// The rules `/system/state/rules` holds. A file refused whole is kept
+    /// under its own name (`rules.refused`, then `rules.refused.2` ...), so
+    /// the rules made from now on save, and the refused copy is never lost
+    /// (#10, #1512's review). Only when it cannot be kept is `rules` left
+    /// unwritten this run. A rule whose action is not in the registry is set
+    /// aside alone, and audited.
     pub(crate) fn with_saved_rules(mut self) -> Self {
         let read = self.host.rules_read();
         let Some(text) = self.read_at_start(RULES, read) else {
@@ -39,9 +41,9 @@ impl Shell {
             // saved: refused once, a file would be refused at every start and no
             // rule would ever save again.
             Err(why) => match self.host.rules_set_aside(&text) {
-                Ok(()) => self.host.audit(&format!(
+                Ok(name) => self.host.audit(&format!(
                     "the rules on disk were refused ({why}); they are kept as \
-                     rules.refused, and the shell starts with none"
+                     {name}, and the shell starts with none"
                 )),
                 Err(not) => {
                     self.host.audit(&format!(
@@ -82,8 +84,8 @@ impl Shell {
     pub(crate) fn not_unread(&self, what: &str) -> Result<(), String> {
         match self.unread.contains(&what) {
             true => Err(format!(
-                "the {what} on disk could not be read at start, or was refused, so it \
-                 is not written over"
+                "the {what} on disk could not be read at start, or could not be kept \
+                 aside once refused, so the file is not written over"
             )),
             false => Ok(()),
         }

@@ -185,8 +185,6 @@ pub fn apply_rows(settings: &mut Settings, app: &str, answer: &[u8]) -> Result<(
     Ok(())
 }
 
-/// Characters that are not drawn as themselves: controls, the zero-width and
-/// direction marks, the line and paragraph separators, and the byte-order mark.
 /// What the shell said about a change it took, for the log, when it said
 /// anything: a removal it could not save says it holds for this boot only and
 /// may come back after a restart (#1344's review), which the page alone, with
@@ -197,6 +195,8 @@ pub fn change_note(answer: &[u8]) -> Option<String> {
     (!text.is_empty()).then(|| format!("settings: {text}"))
 }
 
+/// Characters that are not drawn as themselves: controls, the zero-width and
+/// direction marks, the line and paragraph separators, and the byte-order mark.
 fn hidden(c: char) -> bool {
     c.is_control()
         || matches!(
