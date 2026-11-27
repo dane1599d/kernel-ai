@@ -5,9 +5,11 @@
 //! The rule: the one-shot always names the slot to boot next if nothing goes
 //! wrong, and no one-shot means the recovery slot R. Every event below changes
 //! only the record and the one-shot; the kernel writes them with `efi.rs` and
-//! resets. The test drives every event sequence up to length 8 and checks that
-//! no boot ever lands on a slot with no tries left: each lands on R, a committed
-//! slot, or a trial slot with tries.
+//! resets, in the orders [`up_writes`], [`set_writes`], [`fault_writes`] and
+//! [`arm_writes`] give, and BOOTREC_SET takes only what [`may_set`] allows.
+//! `tests/model` drives those same functions through every sequence of boots
+//! it walks and checks that no boot ever lands on a slot with no tries left:
+//! each lands on R, a committed slot, or a trial slot with tries.
 
 #![no_std]
 
@@ -109,7 +111,7 @@ pub struct Record {
     /// reads it, and every arm clears it, so a mark never outlives the arm of
     /// the slot whose *up* set it (a rollback or a stage cannot carry it to a
     /// fresh trial). It can still spare one try in R after each *up*: a trial
-    /// of `TRIES` tries boots at most `2 * TRIES - 1` times (`tests/model.rs`
+    /// of `TRIES` tries boots at most `2 * TRIES - 1` times (`tests/model`
     /// walks every way there).
     pub came_up: bool,
 }
