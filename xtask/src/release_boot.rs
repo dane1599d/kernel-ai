@@ -11,7 +11,9 @@
 //! installs the release in `kai-a` and `kai-b` as trials, arms `kai-a` and
 //! resets. So this boot, unlike the cases', runs without `-no-reboot`: the
 //! same QEMU, disk and firmware variables go on into `kai-a`, as a person's
-//! VM does, and the desk and the keys come on that boot.
+//! VM does, and the desk and the keys come on that boot. The keys wait for
+//! `slots: up in kai-a`, which R's boot never prints: R's desktop may print
+//! `desktop: claimed` just before its reset, and keys sent then are lost.
 
 use crate::cases::release::RELEASE_BOOT;
 use crate::options::{Accel, Sizing};
@@ -163,6 +165,13 @@ mod tests {
         const { assert!(RELEASE_BOOT.stops) };
         assert_eq!(RELEASE_BOOT.keys.len(), RELEASE_BOOT.keys_on.len());
         assert!(RELEASE_BOOT.expect.iter().all(|text| !text.is_empty()));
+        assert_eq!(RELEASE_BOOT.keys_on[0], crate::cases::release::KAI_A_UP);
+        assert!(RELEASE_BOOT.keys_on[0].contains("kai-a"));
+        assert!(
+            RELEASE_BOOT
+                .expect
+                .contains(&crate::cases::release::KAI_A_UP)
+        );
         assert!(RELEASE_BOOT.data.is_none() && RELEASE_BOOT.import.is_none());
     }
 
