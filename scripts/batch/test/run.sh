@@ -722,6 +722,22 @@ ff 8 9 10
 check "an agentcore/ file is a model change"   'has "  + #8 (feat/ac1)" && has "  - #9 changes what the model sees, and so does #8"'
 check "a neighbouring shellcore file is not"  'has "  + #10 (feat/other)"'
 
+echo "== config.sh: MODEL_PATHS names every file that feeds a model prompt"
+setup
+mp=$(bash -c 'source "$1/config.sh" && echo "$MODEL_PATHS"' _ "$B")
+for f in llmproto/src/act.rs infer/src/lib.rs quant/src/lib.rs gguf/src/lib.rs user/src/bin/llm.rs user/src/bin/llm/local.rs \
+  user/src/pool.rs agentabi/src/lib.rs shellcore/src/agentcore.rs shellcore/src/agentcore/turn.rs shellcore/src/state.rs \
+  goalcore/src/planner.rs user/src/bin/goals.rs user/src/bin/shell/ui.rs \
+  shellcore/src/ui.rs shellcore/src/apps.rs shellcore/src/apps/rows.rs shellcore/src/appbuild.rs shellcore/src/request.rs \
+  shellcore/src/guard.rs shellcore/src/tune.rs shellcore/src/cmode/program.rs \
+  deskcore/src/agent.rs deskcore/src/view/mod.rs; do
+  check "$f is a model path" "echo '$f' | grep -qE '$mp'"
+done
+for f in shellcore/src/other.rs shellcore/src/cmode/saved.rs shellcore/src/uix.rs goalcore/src/goal.rs goalcore/src/planner/tests.rs \
+  user/src/bin/shell/host.rs user/src/bin/desktop/agent.rs deskcore/src/view/tests.rs deskcore/src/agent_tests.rs deskcore/src/files.rs; do
+  check "$f is not" "! (echo '$f' | grep -qE '$mp')"
+done
+
 echo "== setup(): no stub hook is left behind for the next case"
 for f in ready-hook fluency-hook on-ready moved-head edit-fails; do : > "$T/$f"; done
 setup
