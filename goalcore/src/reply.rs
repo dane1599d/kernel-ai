@@ -12,6 +12,7 @@
 //!                               ok ran #<entry>: <line>
 //!                               err failed #<entry>: <line>     (allowed, then failed)
 //!                               err not run #<entry>: <line>    (a no)
+//!                               err lapsed #<entry>: <line>     (not answered in time)
 //!                               err unknown step #<entry>       (a no)
 //! ```
 
@@ -28,6 +29,9 @@ pub enum Reply {
     Waiting,
     /// The person's no, or no answer kept for the entry: the step did not run.
     NotRun(String),
+    /// The card was not answered in time: no no, and no run. The step is held,
+    /// and may be asked again.
+    Lapsed(String),
     /// The goal's ceiling refused it: the shell restarted (it keeps no grants) or
     /// the goal was revoked.
     Refused(String),
@@ -54,6 +58,9 @@ pub fn read(reply: &str) -> Reply {
     }
     if let Some(why) = reply.strip_prefix("err not run ") {
         return Reply::NotRun(why.to_string());
+    }
+    if let Some(why) = reply.strip_prefix("err lapsed ") {
+        return Reply::Lapsed(why.to_string());
     }
     if reply.starts_with("err unknown step #") {
         return Reply::NotRun(String::from("no answer is kept for it"));
@@ -134,6 +141,10 @@ mod tests {
             Reply::NotRun("#17: you said no".to_string())
         );
         assert!(matches!(read("err unknown step #17"), Reply::NotRun(_)));
+        assert_eq!(
+            read("err lapsed #17: Not run: it was not answered within two minutes."),
+            Reply::Lapsed("#17: Not run: it was not answered within two minutes.".to_string())
+        );
     }
 
     #[test]

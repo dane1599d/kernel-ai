@@ -71,8 +71,14 @@ pub fn plan_line(goal: &Goal) -> String {
     for step in goal.log.iter().rev().take(LINE_STEPS) {
         let what = match step.status {
             StepStatus::Ran => continue,
+            // Closed vocabulary only: a note can hold an app's or a server's
+            // text, so it picks between fixed words and is never quoted.
+            StepStatus::Failed if step.note.contains("did not land") => {
+                "failed, its file changes did not land"
+            }
             StepStatus::Failed => "failed",
             StepStatus::Denied => "refused by the person",
+            StepStatus::Held if step.note == crate::LAPSED => "not answered in time",
             StepStatus::Held => "held back",
             StepStatus::Asked => "waits on the person",
             StepStatus::Running => "is running",

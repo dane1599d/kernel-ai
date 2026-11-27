@@ -47,6 +47,8 @@ pub enum Outcome {
     Done(StepDone),
     /// The person said no where the door asked (the card), with why: not run.
     Denied(String),
+    /// The card lapsed unanswered: no no, and not run.
+    Lapsed,
     /// Not answered yet: the step waits on the person's card. It stays in flight,
     /// and the steps are asked about it again next turn (a poll, not a second
     /// send), so a card the person leaves open holds no other goal, and their
@@ -70,6 +72,11 @@ pub enum Event {
     },
     /// The person said no to the step on the card: it did not run.
     Denied {
+        goal: u64,
+        step: u32,
+    },
+    /// The step's card was not answered in time: it did not run, and is no no.
+    Lapsed {
         goal: u64,
         step: u32,
     },
@@ -236,6 +243,14 @@ impl<C: Clone + PartialEq> Runner<C> {
                     step: n,
                     entry,
                 });
+            }
+            Outcome::Lapsed => {
+                if goal.lapse_running().is_ok() {
+                    events.push(Event::Lapsed {
+                        goal: goal.id,
+                        step: n,
+                    });
+                }
             }
             Outcome::Denied(why) => {
                 if goal.deny_running(&why).is_ok() {

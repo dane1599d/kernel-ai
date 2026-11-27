@@ -23,7 +23,7 @@
 //!   step then stays in flight (`Outcome::Later`) and this agent asks `agent-step
 //!   wait <entry>` once a turn, about once a second, until `ok ran #n`, `err failed
 //!   #n` (the person allowed it and it failed: a failed step), `err not run #n` (a
-//!   no) or `err unknown step #n` (a no). Meanwhile the other goals go on,
+//!   no), `err lapsed #n` (not answered in time: held, no no) or `err unknown step #n` (a no). Meanwhile the other goals go on,
 //!   and the person's queued pause or cancel comes through: a card left open holds
 //!   nothing else. The person answers once, on the card; this agent answers no
 //!   question itself.
@@ -389,6 +389,8 @@ impl Steps<String> for ShellSteps {
             Reply::Waiting => Outcome::Later,
             // The person's no on the card: the step did not run.
             Reply::NotRun(why) => Outcome::Denied(why),
+            // Left unanswered: held, not refused, and free to be asked again.
+            Reply::Lapsed(_) => Outcome::Lapsed,
             // Refused at the ceiling: the shell restarted (its grants are not kept)
             // or the goal was revoked. The goal pauses; it is not tried again in a
             // loop.
@@ -413,6 +415,9 @@ fn report(event: &Event) {
         }
         Event::Denied { goal, step } => {
             println!("goals: goal {goal} step {step}: the person said no");
+        }
+        Event::Lapsed { goal, step } => {
+            println!("goals: goal {goal} step {step}: its question was not answered in time");
         }
         Event::Repeated { goal, row } => {
             println!("goals: goal {goal} paused: {row} again, after the person said no to it");

@@ -27,6 +27,8 @@ pub const ENDED_IN_FLIGHT: &str = "the goal ended while this step ran";
 pub const FINISHED_AFTER_END: &str = "it finished after the goal ended";
 /// The note on a step the planner wrote again after the person said no to it:
 /// held, and the goal paused until they resume it.
+/// The note of a step whose question the person left unanswered.
+pub const LAPSED: &str = "its question was not answered in time";
 pub const REPEATED: &str = "you said no to this step before; resume the goal to let it ask again";
 
 /// What became of a proposed step.
@@ -596,6 +598,21 @@ impl Goal {
         if let Some(step) = self.log.iter_mut().rev().find(|s| s.n == n) {
             step.status = StepStatus::Denied;
             step.note = valid::clean(why);
+        }
+        Ok(())
+    }
+
+    /// The running step's card lapsed unanswered: no no, so it is not counted
+    /// as denied and is not remembered as refused; it is held, and the goal
+    /// goes on, free to plan it again.
+    pub fn lapse_running(&mut self) -> Result<(), Refusal> {
+        let Some(n) = self.flight.take() else {
+            return Err(Refusal::NoStepRunning);
+        };
+        self.asked = self.asked.saturating_add(1);
+        if let Some(step) = self.log.iter_mut().rev().find(|s| s.n == n) {
+            step.status = StepStatus::Held;
+            step.note = String::from(LAPSED);
         }
         Ok(())
     }

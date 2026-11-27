@@ -67,11 +67,17 @@ struct Recorded {
     next_entry: u64,
     /// Rows the person says no to on the card.
     deny: Vec<&'static str>,
+    /// Rows whose card lapses unanswered, once each.
+    lapse: Vec<&'static str>,
 }
 
 impl Steps<&'static str> for Recorded {
     fn run(&mut self, goal: u64, step: &Step<&'static str>) -> Outcome {
         self.ran.push((goal, step.row.clone()));
+        if let Some(at) = self.lapse.iter().position(|row| *row == step.row) {
+            self.lapse.remove(at);
+            return Outcome::Lapsed;
+        }
         if self.deny.contains(&step.row.as_str()) {
             return Outcome::Denied("the person said no".to_string());
         }
@@ -540,4 +546,45 @@ fn a_no_on_the_card_is_a_denied_step_not_a_failed_one() {
     assert!(goal.flight.is_none());
     let text = goals.to_text();
     assert_eq!(Goals::parse(&text).as_ref(), Ok(&goals), "{text}");
+}
+
+/// A card nobody answered is no no: the step is held, counted as no refusal,
+/// not remembered as one, and may be asked again.
+#[test]
+fn a_lapsed_card_is_held_not_denied_and_may_ask_again() {
+    let mut goals = Goals::new();
+    let id = approved(&mut goals);
+    let mut planner = Script(VecDeque::from([
+        Plan::Step(step("fs_list")),
+        Plan::Step(step("fs_list")),
+    ]));
+    let mut steps = Recorded {
+        lapse: vec!["fs_list"],
+        ..Recorded::default()
+    };
+    let mut runner = Runner::new();
+    let events = go(
+        &mut runner,
+        &mut goals,
+        T0 + 1,
+        Presence::Away,
+        &mut planner,
+        &mut steps,
+    );
+    assert_eq!(events, [Event::Lapsed { goal: id, step: 1 }]);
+    let goal = goals.get(id).unwrap();
+    assert_eq!(goal.log[0].status, StepStatus::Held);
+    assert_eq!(goal.log[0].note, crate::LAPSED);
+    assert_eq!((goal.steps_run, goal.denied), (0, 0));
+    assert!(goal.flight.is_none());
+    // The same step again is asked, not held as one the person refused.
+    let events = go(
+        &mut runner,
+        &mut goals,
+        T0 + 2,
+        Presence::Away,
+        &mut planner,
+        &mut steps,
+    );
+    assert!(matches!(events[..], [Event::Ran { .. }]), "{events:?}");
 }

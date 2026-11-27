@@ -61,7 +61,7 @@ const LAPSED: &str = "Not run: it waited more than two minutes for the card.";
 /// The line for a card's question answered after its two minutes: the
 /// card's countdown says Deny then, and a late answer at the console finds it
 /// expired too (the kernel sends the two alike), so neither ran.
-const UNANSWERED: &str = "Not run: it was not answered within two minutes.";
+pub(crate) const UNANSWERED: &str = "Not run: it was not answered within two minutes.";
 /// The line for a question on the card that the console's own line let go.
 const DROPPED: &str = "Not run: a line typed in the console let the question go.";
 /// What a window's decline is told once its question is on the card.

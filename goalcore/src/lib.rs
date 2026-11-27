@@ -78,7 +78,7 @@ pub use goal::{
     State, Step, StepLog, StepStatus, Tier,
 };
 pub use goals::Goals;
-pub use run::{ENDED_IN_FLIGHT, FINISHED_AFTER_END, REPEATED, Refusal, StepDone, Verdict};
+pub use run::{ENDED_IN_FLIGHT, FINISHED_AFTER_END, LAPSED, REPEATED, Refusal, StepDone, Verdict};
 pub use text::MAGIC;
 
 /// Longest text of a goal, a note or a step's note.

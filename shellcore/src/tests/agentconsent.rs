@@ -102,6 +102,22 @@ fn a_run_whose_changes_did_not_land_is_told_as_failed_not_as_a_no() {
     );
 }
 
+/// A card nobody answered in two minutes is told as lapsed, not as the
+/// person's no, so the goals agent holds the step and does not log a refusal.
+#[test]
+fn a_card_that_lapsed_is_told_as_lapsed_not_as_a_no() {
+    let (_host, mut shell, badge) = with_agent();
+    assert!(step(&mut shell, badge, RR).starts_with("ok asked "));
+    let menu = take_agents_card(&mut shell);
+    shell.pending = None;
+    shell.desk_answered(Some((menu.id, "allow")), &crate::Reply::err("x"), true);
+    let told = step(&mut shell, badge, &format!("wait {}", menu.id));
+    assert!(
+        told.starts_with(&format!("err lapsed #{}:", menu.id)),
+        "{told}"
+    );
+}
+
 /// bug-hunt-5 H5-8: while the console is at c>, the person's Allow on an
 /// agent's card runs its call as at kai>, never goes to cc as C, and the
 /// agent's wait hears that it ran.
