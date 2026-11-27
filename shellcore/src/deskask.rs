@@ -360,6 +360,9 @@ impl Shell {
         // Don't and a lapse are no failure: only a run that failed is an
         // error row.
         let failed = !ran && !declined && !lapsed;
+        // An agent's step the shell refused (its Allow not checked) ran
+        // nothing: that is a no for it, not a run that failed.
+        let failed = failed && !(refused && matches!(asker, Asker::Agent(_)));
         self.desk_told(id, asker, ran, failed, line);
     }
 
