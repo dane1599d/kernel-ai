@@ -185,6 +185,7 @@ mod version;
 mod virtio;
 mod wait_reads_tests;
 mod wake_tests;
+mod watchdog;
 mod workload;
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

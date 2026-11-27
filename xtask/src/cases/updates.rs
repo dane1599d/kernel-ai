@@ -134,6 +134,106 @@ const A_COMMITS: TestCase = TestCase {
     )
 };
 
+/// `watchdog-hang` (ADR 0008 §5): B, staged, hangs with interrupts off before
+/// its checks on each of its three tries. Only the i6300esb resets it, so R
+/// finds a boot that never came up, spends a try for it, and after the third
+/// moves to A. The watchdog gives a trial 5 s here.
+const fn hangs(name: &'static str) -> TestCase {
+    TestCase {
+        watchdog: true,
+        ..boot(
+            name,
+            "test=slot slot-do=hang watchdog_s=5 panic=reset",
+            &[
+                "slots: booted kai-b",
+                "watchdog: armed for 5 s",
+                "slots: slot-do=hang: interrupts off on this CPU for good",
+            ],
+        )
+    }
+}
+
+const WD_A_AGAIN: TestCase = boot(
+    "watchdog-hang (10: back on kai-a)",
+    "test=slot watchdog_s=5 panic=reset",
+    &[
+        "slots: booted kai-a (record read)",
+        "slots: up in kai-a (committed, 0 tries left)",
+        "slots: kai-b cannot boot (Unbootable)",
+        "slots: next boot kai-a",
+    ],
+);
+const WD_R_GIVES_UP: TestCase = TestCase {
+    then: Some(&WD_A_AGAIN),
+    ..boot(
+        "watchdog-hang (9: R moves to kai-a)",
+        "test=slot watchdog_s=5 panic=reset",
+        &[
+            "slots: booted recovery (record read)",
+            "slots: R arms kai-a (committed)",
+        ],
+    )
+};
+const WD_HANG_3: TestCase = TestCase {
+    then: Some(&WD_R_GIVES_UP),
+    ..hangs("watchdog-hang (8: kai-b hangs a third time)")
+};
+const WD_R_RETRIES_2: TestCase = TestCase {
+    then: Some(&WD_HANG_3),
+    ..boot(
+        "watchdog-hang (7: R tries kai-b again)",
+        "test=slot watchdog_s=5 panic=reset",
+        &[
+            "slots: booted recovery (record read)",
+            "slots: R arms kai-b (trial)",
+        ],
+    )
+};
+const WD_HANG_2: TestCase = TestCase {
+    then: Some(&WD_R_RETRIES_2),
+    ..hangs("watchdog-hang (6: kai-b hangs again)")
+};
+const WD_R_RETRIES: TestCase = TestCase {
+    then: Some(&WD_HANG_2),
+    ..boot(
+        "watchdog-hang (5: R tries kai-b again)",
+        "test=slot watchdog_s=5 panic=reset",
+        &[
+            "slots: booted recovery (record read)",
+            "slots: R arms kai-b (trial)",
+        ],
+    )
+};
+const WD_HANG: TestCase = TestCase {
+    then: Some(&WD_R_RETRIES),
+    ..hangs("watchdog-hang (4: kai-b hangs before its checks)")
+};
+const WD_STAGES_B: TestCase = TestCase {
+    then: Some(&WD_HANG),
+    ..boot(
+        "watchdog-hang (3: kai-a stages kai-b)",
+        "test=slot slot-do=stage slot-seq=2 watchdog_s=5 panic=reset",
+        &[
+            "slots: up in kai-a (committed, 0 tries left)",
+            "slots: staged kai-b as release 2; restarting into it",
+            "slots: next boot kai-b",
+        ],
+    )
+};
+const WD_COMMITS: TestCase = TestCase {
+    then: Some(&WD_STAGES_B),
+    ..boot(
+        "watchdog-hang (2: kai-a commits)",
+        "test=slot slot-do=commit watchdog_s=5 panic=reset",
+        &[
+            "slots: booted kai-a (record read)",
+            "watchdog: armed for 5 s",
+            "slots: committed kai-a",
+            "slots: next boot kai-a",
+        ],
+    )
+};
+
 /// The first boot of a fresh slot disk: R installs and arms A.
 const INSTALL: &[&str] = &[
     "slots: booted recovery (record missing)",
@@ -485,6 +585,12 @@ pub(super) const CASES: &[TestCase] = &[
     TestCase {
         then: Some(&A_COMMITS),
         ..boot("slot-ab", "test=slot panic=reset", INSTALL)
+    },
+    // A trial that hangs with interrupts off (ADR 0008 §5): the hardware
+    // watchdog resets it, and R counts each lost boot as a failed try.
+    TestCase {
+        then: Some(&WD_COMMITS),
+        ..boot("watchdog-hang", "test=slot panic=reset", INSTALL)
     },
     // The Update kind (ADR 0008 §10): `updated` alone reaches the slots and the
     // boot record, and stages the slot that is not running.

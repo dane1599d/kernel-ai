@@ -16,7 +16,12 @@
 //! `test=slot` drives the lever from the command line for the `slot-ab` case:
 //! `slot-do=commit`, `slot-do=stage` (the other slot, as `slot-seq=`),
 //! `slot-do=panic` (before the checks) and `slot-do=efi-fault` (a fault inside
-//! a firmware call, before the checks), each ending the boot in a reset.
+//! a firmware call, before the checks), each ending the boot in a reset, and
+//! `slot-do=hang` (interrupts off for good, before the checks), which only the
+//! watchdog ends.
+//!
+//! A trial boot runs with the hardware watchdog armed ([`crate::watchdog`])
+//! from the moment the lever finds it a trial until probation commits it.
 
 use crate::efi::{self, Guid, KAI, NV_BS_RT};
 use crate::{bootfiles, ipc, log, threads};
@@ -179,6 +184,7 @@ pub enum Action {
     Stage(u32),
     Panic,
     EfiFault,
+    Hang,
 }
 
 fn action() -> Action {
@@ -188,6 +194,7 @@ fn action() -> Action {
         Some("stage") => Action::Stage(seq),
         Some("panic") => Action::Panic,
         Some("efi-fault") => Action::EfiFault,
+        Some("hang") => Action::Hang,
         _ => Action::Restart,
     }
 }
@@ -254,7 +261,19 @@ fn lever(test: bool) {
         bootslot::Start::Slot(_) => {}
     }
     *BOOTED.lock() = Some((before, slot));
+    // A trial that hangs with interrupts off resets, and R counts the lost
+    // boot (ADR 0008 §5).
+    if !before.record.slot(slot).successful && !crate::watchdog::arm(crate::watchdog::trial_s()) {
+        log!("slots: no hardware watchdog for this trial");
+    }
     let action = if test { action() } else { Action::Restart };
+    if action == Action::Hang {
+        log!("slots: slot-do=hang: interrupts off on this CPU for good");
+        loop {
+            x86_64::instructions::interrupts::disable();
+            x86_64::instructions::hlt();
+        }
+    }
     if action == Action::Panic {
         panic!("slots: slot-do=panic before the required checks");
     }
@@ -305,7 +324,7 @@ fn lever(test: bool) {
                 entry_id(other)
             );
         }
-        Action::Restart | Action::Panic | Action::EfiFault => {}
+        Action::Restart | Action::Panic | Action::EfiFault | Action::Hang => {}
     }
     // In [`bootslot::up_writes`]'s order: the fault path is told *up*'s
     // record before it is written, as BOOTREC_SET tells it, so a fault after
@@ -426,6 +445,7 @@ fn commit(slot: Slot, calls: u64, elapsed_ms: u64) {
                 elapsed_ms / 1000
             );
             COMMITTED.store(true, Ordering::SeqCst);
+            crate::watchdog::disarm();
         }
         Err(error) => log!("slots: cannot commit {}: {error:?}", entry_id(slot)),
     }

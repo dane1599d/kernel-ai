@@ -80,6 +80,7 @@ pub fn on_tick() {
     if percpu::index() == 0 {
         hpet::on_tick(TICKS.fetch_add(1, Ordering::Relaxed) + 1);
     }
+    crate::watchdog::on_tick(ticks);
     arm(cpu.tick_start_ns.load(Ordering::Relaxed) + (ticks + 1) * period_ns());
 }
 
