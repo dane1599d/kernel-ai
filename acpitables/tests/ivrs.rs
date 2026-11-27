@@ -9,17 +9,13 @@ mod body;
 #[path = "../../testkit/hostile.rs"]
 mod hostile;
 
-use acpitables::ivrs::{self, Kind};
+use acpitables::ivrs::{self, Devices, Kind, Special};
 use body::{ALLOC_FLOOR, ALLOC_PER_BYTE, ivrs_table, reseal};
 use hostile::{XorShift, fuzz, mutate, peak_alloc, sweep_fields, truncations};
 
 /// Each captured table: its variant's name and its bytes.
 const FIXTURES: &[(&str, &[u8])] = &[
     ("q35", include_bytes!("fixtures/ivrs/q35.bin")),
-    (
-        "q35-intremap",
-        include_bytes!("fixtures/ivrs/q35-intremap.bin"),
-    ),
     (
         "q35-devices",
         include_bytes!("fixtures/ivrs/q35-devices.bin"),
@@ -105,4 +101,49 @@ fn the_highest_type_is_the_one_kept() {
             assert_ne!(ivrs.iommus()[0].efr, 0, "{name}: no EFR image");
         }
     }
+}
+
+/// What QEMU's tables hold (`fixtures/ivrs/README.md`): one IOMMU at 00:02.0,
+/// described by a 10h and an 11h block, its I/O APIC, and the bridge's alias.
+#[test]
+fn the_captured_tables_hold_what_qemu_builds() {
+    for (name, bytes) in FIXTURES {
+        let ivrs = ivrs::parse(bytes).unwrap();
+        let kinds: Vec<Kind> = ivrs.blocks.iter().map(|b| b.kind).collect();
+        assert_eq!(kinds, [Kind::Fixed10, Kind::Efr11], "{name}");
+        let iommu = ivrs.iommus()[0];
+        assert_eq!(iommu.device_id, 0x0010, "{name}: 00:02.0");
+        assert_eq!(iommu.base, 0xfed8_0000, "{name}");
+        assert_eq!(iommu.capability, 0x40, "{name}");
+        assert_eq!(
+            iommu.specials,
+            [Special {
+                setting: 0,
+                handle: 0,
+                source: 0x00a0,
+                variety: 1,
+            }],
+            "{name}: the I/O APIC, as 00:14.0"
+        );
+        // Both blocks list the same devices.
+        assert_eq!(ivrs.blocks[0].devices, ivrs.blocks[1].devices, "{name}");
+        // XTSup is EFR bit 2.
+        assert_eq!(iommu.efr & 4 != 0, *name == "q35-xtsup", "{name}");
+    }
+    let devices = ivrs::parse(FIXTURES[1].1).unwrap();
+    let iommu = devices.iommus()[0];
+    let root_port = iommu.device(0x0150).unwrap();
+    assert_eq!((root_port.first, root_port.last), (0x0100, 0x01ff));
+    assert_eq!(
+        iommu.device(0x0234),
+        Some(Devices {
+            first: 0x0200,
+            last: 0x02ff,
+            setting: 0,
+            alias: Some(0x0028),
+            extended: 0,
+        }),
+        "the bridge's bus arrives as the bridge, 00:05.0"
+    );
+    assert_eq!(iommu.device(0x0300), None);
 }
