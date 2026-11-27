@@ -6,7 +6,8 @@
 //! "move everything except the pdfs into notes/archive") keeps the goal.
 //!
 //! Read in clauses. A clause ends at `,` `;` `:` `!` `?` or a sentence's `.`, and
-//! before "but", "then", "instead", "however", "though", "although", "while" or
+//! at `,` `;` `:` `!` `?` inside a word that is not a path ("the drafts,don't
+//! touch notes/q3"), and before "but", "then", "instead", "however", "though", "although", "while" or
 //! "whereas", and before an "and" that starts another order ("and trash ...",
 //! "and don't ..."). In a clause:
 //!
@@ -325,7 +326,12 @@ fn clauses(line: &str, starts_order: impl Fn(&str) -> bool) -> Vec<Clause> {
         .collect();
     // Each word, and the mark after it: 0 none, 1 a comma, 2 a stronger one.
     let mut marked: Vec<(Word, u8)> = Vec::new();
-    for raw in line.split_whitespace() {
+    // A word that is not a path splits after an inner mark: "drafts,don't".
+    let pieces = line.split_whitespace().flat_map(|token| {
+        let split = !token.contains('/');
+        token.split_inclusive(move |c: char| split && ",;:!?".contains(c))
+    });
+    for raw in pieces {
         let raw = raw.trim_start_matches(|c: char| "\"'(".contains(c));
         let core = raw.trim_end_matches(|c: char| ",;:!?.)\"'".contains(c));
         let tail = &raw[core.len()..];

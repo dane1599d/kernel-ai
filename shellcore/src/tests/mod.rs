@@ -40,6 +40,7 @@ mod effects;
 mod fake_host;
 mod files;
 mod fuzz;
+mod goalkeep;
 mod goalreports;
 mod goals;
 mod goalsteps;
