@@ -40,6 +40,7 @@ use crate::{ipc, log, threads};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use kabi::{ExitReason, Limits};
 
 /// The plan lines this case adds: room for a 1920x1080 frame and the text
@@ -189,12 +190,16 @@ fn judged<'a>(
             );
         }
         log!(
-            "desk-perf: ratio: {what}, {run}: {}: {} {} ms at {}x, {} ms per baseline",
+            "desk-perf: ratio: {what}, {run}: {}: {} {} ms at {}x, {} ms per baseline; the streaming work {} ns, {}x the reference's",
             figure.name,
             figure.label,
             hundredths_text(figure.value),
             hundredths_text(ratio_hundredths(reference)),
-            hundredths_text(per_baseline(figure.value, reference))
+            hundredths_text(per_baseline(figure.value, reference)),
+            STREAM_NS.load(Ordering::Relaxed),
+            hundredths_text(
+                STREAM_NS.load(Ordering::Relaxed).saturating_mul(100) / reference.max(1)
+            )
         );
     }
     let over = kabi::perf::misses_judged(reply, reference, composite);
@@ -323,9 +328,17 @@ fn open_scene(frames: usize) -> impl FnMut() -> Result<Vec<u8>, &'static str> {
 /// The reference work's median, timed by `desktop` now.
 fn reference_ns() -> Result<u64, &'static str> {
     let reply = perf("perf reference")?;
-    kabi::perf::reference_ns(&String::from_utf8_lossy(&reply))
-        .ok_or("desk-perf: desktop's reference line did not parse")
+    let reply = String::from_utf8_lossy(&reply);
+    let stream =
+        kabi::perf::stream_ns(&reply).ok_or("desk-perf: desktop's stream line did not parse")?;
+    STREAM_NS.store(stream, Ordering::Relaxed);
+    log!("desk-perf: the streaming work's median is {stream} ns (not judged)");
+    kabi::perf::reference_ns(&reply).ok_or("desk-perf: desktop's reference line did not parse")
 }
+
+/// The streaming work's median as last timed, in ns: logged with each figure's
+/// ratio, judged by nothing yet.
+static STREAM_NS: AtomicU64 = AtomicU64::new(0);
 
 /// The reference work's median, and whether it is a runner too slow to judge.
 fn too_slow() -> Result<(u64, bool), &'static str> {
