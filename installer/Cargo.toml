@@ -1,0 +1,20 @@
+[package]
+name = "installer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# The installer's plan (ADR 0008 §1 and §12, P8 row 2): the ordered writes that
+# lay out a target disk from the running image. `no_std` + `alloc`, so the
+# device step and the host tests run the same code.
+[lib]
+doctest = false
+
+[dependencies]
+diskmap = { path = "../diskmap" }
+kaifs = { path = "../kaifs", default-features = false }
+sha2 = { version = "0.11.1", default-features = false }
+
+[dev-dependencies]
+kaifs = { path = "../kaifs" }

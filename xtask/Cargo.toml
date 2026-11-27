@@ -22,6 +22,7 @@ gguf = { path = "../gguf" }
 infer = { path = "../infer" }
 diskmap = { path = "../diskmap" }
 kaifs = { path = "../kaifs" }
+installer = { path = "../installer" }
 kaimem = { path = "../kaimem" }
 kaipkg = { path = "../kaipkg", features = ["online"] }
 # `release-repo` checks the founder's signatures and reads their PEM keys with it

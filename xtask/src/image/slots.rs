@@ -24,7 +24,7 @@ use std::path::Path;
 pub const SLOTS: [&str; 3] = ["kai-r", "kai-a", "kai-b"];
 /// ADR 0008 section 1's partition sizes in MiB, in disk order: the ESP,
 /// `kai-r`, `kai-a` and `kai-b`. 2,368 MiB before `kai-data`.
-pub const PARTITION_MIB: [u64; 4] = [64, 256, 1024, 1024];
+pub const PARTITION_MIB: [u64; 4] = installer::PARTITION_MIB;
 /// Volume ids, one per partition, fixed so the image is deterministic.
 const VOLUME_IDS: [u32; 4] = [0x4B41_4931, 0x4B41_4952, 0x4B41_4941, 0x4B41_4942];
 /// The slot disk's default image id, which seeds the disk's and partitions'
@@ -594,6 +594,35 @@ mod tests {
             gpt::guid("kernel-ai-slots partition kai-a")
         );
         crate::fs_tool::main(&["check".into(), b.display().to_string()]).unwrap();
+        fs::remove_dir_all(&esp).unwrap();
+    }
+
+    /// G42: an install with an id lays out the disk as a release image with
+    /// that id does, GUIDs and all; only `kai-data` takes the target's rest.
+    #[test]
+    fn an_install_lays_out_as_a_release_image_with_its_id() {
+        let esp = fake_esp("install-layout");
+        let out = esp.join("release.img");
+        let len = build_release(&esp, &out, RECORD, 32, "install-x").unwrap();
+        let release = diskmap::read(&mut FileDisk(fs::File::open(&out).unwrap())).unwrap();
+        let target = installer::Target {
+            sectors: len / 512,
+            sector_size: 512,
+            id: "install-x",
+            now: 0,
+        };
+        let plan = installer::plan(target, &release).unwrap();
+        assert_eq!(plan.disk_guid, release.disk_guid);
+        for (n, (want, got)) in release.partitions.iter().zip(&plan.parts).enumerate() {
+            assert_eq!(
+                (want.kind, want.guid, want.first),
+                (got.kind, got.guid, got.first)
+            );
+            assert_eq!(want.name, got.name);
+            if n < 4 {
+                assert_eq!(want.last, got.last, "{}", want.name);
+            }
+        }
         fs::remove_dir_all(&esp).unwrap();
     }
 
