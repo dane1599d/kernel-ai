@@ -5,7 +5,11 @@
 //! snapshot and the volume table, and the allocator's chain. Each must verify;
 //! keys lie in order and inside their parents' bounds; levels step down; every
 //! node off a tree's rightmost path is at least a quarter full; record lengths
-//! are sound. No
+//! are sound. No pointer is born after the node that holds it, no tree's root
+//! after the tree's generation, and no block is reached with two births: a
+//! writer frees a replaced block only when its pointer says it was born after
+//! the newest snapshot, so a pointer that lies about its birth would have it
+//! free a block a snapshot still reads. No
 //! block may be both reached and free or pending, two different runs may not
 //! overlap, and all of it lies in the data area. It reports each tree's digest and
 //! item count, and the blocks reached, free, pending and leaked (held by nothing,
@@ -49,8 +53,28 @@ pub struct Summary {
     /// The node, or a node on its rightmost path down, is under a quarter full:
     /// allowed only on the tree's own rightmost path, where appends leave them.
     pub spine_underfull: bool,
-    /// Every run the subtree occupies, its nodes and records, by address.
-    pub runs: Rc<Vec<Run>>,
+    /// Every run the subtree occupies below its root, its nodes and records,
+    /// by address, each with the birth its pointer gives it. The root's own
+    /// is for its holder to add: one summary serves every pointer to the root.
+    pub runs: Rc<Vec<Held>>,
+}
+
+/// A run reached, with the birth the pointer to it gives. A writer frees a
+/// replaced block only when that birth is after the newest snapshot, so one
+/// block that two trees reach with two births is refused: a live tree's
+/// pointer from after a snapshot to a block the snapshot reads would have the
+/// writer free it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Held {
+    pub run: Run,
+    pub birth: u64,
+}
+
+fn held(ptr: &BlockPtr) -> Held {
+    Held {
+        run: run_of(ptr),
+        birth: ptr.birth,
+    }
 }
 
 /// A tree `check()` read: its root, the generation it is from, the volume's
@@ -267,16 +291,19 @@ pub fn map_digest<'a>(items: impl IntoIterator<Item = (&'a Key, &'a Value)>) -> 
 }
 
 /// Joins sorted run lists, keeping one copy of a run several trees share, and
-/// refusing two different runs that overlap.
-fn merge(lists: &[&[Run]]) -> Result<Vec<Run>, String> {
-    let mut all: Vec<Run> = lists.iter().flat_map(|l| l.iter().copied()).collect();
+/// refusing two different runs that overlap, or one run with two births.
+fn merge(lists: &[&[Held]]) -> Result<Vec<Held>, String> {
+    let mut all: Vec<Held> = lists.iter().flat_map(|l| l.iter().copied()).collect();
     all.sort_unstable();
     all.dedup();
-    if let Some(w) = all.windows(2).find(|w| w[0].end() > w[1].addr) {
-        return Err(format!(
-            "blocks used twice: runs at {} and {}",
-            w[0].addr, w[1].addr
-        ));
+    if let Some(w) = all.windows(2).find(|w| w[0].run.end() > w[1].run.addr) {
+        return Err(match w[0].run == w[1].run {
+            true => format!("block {} reached with two births", w[0].run.addr),
+            false => format!(
+                "blocks used twice: runs at {} and {}",
+                w[0].run.addr, w[1].run.addr
+            ),
+        });
     }
     Ok(all)
 }
@@ -297,8 +324,8 @@ pub fn summarise<D: BlockDev>(
         .map_err(|e| format!("node {}: {e:?}", ptr.addr))?;
     let mut spine_underfull = node.underfull();
     let mut own = alloc::vec![ptr.addr];
-    let mut lists: Vec<Rc<Vec<Run>>> = Vec::new();
-    let mut runs = alloc::vec![run_of(ptr)];
+    let mut lists: Vec<Rc<Vec<Held>>> = Vec::new();
+    let mut runs: Vec<Held> = Vec::new();
     let mut children: Vec<MemoKey> = Vec::new();
     let (mut count, mut digest) = (0u64, 0u64);
     let (min, max) = match node {
@@ -315,7 +342,10 @@ pub fn summarise<D: BlockDev>(
                         let value = decode_value(raw, io)
                             .map_err(|e| format!("leaf {}: {e:?}", ptr.addr))?;
                         if let Some((record, _)) = record_of(raw) {
-                            runs.push(run_of(&record));
+                            if record.birth > ptr.birth {
+                                return Err(format!("leaf {}: a record newer than it", ptr.addr));
+                            }
+                            runs.push(held(&record));
                             own.extend(record.addr..record.addr + u64::from(record.blocks));
                         }
                         value
@@ -335,6 +365,9 @@ pub fn summarise<D: BlockDev>(
                 if child_ptr.level + 1 != level {
                     return Err(format!("branch {}: a child at the wrong level", ptr.addr));
                 }
+                if child_ptr.birth > ptr.birth {
+                    return Err(format!("branch {}: a child newer than it", ptr.addr));
+                }
                 let sub = summarise(io, child_ptr, leaves, cache)?;
                 let upper = entries.get(i + 1).map(|(k, _)| *k);
                 if sub.min < *lower || upper.is_some_and(|u| sub.max >= u) {
@@ -352,12 +385,13 @@ pub fn summarise<D: BlockDev>(
                 count += sub.count;
                 digest = digest.wrapping_add(sub.digest);
                 lists.push(sub.runs.clone());
+                runs.push(held(child_ptr));
                 children.push((child_ptr.addr, child_ptr.csum, leaves.tag()));
             }
             (bounds[0].0, bounds[bounds.len() - 1].1)
         }
     };
-    let mut parts: Vec<&[Run]> = lists.iter().map(|l| &l[..]).collect();
+    let mut parts: Vec<&[Held]> = lists.iter().map(|l| &l[..]).collect();
     parts.push(&runs);
     let total: usize = parts.iter().map(|p| p.len()).sum();
     let merged = merge(&parts)?;
@@ -384,6 +418,9 @@ pub fn check<D: BlockDev>(fs: &mut Fs<D>, cache: &mut Cache) -> Result<Report, S
     let head = fs.io.alloc.head();
     let mount_key = (head.addr, head.csum, MOUNT);
     let volumes = fs.volumes_root().ok_or("the volume table is not written")?;
+    if volumes.birth > fs.committed {
+        return Err("the volume table is newer than its commit".to_string());
+    }
     if let Some(Memo::Mount(report, vol)) = cache.usable(&mount_key)
         && *vol == volumes
         && report.generation == fs.committed
@@ -395,7 +432,9 @@ pub fn check<D: BlockDev>(fs: &mut Fs<D>, cache: &mut Cache) -> Result<Report, S
         false => summarise(&mut fs.io, ptr, leaves, cache).map(Some),
     };
     let vol = summary(fs, cache, &volumes, Leaves::Entries)?.ok_or("an empty volume table")?;
-    let mut lists: Vec<Rc<Vec<Run>>> = alloc::vec![vol.runs.clone()];
+    let mut lists: Vec<Rc<Vec<Held>>> = alloc::vec![vol.runs.clone()];
+    // The trees' roots: each tree's summary holds what is below its root.
+    let mut roots = alloc::vec![held(&volumes)];
     let mut children = alloc::vec![(volumes.addr, volumes.csum, META)];
     let mut reports = BTreeMap::new();
     for (id, _) in fs.volumes() {
@@ -408,6 +447,9 @@ pub fn check<D: BlockDev>(fs: &mut Fs<D>, cache: &mut Cache) -> Result<Report, S
         trees.push((None, live, fs.committed, next_oid));
         let mut report = VolumeReport::default();
         for (sid, root, generation, next_oid) in trees {
+            if !root.is_null() && root.birth > generation {
+                return Err(format!("volume {id}: a tree root newer than its tree"));
+            }
             let sub = summary(fs, cache, &root, Leaves::Values)?;
             let tree = TreeReport {
                 root,
@@ -424,15 +466,17 @@ pub fn check<D: BlockDev>(fs: &mut Fs<D>, cache: &mut Cache) -> Result<Report, S
             }
             if let Some(s) = sub {
                 lists.push(s.runs.clone());
+                roots.push(held(&root));
                 children.push((root.addr, root.csum, TREE));
             }
         }
         reports.insert(id, report);
     }
-    let chain: Vec<Run> = fs.io.alloc.chain().iter().map(run_of).collect();
-    let mut parts: Vec<&[Run]> = lists.iter().map(|l| &l[..]).collect();
+    let chain: Vec<Held> = fs.io.alloc.chain().iter().map(held).collect();
+    let mut parts: Vec<&[Held]> = lists.iter().map(|l| &l[..]).collect();
     parts.push(&chain);
-    let reached = merge(&parts)?;
+    parts.push(&roots);
+    let reached: Vec<Run> = merge(&parts)?.into_iter().map(|h| h.run).collect();
     let (start, end) = format::data_area(fs.block_count());
     if reached.first().is_some_and(|r| r.addr < start)
         || reached.last().is_some_and(|r| r.end() > end)
