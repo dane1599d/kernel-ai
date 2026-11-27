@@ -163,6 +163,14 @@ fn a_cut_keeping_any_subset_of_one_flushes_writes_is_safe() {
             if i != 2 {
                 assert_eq!(is_new, i > 2, "phase {} decided the file", i + 1);
             }
+            // The volume checks, and a reclaim settles it without changing
+            // which file it holds.
+            let room = disk.size;
+            let mut v = Volume::open(&mut disk, 0, room).unwrap();
+            let usage = v.check().unwrap();
+            assert_eq!(v.reclaim().unwrap(), usage.leaked);
+            assert_eq!(state(&mut disk, "BIG.BIN", &old, &new), is_new);
+            settled(&disk, total(&[3000, if is_new { NEW } else { OLD }, 9000]));
         }
     }
 }

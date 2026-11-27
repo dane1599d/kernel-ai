@@ -9,7 +9,7 @@ use crate::{Disk, Error, SECTOR, u32_at};
 
 /// The low 28 bits of an entry. The top 4 are reserved and kept as they are.
 const MASK: u32 = 0x0FFF_FFFF;
-const BAD: u32 = 0x0FFF_FFF7;
+pub(crate) const BAD: u32 = 0x0FFF_FFF7;
 /// The end-of-chain mark espfat writes. Readers take 0x0FFF_FFF8 and above.
 pub(crate) const END: u32 = 0x0FFF_FFFF;
 /// FAT's limit on a directory: 65,536 entries of 32 bytes.

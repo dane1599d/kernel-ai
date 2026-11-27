@@ -62,6 +62,41 @@ fn refused(disk: Mem, why: &str) {
     assert_eq!(logged.writes(), 0, "{why}: a refused replace wrote");
 }
 
+/// [`refused`], with the check's error exactly `err`.
+fn refused_as(mut disk: Mem, err: &'static str) {
+    assert_eq!(check(&mut disk), Err(Error::Corrupt(err)));
+    refused(disk, err);
+}
+
+/// `path` read through FAT copy `copy`.
+fn read(disk: &mut Mem, copy: u32, path: &str) -> Vec<u8> {
+    let room = disk.size;
+    let mut v = Volume::open(disk, 0, room).unwrap();
+    v.read_through(copy).unwrap();
+    v.read_file(path, usize::MAX).unwrap()
+}
+
+/// A last (and only) long-name entry holding `name`, for the 8.3 name `short`.
+fn lfn(name: &str, short: &[u8; 11]) -> [u8; 32] {
+    const AT: [usize; 13] = [1, 3, 5, 7, 9, 14, 16, 18, 20, 22, 24, 28, 30];
+    let units: Vec<u16> = name.encode_utf16().collect();
+    let mut e = [0u8; 32];
+    e[0] = 0x41;
+    e[11] = 0x0F;
+    e[13] = short
+        .iter()
+        .fold(0u8, |sum, &b| sum.rotate_right(1).wrapping_add(b));
+    for (i, &at) in AT.iter().enumerate() {
+        let u = match i.cmp(&units.len()) {
+            std::cmp::Ordering::Less => units[i],
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => 0xFFFF,
+        };
+        e[at..at + 2].copy_from_slice(&u.to_le_bytes());
+    }
+    e
+}
+
 #[test]
 fn a_sound_volume_checks_with_nothing_leaked() {
     let mut disk = esp();
@@ -69,7 +104,8 @@ fn a_sound_volume_checks_with_nothing_leaked() {
         check(&mut disk),
         Ok(Usage {
             named: named(OLD),
-            leaked: 0
+            leaked: 0,
+            bad: 0
         })
     );
 }
@@ -98,6 +134,93 @@ fn fat_copies_that_disagree_on_a_chain_are_refused() {
     let a = first_of(&disk, 0);
     disk.patch(fat_at(1, a + 5), &(a + 6).to_le_bytes());
     refused(disk, "a longer chain in the second copy");
+}
+
+/// Chains that each copy holds soundly, of the same length, but through other
+/// clusters: only comparing the copies finds them.
+#[test]
+fn sound_chains_that_differ_between_the_copies_are_refused() {
+    const WHY: &str = "the FAT copies disagree on a chain";
+    let spare = CLUSTERS; // Free in both copies.
+    // BIG.BIN skips a cluster in the second copy and ends one further on.
+    let mut disk = esp();
+    let big = first_of(&disk, 1);
+    disk.patch(fat_at(1, big + 3), &(big + 5).to_le_bytes());
+    disk.patch(fat_at(1, big + 136), &spare.to_le_bytes());
+    disk.patch(fat_at(1, spare), &0x0FFF_FFFFu32.to_le_bytes());
+    refused_as(disk, WHY);
+    // The root has a second cluster in the second copy only.
+    let mut disk = esp();
+    disk.patch(fat_at(1, 2), &spare.to_le_bytes());
+    disk.patch(fat_at(1, spare), &0x0FFF_FFFFu32.to_le_bytes());
+    refused_as(disk, WHY);
+}
+
+#[test]
+fn a_directory_named_twice_is_refused() {
+    // A second root entry for EFI.
+    let mut disk = esp();
+    let efi = disk.get(u64::from(DATA)).to_vec();
+    disk.patch(cluster_at(2) + 32 * 3, &efi[64..96]);
+    refused_as(disk, "two chains share a cluster");
+}
+
+/// A "." entry is skipped by the walk, so no lookup may find it either, even
+/// with a long name before it and a file's attributes.
+#[test]
+fn a_dot_entry_is_never_found_by_a_long_name() {
+    let mut disk = esp();
+    let (efi, a) = (first_of(&disk, 2), first_of(&disk, 0));
+    let entries = disk.get(u64::from(DATA + efi - 2)).to_vec();
+    // [lfn "DOT.TXT", "." as a file over A.TXT's chain, "..", BOOT]
+    let mut dot = entries[..32].to_vec();
+    dot[11] = 0x20;
+    dot[26..28].copy_from_slice(&(a as u16).to_le_bytes());
+    dot[28..32].copy_from_slice(&3000u32.to_le_bytes());
+    let mut sector = lfn("DOT.TXT", b".          ").to_vec();
+    sector.extend(&dot);
+    sector.extend(&entries[32..96]);
+    disk.patch(cluster_at(efi), &sector);
+    let mut logged = Logged {
+        disk,
+        log: Vec::new(),
+    };
+    let room = logged.disk.size;
+    let mut v = Volume::open(&mut logged, 0, room).unwrap();
+    assert_eq!(v.read_file("EFI/DOT.TXT", usize::MAX), Err(Error::NotFound));
+    assert_eq!(v.replace("EFI/DOT.TXT", b"x"), Err(Error::NotFound));
+    assert_eq!(
+        v.read_file("EFI/BOOT/BOOTX64.EFI", usize::MAX).unwrap(),
+        pattern(9000, 3)
+    );
+    assert_eq!(logged.writes(), 0);
+}
+
+/// A bad mark, in either copy, is never reclaimed and never counted free.
+#[test]
+fn bad_clusters_stay_marked() {
+    const BAD: u32 = 0x0FFF_FFF7;
+    let mut disk = esp();
+    let (one, both, leak) = (CLUSTERS - 2, CLUSTERS - 1, CLUSTERS);
+    disk.patch(fat_at(0, one), &BAD.to_le_bytes());
+    disk.patch(fat_at(0, both), &BAD.to_le_bytes());
+    disk.patch(fat_at(1, both), &BAD.to_le_bytes());
+    disk.patch(fat_at(1, leak), &0x0FFF_FFFFu32.to_le_bytes());
+    let usage = Usage {
+        named: named(OLD),
+        leaked: 1,
+        bad: 2,
+    };
+    assert_eq!(check(&mut disk), Ok(usage));
+    let room = disk.size;
+    assert_eq!(Volume::open(&mut disk, 0, room).unwrap().reclaim(), Ok(1));
+    assert_eq!(check(&mut disk), Ok(Usage { leaked: 0, ..usage }));
+    assert_eq!(disk.u32_at(fat_at(0, one)), BAD);
+    assert_eq!(disk.u32_at(fat_at(1, one)), 0);
+    assert_eq!(disk.u32_at(fat_at(0, both)), BAD);
+    assert_eq!(disk.u32_at(fat_at(1, both)), BAD);
+    assert_eq!(disk.u32_at(fat_at(1, leak)), 0);
+    assert_eq!(disk.u32_at(SECTOR as u64 + 488), CLUSTERS - named(OLD) - 2);
 }
 
 #[test]
@@ -137,6 +260,7 @@ fn a_reclaim_after_any_cut_frees_every_leak() {
         .replace("BIG.BIN", &new)
         .unwrap();
     let mut leaks = 0;
+    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     for k in 0..=logged.writes() {
         let cut = cut_at(&base, &logged.log, k);
         let mut disk = cut.clone();
@@ -160,19 +284,43 @@ fn a_reclaim_after_any_cut_frees_every_leak() {
             .reclaim()
             .unwrap();
         assert_eq!(freed, usage.leaked);
-        for j in 0..=reclaiming.writes() {
-            let mut disk = cut_at(&cut, &reclaiming.log, j);
+        // Cut at every write, and keep random subsets of each flush's writes
+        // on top of the earlier flushes; every file reads the same through
+        // both copies, and a second reclaim finishes.
+        let mut cuts: Vec<Mem> = (0..=reclaiming.writes())
+            .map(|j| cut_at(&cut, &reclaiming.log, j))
+            .collect();
+        let epochs = reclaiming.epochs();
+        for (i, epoch) in epochs.iter().enumerate() {
+            for _ in 0..4 {
+                let mut disk = cut.clone();
+                for (lba, s) in epochs[..i].iter().flatten() {
+                    disk.sectors.insert(*lba, s.clone());
+                }
+                for (lba, s) in epoch {
+                    if rng.next().is_multiple_of(2) {
+                        disk.sectors.insert(*lba, s.clone());
+                    }
+                }
+                cuts.push(disk);
+            }
+        }
+        for mut disk in cuts {
+            for copy in 0..2 {
+                assert_eq!(read(&mut disk, copy, "BIG.BIN"), big);
+                assert_eq!(read(&mut disk, copy, "A.TXT"), pattern(3000, 1));
+            }
             let room = disk.size;
-            let mut v = Volume::open(&mut disk, 0, room).unwrap();
-            assert_eq!(v.read_file("BIG.BIN", usize::MAX).unwrap(), big);
-            assert_eq!(v.read_file("A.TXT", usize::MAX).unwrap(), pattern(3000, 1));
+            Volume::open(&mut disk, 0, room).unwrap().reclaim().unwrap();
+            assert_eq!(check(&mut disk).unwrap().leaked, 0, "after write {k}");
         }
         let mut done = reclaiming.disk;
         assert_eq!(
             check(&mut done),
             Ok(Usage {
                 named: named(size),
-                leaked: 0
+                leaked: 0,
+                bad: 0
             })
         );
         for s in 0..FAT_SECTORS {
@@ -185,9 +333,7 @@ fn a_reclaim_after_any_cut_frees_every_leak() {
                 "after write {k}, FAT sector {s} differs between the copies"
             );
         }
-        if freed > 0 {
-            assert_eq!(done.u32_at(SECTOR as u64 + 488), CLUSTERS - named(size));
-        }
+        assert_eq!(done.u32_at(SECTOR as u64 + 488), CLUSTERS - named(size));
     }
     assert!(leaks > 0, "no cut leaked anything, so nothing was tested");
 }
