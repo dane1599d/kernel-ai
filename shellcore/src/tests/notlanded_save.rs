@@ -58,8 +58,9 @@ fn an_agents_asked_file_step_that_did_not_land_is_told_so() {
     let ran = shell.eval_console(&format!("answer {} allow once={once}", menu.id));
     assert!(!ran.ok && ran.text.contains("did not land"), "{ran:?}");
     let told = step(&mut shell, badge, &format!("wait {}", menu.id));
+    // Failed, not "not run": the refused write is no no of the person's.
     assert!(
-        told.starts_with("err ") && told.contains("did not land"),
+        told.starts_with(&format!("err failed #{}:", menu.id)) && told.contains("did not land"),
         "{told}"
     );
     assert!(host.files.borrow().is_empty());
