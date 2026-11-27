@@ -218,6 +218,9 @@ pub fn lever_done() -> bool {
 static LEVER_DONE: AtomicBool = AtomicBool::new(false);
 /// Probation committed this boot's slot (and logged it).
 static COMMITTED: AtomicBool = AtomicBool::new(false);
+/// *Up*'s record write failed: the firmware still holds the try this boot
+/// spent, so [`set`] never arms this slot again while it is a trial.
+static UP_LOST: AtomicBool = AtomicBool::new(false);
 
 fn lever(test: bool) {
     let Some(slot) = this_slot() else {
@@ -309,15 +312,29 @@ fn lever(test: bool) {
         }
         Action::Restart | Action::Panic | Action::EfiFault => {}
     }
+    // The fault path is told *up*'s record before it is written, as
+    // BOOTREC_SET tells it ([`bootslot::set_writes`]): a fault after the
+    // write must not put the record before back, which would give the try
+    // back to a trial whose one-shot is still set.
+    *BOOTED.lock() = Some((nv, slot));
     if test {
         finish(&nv, write(&before, &nv));
     }
-    // A normal boot writes the one-shot that *up* armed and keeps running.
-    if let Err(error) = write(&before, &nv) {
-        log!("slots: SetVariable failed: {error:?}");
+    // A normal boot writes the one-shot that *up* armed and keeps running:
+    // [`write`]'s two writes, apart so a lost record is known.
+    match write_record(&before, &nv) {
+        Err(error) => {
+            log!("slots: SetVariable failed: {error:?}");
+            UP_LOST.store(true, Ordering::SeqCst);
+        }
+        Ok(()) if nv.one_shot != before.one_shot => {
+            if let Err(error) = write_one_shot(nv.one_shot) {
+                log!("slots: SetVariable failed: {error:?}");
+            }
+        }
+        Ok(()) => {}
     }
     let trial = !nv.record.slot(slot).successful;
-    *BOOTED.lock() = Some((nv, slot));
     // A trial slot runs on probation until it commits (ADR 0008 §5).
     if trial && let Err(why) = threads::spawn("probation", probation, slot as usize) {
         log!(
@@ -515,6 +532,15 @@ pub fn active_committed() -> bool {
 /// keeps them as what the fault path writes from.
 pub fn set(record: Record, one_shot: Option<Slot>) -> Result<(), efi::Error> {
     let _setting = SETTING.lock();
+    // A boot whose *up* the firmware never stored has not spent its try
+    // there: arming its slot again as a trial would give the try back.
+    if UP_LOST.load(Ordering::SeqCst)
+        && let Some(next) = one_shot
+        && this_slot() == Some(next)
+        && !record.slot(next).successful
+    {
+        return Err(efi::Error::Unavailable);
+    }
     // In [`bootslot::set_writes`]'s order: the fault path is told the record
     // before it is written, so a fault just after the write never writes the
     // record before back (a commit's floors would fall), and told the old one
