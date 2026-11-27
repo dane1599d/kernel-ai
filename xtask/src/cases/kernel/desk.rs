@@ -142,8 +142,8 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
         ..case("desk-standing-undo", "test=desk-standing-undo")
     },
     // P3's exit case: S05-1's budgets on the real `desktop` at 1920x1080, a gate
-    // under KVM, best of two (a scene with a miss is measured once more, and a
-    // figure over budget in both runs fails it), each budget scaled by how many
+    // under KVM, best of three (a scene with a miss is measured again, and a
+    // figure over budget in two runs a third time; one over in all fails it), each budget scaled by how many
     // times its baseline the reference work took (at least 1), unless that is
     // over 3.5; under TCG nothing is judged.
     TestCase {
@@ -202,6 +202,7 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
             "desk-profile-floor: the supervisor, the shell and desktop were not made background, nor their quotas lowered",
             "desk-profile-floor: free / 2: a raise one page past the admission budget was refused, and one to it was taken",
             "desk-profile-floor: system services' CPU share: a service holding TERM was not made background, and an app was",
+            "desk-profile-floor: a trial's labels meet the same floors: desktop and a service holding TERM were refused, and an app was not",
             "desk-profile-floor: every floor held, whatever the shell asked",
         ],
         ..case("desk-profile-floor", "test=desk-profile-floor")

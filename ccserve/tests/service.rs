@@ -262,6 +262,25 @@ fn output_stops_at_six_kib() {
     assert_eq!(records[1], "out \n[output cut at 6 KiB]\n");
 }
 
+/// Bug-hunt-6 H6-9: a long value after a near-full output is shown; the
+/// reply ends in `done`, which needs far less than a `need`'s room.
+#[test]
+fn a_long_value_after_full_output_is_shown() {
+    let mut cc = Cc::open();
+    let xs = "x".repeat(1000);
+    cc.ok(&format!("char *s = \"{xs}\";"));
+    // Cut at 6 KiB, and just under it.
+    for times in [620, 609] {
+        let records = cc.ok(&format!(
+            "for (I64 i = 0; i < {times}; i++) Print(\"0123456789\"); s"
+        ));
+        assert!(
+            records.iter().any(|r| *r == format!("value str {xs}")),
+            "{times}: {records:?}"
+        );
+    }
+}
+
 #[test]
 fn an_effect_suspends_the_run_until_its_answer() {
     let mut cc = Cc::open();

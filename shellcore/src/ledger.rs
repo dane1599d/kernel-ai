@@ -17,6 +17,10 @@
 //! shell takes the action's file changes out of its entries
 //! ([`take_not_landed`]): nothing of them is undone later, whatever the
 //! number has come to mean by then.
+//!
+//! Until then the line changes no more files ([`Ledger::may_begin`]): its
+//! next action would begin as the lost one's number, and its changes would
+//! be told apart from the lost ones by nothing (bug-hunt-6 H6-24).
 
 use crate::actlog::{self, ActLog, Change, MAX_TEXT};
 use crate::undo::Inverse;
@@ -57,6 +61,19 @@ impl Ledger {
         self.lost = None;
     }
 
+    /// Whether the line may begin an action (a change, an undo's restore):
+    /// not once it lost one, until its log says so. The next action would
+    /// commit as the lost one's number, and the log would call the lost
+    /// changes landed with it, or take the landed ones out with them.
+    pub fn may_begin(&self) -> Result<(), String> {
+        match self.unlanded {
+            Some(_) => Err(String::from(
+                "Dropped: fs dropped this line's earlier file changes, so it makes no more",
+            )),
+            None => Ok(()),
+        }
+    }
+
     /// `fs` dropped the open action, if there is one.
     pub fn dropped_open(&mut self) {
         if let Some(generation) = self.open.take() {
@@ -89,13 +106,11 @@ impl Ledger {
     }
 
     /// `fs` committed something as `generation` (an undo's restore): that
-    /// number names a real change now, so its redo restores.
+    /// number names a real change now, so its redo restores. A loss the
+    /// line has not said yet stays: its changes are not the ones that landed.
     pub fn committed(&mut self, generation: u64) {
         if self.lost == Some(generation) {
             self.lost = None;
-        }
-        if self.unlanded == Some(generation) {
-            self.unlanded = None;
         }
     }
 
@@ -323,16 +338,40 @@ mod tests {
     }
 
     #[test]
-    fn a_lost_number_that_commits_again_in_the_line_landed() {
-        // A drop, then the line's next action commits as the same number:
-        // that number's changes are on the disk.
+    fn a_lost_number_that_commits_again_in_the_line_still_did_not_land() {
+        // A drop, then something commits as the same number: only its own
+        // changes are on the disk, not the lost ones (bug-hunt-6 H6-24).
         let mut ledger = Ledger::default();
         ledger.begin(7);
         ledger.dropped_open();
         ledger.begin(7);
         let generation = ledger.take_for_commit().unwrap();
         ledger.committed(generation);
-        assert_eq!(ledger.landed(Ok(())), Ok(()));
+        assert!(matches!(
+            ledger.landed(Ok(())),
+            Err(LogFailed::NotLanded { txn: 7, .. })
+        ));
+    }
+
+    #[test]
+    fn a_line_that_lost_its_action_begins_no_other_until_its_log() {
+        let mut ledger = Ledger::default();
+        assert_eq!(ledger.may_begin(), Ok(()));
+        ledger.begin(7);
+        ledger.dropped_open();
+        assert!(ledger.may_begin().is_err());
+        assert!(ledger.landed(Ok(())).is_err());
+        // The next line begins as it likes.
+        assert_eq!(ledger.may_begin(), Ok(()));
+        ledger.begin(7);
+        let generation = ledger.take_for_commit().unwrap();
+        ledger.commit_refused(generation);
+        assert!(ledger.may_begin().is_err());
+        // The shell's own abort is no loss.
+        ledger.landed(Ok(())).unwrap_err();
+        ledger.begin(8);
+        ledger.aborted(8);
+        assert_eq!(ledger.may_begin(), Ok(()));
     }
 
     #[test]

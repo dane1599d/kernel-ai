@@ -56,12 +56,14 @@ mod netask;
 mod netgrant;
 mod netrows;
 mod notlanded;
+mod notlanded_drop;
 mod notlanded_save;
 mod outbox;
 mod packages;
 mod panel;
 mod power;
 mod profiles;
+mod rulecards;
 mod scripts;
 mod sendrow;
 mod settings;
@@ -258,6 +260,9 @@ struct FakeHost {
     /// The shell's own ledger of its open action, as `Files` keeps it, so a
     /// rollback or a drop reaches `log_write` as it does there.
     ledger: Cell<crate::ledger::Ledger>,
+    /// The change this many changes on (1: the next) makes `fs` drop the
+    /// open action, as a write-out that finds no room does; 0: none.
+    fs_drop: Cell<u32>,
 }
 
 /// What standing instructions asked the desktop and the owners for.
@@ -475,6 +480,7 @@ impl FakeHost {
             log_fails: Cell::new(0),
             commit_refused: Cell::new(false),
             ledger: Cell::default(),
+            fs_drop: Cell::new(0),
         })
     }
 }

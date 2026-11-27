@@ -60,6 +60,7 @@ mod console;
 mod cpu;
 mod default_tests;
 mod demand_tests;
+mod desk_many_tests;
 mod desk_perf_tests;
 mod desk_profile_tests;
 mod desk_sends_tests;
@@ -129,6 +130,7 @@ mod net_download_tests;
 mod net_grant_tests;
 mod net_hold_tests;
 mod net_pf_tests;
+mod net_stream_tests;
 mod net_tests;
 mod net_throughput_tests;
 mod nvme;
@@ -357,6 +359,13 @@ extern "C" fn boot_continue() -> ! {
         Err(message) => fail(message),
     }
     log!("{}", fpu::features_line());
+    // The nesting census (P6 row 1, ADR 0006): the VMX and SVM bits this guest
+    // sees, one grep-able line; nesting-census.yml tabulates it per runner.
+    log!(
+        "nesting: vendor={} {}",
+        core::str::from_utf8(&cpufeat::vendor()).unwrap_or("?"),
+        cpufeat::Nesting::detect()
+    );
     // Before the other CPUs start: SetVirtualAddressMap runs on a borrowed PML4.
     if let Err(message) = efi::init() {
         log!("{message}; no runtime services");
@@ -456,6 +465,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::DeskNap => run_case(nap_tests::check),
         SelfTest::DeskNapBusy => run_case(nap_busy_tests::check),
         SelfTest::KeepRunning { reread } => run_case(|| keep_tests::check(reread)),
+        SelfTest::DeskMany => run_case(desk_many_tests::check),
         SelfTest::DeskAppearance => run_case(appearance_tests::check),
         SelfTest::DeskCard => run_case(card_tests::check),
         SelfTest::DeskStanding => run_case(standing_tests::check),
@@ -531,7 +541,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::NetFallback => run_case(net_tests::fallback_check),
         SelfTest::NetStatic => run_case(net_tests::static_check),
         SelfTest::NetDest => run_case(net_tests::dest_check),
-        SelfTest::NetStream => run_case(|| net_tests::stream_check(cmdline())),
+        SelfTest::NetStream => run_case(|| net_stream_tests::stream_check(cmdline())),
         SelfTest::NetThroughput => run_case(|| net_throughput_tests::check(cmdline())),
         SelfTest::HttpsMock => run_case(https_tests::check),
         SelfTest::NetDownload { again, .. } => run_case(|| net_download_tests::check(again)),

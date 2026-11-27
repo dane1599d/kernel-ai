@@ -701,6 +701,27 @@ echo "git -C \"$T/work\" rev-parse HEAD > \"$T/prs/1/lagging-head\"" > "$T/on-re
 ff 1
 check "landed but still open is told despite the lag" 'has "#1 landed but GitHub still shows it open"'
 
+echo "== batch-ff.sh: a PR pushed to as it lands is not told as landed, though headRefOid still shows the old head"
+setup
+touch "$T/prs/1/stays-open"
+old=$(git -C "$T/origin.git" rev-parse feat/a)
+cat > "$T/on-ready" <<EOF
+echo $old > "$T/prs/1/lagging-head"
+git -C "$T/work" checkout -q feat/a && echo more >> "$T/work/a.txt" && git -C "$T/work" commit -qam more && git -C "$T/work" push -q origin feat/a
+EOF
+ff 1
+check "no landed-but-open line for a moved branch" '! has "#1 landed but GitHub still shows it open"'
+
+echo "== batch-ff.sh: the files split out of agentcore.rs count as the model's, as agentcore.rs does"
+setup
+mkpr 8 feat/ac1 main shellcore/src/agentcore/turn.rs
+mkpr 9 feat/ac2 main shellcore/src/agentcore.rs
+mkpr 10 feat/other main shellcore/src/other.rs
+git -C "$T/work" checkout -q --detach origin/main
+ff 8 9 10
+check "an agentcore/ file is a model change"   'has "  + #8 (feat/ac1)" && has "  - #9 changes what the model sees, and so does #8"'
+check "a neighbouring shellcore file is not"  'has "  + #10 (feat/other)"'
+
 echo "== setup(): no stub hook is left behind for the next case"
 for f in ready-hook fluency-hook on-ready moved-head edit-fails; do : > "$T/$f"; done
 setup
@@ -713,6 +734,7 @@ for n in 2 3 4 5 7; do : > "$T/prs/$n/labels"; done
 auto_wait "removing batch-ready failed"
 check "the failure is logged"                 'grep -q "#8: removing batch-ready failed; no comment posted" "$L"'
 check "no comment says the label is gone"     '! grep -q "pr comment 8 " "$T/gh.log"'
+check "the log does not claim it was removed" '! grep -q "#8 left out: .*label removed" "$L"'
 rm -f "$T/edit-fails"
 
 echo "branches left: $(branches)"

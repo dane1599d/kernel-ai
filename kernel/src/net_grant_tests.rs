@@ -122,8 +122,14 @@ fn denied_once() -> Result<(), &'static str> {
         let said = ipc::call("shell", b"net denied", CARD_MS)
             .map_err(|_| "net-grant: the shell did not answer net denied")?;
         let said = alloc::string::String::from_utf8_lossy(&said);
-        // `elsewhere.kai.test`'s Deny may still hold too: its own line.
-        let line = said.lines().find(|line| line.starts_with(REFUSED_ONE));
+        // `elsewhere.kai.test`'s Deny may still hold too: its own line. The
+        // reply's first line carries the shell's `ok ` (the first line is this
+        // Deny's when nothing else holds, which is the TCG case where the
+        // other Deny has lapsed), so strip it before matching.
+        let line = said
+            .lines()
+            .map(|line| line.strip_prefix("ok ").unwrap_or(line))
+            .find(|line| line.starts_with(REFUSED_ONE));
         let count = line
             .and_then(|line| line[REFUSED_ONE.len()..].split(' ').next())
             .and_then(|n| n.parse::<u32>().ok());

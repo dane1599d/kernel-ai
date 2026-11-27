@@ -6,8 +6,10 @@
 
 #[path = "../../testkit/hostile.rs"]
 mod hostile;
+#[path = "hostile/state.rs"]
+mod state;
 
-use hostile::{fuzz, truncations};
+use hostile::{XorShift, fuzz, sweep_fields, truncations};
 use supervise::{BootFiles, Folder, MAX_BOOT_PATH, parse_plan};
 
 const PLAN: &str = "fs caps=serve+partition\n\
@@ -217,4 +219,138 @@ fn mutated_boot_paths_never_leave_pkgrepo() {
         confined,
     );
     truncations(PATH.as_bytes(), |_, cut| confined(cut));
+}
+
+// G26: the saved state and the `keep` and `profile` requests (`state.rs`).
+
+#[test]
+fn a_damaged_saved_state_gives_fewer_records_never_more_or_a_panic() {
+    for (i, sample) in state::state_samples().iter().enumerate() {
+        assert!(!supervise::decode(sample).is_empty(), "sample {i}");
+        state::supervisor_state(sample);
+        fuzz(sample, 0x5e00 + i as u64, 5_000, state::supervisor_state);
+        truncations(sample, |_, cut| state::supervisor_state(cut));
+        sweep_fields(sample, 0..sample.len(), |_, bytes| {
+            state::supervisor_state(bytes)
+        });
+    }
+}
+
+#[test]
+fn random_bytes_behind_the_state_magic_never_panic() {
+    let mut rng = XorShift::new(0x5717);
+    let words = [
+        "0",
+        "1",
+        "18446744073709551615",
+        "18446744073709551616",
+        "-1",
+        "+3",
+        "x",
+        " ",
+        "\n",
+    ];
+    for _ in 0..5_000 {
+        let magic = [
+            "supervisor-state 5",
+            "supervisor-state 4",
+            "supervisor-state 3",
+        ][rng.below(3)];
+        let mut text = String::from(magic);
+        for _ in 0..rng.below(4) {
+            text.push('\n');
+            text.push_str("svc");
+            for _ in 0..rng.below(12) {
+                text.push(' ');
+                text.push_str(words[rng.below(words.len())]);
+            }
+        }
+        state::supervisor_state(text.as_bytes());
+    }
+    for _ in 0..5_000 {
+        let len = rng.below(64);
+        let bytes: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
+        state::supervisor_state(&bytes);
+    }
+}
+
+#[test]
+fn damaged_keep_and_profile_requests_take_only_what_they_say() {
+    for (i, sample) in ["keep notes on", "keep build-1 off"].iter().enumerate() {
+        state::keep_request(sample.as_bytes());
+        fuzz(
+            sample.as_bytes(),
+            0x4b00 + i as u64,
+            5_000,
+            state::keep_request,
+        );
+        truncations(sample.as_bytes(), |_, cut| state::keep_request(cut));
+    }
+    for (i, sample) in [
+        "profile 31 background 65536 cap",
+        "profile 7 normal -",
+        "profile 18446744073709551615 normal 0",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert!(supervise::profile::Set::parse(sample).is_some(), "{sample}");
+        state::profile_request(sample.as_bytes());
+        fuzz(
+            sample.as_bytes(),
+            0x5000 + i as u64,
+            5_000,
+            state::profile_request,
+        );
+        truncations(sample.as_bytes(), |_, cut| state::profile_request(cut));
+        sweep_fields(sample.as_bytes(), 0..sample.len(), |_, b| {
+            state::profile_request(b)
+        });
+    }
+    for (i, sample) in ["ok normal -", "ok background 4096", "err Permission"]
+        .iter()
+        .enumerate()
+    {
+        state::profile_answer(sample.as_bytes());
+        fuzz(
+            sample.as_bytes(),
+            0x5100 + i as u64,
+            5_000,
+            state::profile_answer,
+        );
+        truncations(sample.as_bytes(), |_, cut| state::profile_answer(cut));
+    }
+}
+
+#[test]
+fn near_misses_of_a_keep_or_profile_request_are_refused() {
+    for bad in [
+        "keep notes",
+        "keep notes on now",
+        "keep no/tes on",
+        "keep notes On",
+        "keeps notes on",
+    ] {
+        assert_eq!(supervise::keep::parse(bad), None, "{bad}");
+    }
+    for bad in [
+        "profile 31 normal -\n",
+        "profile  31 normal -",
+        "profile 31 normal +5",
+        "profile 18446744073709551616 normal -",
+        "profile 31 normal 00",
+    ] {
+        assert_eq!(supervise::profile::Set::parse(bad), None, "{bad:?}");
+    }
+    for bad in [
+        "ok normal - cap",
+        "ok normal",
+        "ok  normal -",
+        "ok normal 007",
+    ] {
+        assert!(
+            supervise::profile::parse_before(31, bad).is_err(),
+            "{bad:?}"
+        );
+    }
 }

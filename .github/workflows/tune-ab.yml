@@ -8,6 +8,14 @@ name: tune A/B (M10 exit test)
 # tune-model.yml mode record) it first checks the recording's provenance with an
 # observe boot. Until then it runs the designers' hand-written spec, which
 # exercises the harness but does not declare M10 done. Mix B is reported only.
+#
+# It runs on the `tune` label, weekly, on release/** branches, on v* tags and by
+# hand, not on every push to main: the recording is keyed by the exact summary
+# the guest builds, so any change to a number in it fails the run until a fresh
+# real-model recording is made, and that is a re-record, not a regression. The
+# tag hold is unchanged (docs/decisions/rows/2026-11-10-hold-the-tag-for-m10.md):
+# the v0.1 tag waits for the proof on a fresh recording, and record on the release
+# commit, then run this there.
 on:
   workflow_dispatch:
   schedule:
@@ -15,13 +23,8 @@ on:
   pull_request:
     types: [labeled, synchronize]
   push:
-    branches: [main]
-    paths:
-      - "sched/**"
-      - "kernel/**"
-      - "user/src/bin/work.rs"
-      - "xtask/src/tune/**"
-      - "xtask/tune/**"
+    branches: ["release/**"]
+    tags: ["v*"]
 
 permissions:
   contents: read
@@ -54,7 +57,16 @@ jobs:
       - name: Mix A, five seeds and a canary
         run: |
           if [ -f xtask/tune/decisions.json ]; then
-            cargo xtask tune ab --timeout 900
+            set +e
+            cargo xtask tune ab --timeout 900 2>&1 | tee "$RUNNER_TEMP/ab-a.log"
+            status=${PIPESTATUS[0]}
+            # A recording the guest's summary has moved past is told apart from
+            # a failed measurement; the job still fails, as M10 is not shown.
+            if [ "$status" -ne 0 ] && grep -q "re-record needed" "$RUNNER_TEMP/ab-a.log"; then
+              echo "::error title=re-record needed::the recording no longer matches the guest's summary; this is not a regression. Run tune-model.yml in record mode."
+              echo "### re-record needed: the recorded summary is stale, nothing was measured" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            exit "$status"
           else
             cargo xtask tune ab --spec classes/firm:build-1,build-2,build-3,build-4 --timeout 900
           fi

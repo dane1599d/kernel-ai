@@ -25,6 +25,7 @@ mod storage;
 mod throughput;
 mod tour;
 mod updates;
+mod vm;
 mod walk;
 mod warming;
 

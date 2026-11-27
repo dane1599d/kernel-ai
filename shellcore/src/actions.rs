@@ -656,6 +656,10 @@ impl Shell {
     fn answer_pending_checked(&mut self, pending: Pending, text: &str) -> Reply {
         let id = pending.id;
         if self.host.now_ns().saturating_sub(pending.created_ns) > CONFIRM_EXPIRY_NS {
+            // An "Always allow" that came too late keeps no rule (#11's sibling).
+            if let Some((_, granted)) = read_answer(text.trim()) {
+                self.revoke_unkept(granted.rule);
+            }
             self.record(id, &pending.request, &pending.checked.script, "expired");
             self.remember(&pending, "Not run: the question expired");
             return Reply::err("the script expired; ask again");
@@ -775,6 +779,7 @@ impl Shell {
         } else if let Err(why) = self.host.once_check(badge, &digest) {
             self.host
                 .audit(&format!("script {} ONCE refused: {why}", pending.id));
+            self.revoke_unkept(granted.rule);
             return Err(format!(": its Allow did not check ({why})"));
         }
         let always = match answer {
@@ -782,16 +787,33 @@ impl Shell {
             Answer::AlwaysTarget => true,
             _ => return Ok(String::from("yes")),
         };
-        let offer = pending.offer.as_ref().ok_or(": no rule can cover it")?;
+        let Some(offer) = pending.offer.as_ref() else {
+            self.revoke_unkept(granted.rule);
+            return Err(String::from(": no rule can cover it"));
+        };
         let made = (pending.id, self.host.now_ns());
         match self.rules.add(offer, always, granted.rule, made) {
             Ok(rule) => {
                 self.host
                     .audit(&format!("rule #{rule} added from menu {}", pending.id));
-                self.save_rules();
+                // A failure is audited; the rule holds for this boot.
+                let _ = self.save_rules();
                 Ok(format!("rule:{rule}"))
             }
-            Err(why) => Err(format!(": {why}")),
+            Err(why) => {
+                self.revoke_unkept(granted.rule);
+                Err(format!(": {why}"))
+            }
+        }
+    }
+
+    /// Revokes the rule node the trusted path minted for an "Always allow"
+    /// answer the shell did not keep: no rule holds its handle, so nothing
+    /// else would, and it would hold a kernel rule slot until a reboot (#11).
+    fn revoke_unkept(&self, rule: Option<u32>) {
+        if let Some(Err(why)) = rule.map(|h| self.host.revoke_rule(h)) {
+            self.host
+                .audit(&format!("an unkept rule's node was not revoked: {why}"));
         }
     }
 
@@ -808,11 +830,19 @@ impl Shell {
                         .audit(&format!("rule #{id}: its node was not revoked: {why}"));
                 }
                 self.host.audit(&format!("rule #{id} removed"));
-                self.save_rules();
-                Reply::ok(format!(
-                    "Removed rule #{id} ({}); it asks again",
-                    rule.action
-                ))
+                match self.save_rules() {
+                    Ok(()) => Reply::ok(format!(
+                        "Removed rule #{id} ({}); it asks again",
+                        rule.action
+                    )),
+                    // The removal holds now, so the reply is ok; but never
+                    // "it asks again" when the disk may still hold it (#9).
+                    Err(why) => Reply::ok(format!(
+                        "Removed rule #{id} ({}) for this boot: the rules were not saved \
+                         ({why}), so it may come back after a restart",
+                        rule.action
+                    )),
+                }
             }
             Err(why) => Reply::err(why),
         }

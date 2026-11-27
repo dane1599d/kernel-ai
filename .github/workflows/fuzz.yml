@@ -5,9 +5,11 @@
 # parsers of an app's bytes (plan p3-desktop §1 and §6's fuzz gate): surfabi's
 # message stream, header page and tree records, and look's `kai-theme 1`; and
 # `desktop`'s readers of other processes' bytes (plan p3-desktop section 9):
-# deskcore's client calls, queues, wire parsers and agent requests.
+# deskcore's client calls, queues, wire parsers and agent requests; and
+# kaimedia's PNG, JPEG, GIF and WebP decoders (P6 groundwork G8).
 # The targets are fuzz/fuzz_targets/*.rs, outside the workspace; their bodies
-# are fuzz/harness.rs, fuzz/surfabi_harness.rs and fuzz/look_harness.rs, which
+# are fuzz/harness.rs, fuzz/surfabi_harness.rs, fuzz/look_harness.rs and
+# fuzz/media_harness.rs, which
 # the crates' host tests also run, and the P3 targets' corpora are seeded with
 # their hostile tests' samples. Weekly, every target for 300 s, and on demand
 # (Actions tab, "Fuzz", Run workflow), on a GitHub runner, never on a
@@ -53,11 +55,11 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install cargo-fuzz
         run: cargo install cargo-fuzz --version 0.13.2 --locked
-      # The P3 targets start from their hostile tests' samples.
-      - name: Seed the P3 corpora
+      # The P3 and kaimedia targets start from their hostile tests' samples.
+      - name: Seed the P3 and kaimedia corpora
         env:
           FUZZ_SEED_DIR: ${{ github.workspace }}/fuzz/corpus
-        run: cargo test -p surfabi -p look -p deskcore --test hostile write_fuzz_seeds -- --ignored
+        run: cargo test -p surfabi -p look -p deskcore -p kaimedia --test hostile write_fuzz_seeds -- --ignored
       - name: Fuzz
         env:
           # A scheduled run has no inputs: every target, 300 s each.

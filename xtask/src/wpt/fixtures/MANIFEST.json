@@ -1,0 +1,31 @@
+{
+  "version": 9,
+  "url_base": "/",
+  "items": {
+    "testharness": {
+      "dom": {"a.html": ["0000", [null, {}]]}
+    },
+    "reftest": {
+      "css": {
+        "box": {
+          "green.html": ["1111", [null, [["/css/box/green-ref.html", "=="]], {}]],
+          "blue.html": ["2222", [null, [["/css/box/red.html", "!="]], {"fuzzy": [[null, [[0, 2], [0, 40]]]]}]],
+          "red.html": [
+            "3333",
+            ["/css/box/red.html?a", [["/css/box/green-ref.html", "=="]], {"viewport_size": [320, 240]}],
+            ["/css/box/red.html?b", [["/css/box/green-ref.html", "=="], ["/css/box/red.html", "=="]], {}]
+          ],
+          "chain.html": ["4444", [null, [["/css/box/green.html", "=="]], {
+            "fuzzy": [
+              ["/css/box/green.html", [[1, 9], [1, 100]]],
+              [["/css/box/chain.html", "/css/box/green.html", "=="], [[0, 3], [0, 7]]]
+            ]
+          }]]
+        }
+      },
+      "html": {
+        "top.html": ["5555", [null, [["/html/missing.html", "=="]], {"timeout": "long"}]]
+      }
+    }
+  }
+}

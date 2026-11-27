@@ -69,6 +69,7 @@ pub fn plan(test: SelfTest) -> Option<String> {
             | SelfTest::DeskNap
             | SelfTest::DeskNapBusy
             | SelfTest::KeepRunning { .. }
+            | SelfTest::DeskMany
             | SelfTest::DeskAppearance
             | SelfTest::DeskCard
             | SelfTest::DeskStanding
@@ -304,6 +305,12 @@ pub fn plan(test: SelfTest) -> Option<String> {
                 plan.push('\n');
                 plan.push_str(crate::keep_tests::PLAN);
                 crate::keep_tests::SHELL
+            }
+            // `keep-running`'s stand-in, after more processes than METRICS lists.
+            SelfTest::DeskMany => {
+                plan.push('\n');
+                plan.push_str(&crate::desk_many_tests::plan());
+                crate::desk_many_tests::SHELL
             }
             // The window's switches reach the shell through `desktop`, so the
             // shell has its route to it; the window comes after the shell.

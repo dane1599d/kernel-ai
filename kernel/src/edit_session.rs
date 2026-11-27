@@ -87,9 +87,9 @@ pub fn call(message: &[u8]) -> String {
 /// service sent it, with the line a build moved the cursor (`#at path:line`), at
 /// most [`kabi::MAX_MESSAGE`] bytes. The service cleans what it sends, and the
 /// editor app draws it through `uikit`, which draws no control character.
-/// `cancel` ends the wait when the caller is killed; `stop`, the person's Stop,
-/// ends it only before the service takes the message, so an edit it made is
-/// always journaled.
+/// `cancel`, the caller's kill, and `stop`, the person's Stop, end the wait
+/// only before the service takes the message, so an edit it made is always
+/// journaled (bug-hunt-6 H6-18): a killed app's answer goes nowhere either way.
 pub fn call_for_app(message: &[u8], cancel: &dyn Fn() -> bool, stop: &dyn Fn() -> bool) -> String {
     match exchange(message, cancel, stop) {
         Ok(reply) => {
@@ -155,8 +155,11 @@ fn exchange(
         });
     }
     restore_if_new(cancel);
+    // A kill, as a Stop, only takes back a message the service has not taken:
+    // one it took it may have applied, and its reply is what the journal
+    // records. A service that dies instead fails the call at once.
     let answered =
-        ipc::call_from_unless_stop("edit", message, edit_mode::EDIT_CALL_MS, cancel, stop);
+        ipc::call_from_unless_stop("edit", message, edit_mode::EDIT_CALL_MS, || false, waiting);
     let (reply, server) = match answered {
         Ok(answered) => answered,
         // No answer: not journaled, so a command that kills the service is never

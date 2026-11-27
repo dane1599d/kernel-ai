@@ -1,0 +1,13 @@
+[package]
+name = "vmx"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# Intel VMX's data, without std and with no OS in it (P6, the twin of `svm`):
+# VMCS field encodings, exit reasons and qualifications, EPT entries and the
+# execution controls that decide what exits, tested on the host. Nothing here
+# runs a VMX instruction.
+[lib]
+doctest = false

@@ -32,6 +32,8 @@ pub(super) const CASES: &[TestCase] = &[
             "edit: the edit service restarted; restored notes e1 with 1 edit",
             "edit: the edit service restarted; restored notes 2 with 1 edit",
             "[edit] built e3 from 2 (commit ",
+            // bug-hunt-6 H6-18.
+            "edit: a killed app's taken edit was journaled and came back after a restart",
         ],
         build: true,
         after: Some(crate::buildsvc::verify::after_edit_case),

@@ -1,0 +1,81 @@
+# WPT reftests through `cargo xtask wpt` (P6 groundwork G10): web-platform-tests
+# at the commit xtask/src/wpt/mod.rs pins, its MANIFEST.json built by WPT's own
+# tool, and the reftests under the chosen paths run through a renderer. Until
+# B-1's engine lands the only renderer is `stub`, whose pass rate says nothing
+# about rendering: this proves the harness. WPT is fetched here only, never
+# committed and never fetched by host tests. By hand only (Actions tab, "Web
+# WPT", Run workflow). The report goes to the job summary and, with every
+# result, to a 30-day artifact.
+name: Web WPT
+
+on:
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: "Path prefixes under WPT, space-separated (empty: every reftest)"
+        type: string
+        default: "css/css-flexbox css/css-grid css/CSS2"
+      limit:
+        description: "Most tests to run (0: no limit)"
+        type: number
+        default: 0
+      renderer:
+        description: "Renderer (stub until B-1)"
+        type: string
+        default: stub
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  wpt:
+    name: WPT reftests (${{ inputs.renderer }}, ${{ inputs.filter || 'all' }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: false
+      - name: Build xtask
+        run: cargo build -p xtask
+      - name: Fetch WPT at the pinned commit
+        run: |
+          commit=$(cargo xtask wpt commit)
+          echo "WPT commit $commit"
+          git init -q "$RUNNER_TEMP/wpt"
+          git -C "$RUNNER_TEMP/wpt" remote add origin https://github.com/web-platform-tests/wpt.git
+          git -C "$RUNNER_TEMP/wpt" fetch -q --depth 1 origin "$commit"
+          git -C "$RUNNER_TEMP/wpt" checkout -q FETCH_HEAD
+          test "$(git -C "$RUNNER_TEMP/wpt" rev-parse HEAD)" = "$commit"
+      # WPT's own tool: it downloads the manifest made for this commit when
+      # one is published, and builds it otherwise.
+      - name: Build WPT's manifest
+        working-directory: ${{ runner.temp }}/wpt
+        run: python3 ./wpt manifest -p MANIFEST.json && ls -l MANIFEST.json
+      - name: Run the reftests
+        env:
+          FILTER: ${{ inputs.filter }}
+          LIMIT: ${{ inputs.limit }}
+          RENDERER: ${{ inputs.renderer }}
+        run: |
+          args=(--wpt "$RUNNER_TEMP/wpt" --renderer "$RENDERER" --out wpt-out)
+          for f in $FILTER; do args+=(--filter "$f"); done
+          if [ "${LIMIT:-0}" != 0 ]; then args+=(--limit "$LIMIT"); fi
+          cargo xtask wpt run "${args[@]}"
+      - name: Report to the job summary
+        if: always()
+        run: cat wpt-out/report.md >> "$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: wpt-results
+          path: |
+            wpt-out/report.md
+            wpt-out/results.json
+          retention-days: 30

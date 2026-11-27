@@ -13,6 +13,7 @@
 //! supervisor at boot as `keep <app> on`, and a change sends `keep <app> on|off`.
 
 use crate::actlog::{Change, Entry, Form, State};
+use crate::paging;
 use crate::tiers::Tier;
 use crate::undo::{Inverse, Name};
 use crate::{Reply, Shell};
@@ -134,7 +135,12 @@ impl Shell {
         }
         let logged = format!("settings: {request}");
         match (verb, rest) {
-            ("rules", "") => Ok(self.rules_lines()),
+            ("rules", skip) if skip.is_empty() || paging::skip_of(skip).is_some() => {
+                Ok(paging::page(
+                    &paging::lines_of(&self.rules_lines()),
+                    paging::skip_of(skip).unwrap_or(0),
+                ))
+            }
             // What each app's effects may call: its declared rows, each allowed
             // or withheld (P4 task 7). Built-in imports and its own storage are
             // not rows, so they are not listed or revocable in v0.1.
@@ -147,7 +153,11 @@ impl Shell {
                 self.grant_by_click(&logged, name, row, verb == "grants-revoke")
             }
             // The hosts each app may reach, and their revoke (P5 task 13).
-            ("net", "") => self.net_lines(),
+            ("net", skip) if skip.is_empty() || paging::skip_of(skip).is_some() => {
+                self.net_lines().map(|all| {
+                    paging::page(&paging::lines_of(&all), paging::skip_of(skip).unwrap_or(0))
+                })
+            }
             ("net-revoke", which) => self.net_revoke_by_click(&logged, which),
             ("about", "") => Ok(about()),
             ("profiles", "") => Ok(self.profile_lines()),
@@ -269,9 +279,13 @@ impl Shell {
     }
 
     /// The restart window saved for `updated`; none for no file or one out of
-    /// shape, which `updated` reads as none too.
-    fn saved_window(&self) -> Option<(u16, u16)> {
-        window::restart_window(&self.host.restart_read()?)
+    /// shape, which `updated` reads as none too. An error when it could not be
+    /// read: that is not "off", and a click must not be answered as if it were.
+    fn saved_window(&self) -> Result<Option<(u16, u16)>, String> {
+        let read = self.host.restart_read().map_err(|why| {
+            format!("the saved restart window could not be read, so it is not changed: {why}")
+        })?;
+        Ok(read.and_then(|text| window::restart_window(&text)))
     }
 
     /// `restart-window`: saves the window `updated` restarts into a staged
@@ -282,7 +296,7 @@ impl Shell {
         request: &str,
         wanted: Option<(u16, u16)>,
     ) -> Result<String, String> {
-        let was = self.saved_window();
+        let was = self.saved_window()?;
         if was == wanted {
             return Ok(format!("restart window {} already", span(wanted)));
         }
@@ -322,7 +336,9 @@ impl Shell {
         if !self.app_names()?.iter().any(|app| app == name) {
             return Err(format!("{name} is no app that can nap"));
         }
-        let was = self.keep.iter().any(|app| app == name);
+        // An app still waiting at boot is kept as far as Settings shows: turning
+        // it off is a change, and must stop the retry.
+        let was = self.saved_keep().iter().any(|app| app == name);
         if was == on {
             return Ok(format!("{name} keep-running is {} already", word(on)));
         }
@@ -476,7 +492,7 @@ impl Shell {
     ///   empty for none (a saved file out of shape is none, as for `updated`).
     fn settings_file(&self, area: &str) -> Result<String, String> {
         match area {
-            "appearance" => match self.host.appearance_read() {
+            "appearance" => match self.host.appearance_read()? {
                 Some(text) if text.len() > look::appearance::MAX_BYTES => {
                     Err(String::from("the saved appearance is out of shape"))
                 }
@@ -486,7 +502,7 @@ impl Shell {
                 saved if saved.is_empty() => Ok(String::new()),
                 saved => Ok(keep_text(&saved)),
             },
-            "updates" => Ok(match self.saved_window() {
+            "updates" => Ok(match self.saved_window()? {
                 Some(w) => restart_text(Some(w)),
                 None => String::new(),
             }),
@@ -518,6 +534,16 @@ impl Shell {
             Ok(()) => "",
             Err(why) if kabi::live::app_call_unanswered(&why) => {
                 "; the app took it without answering, so it may have taken effect"
+            }
+            // Off for an app still waiting at boot: the supervisor set its
+            // record back when it could not reach the app, so it is off there
+            // already; only this list is left to change.
+            Err(why)
+                if !on
+                    && self.keep_waiting.apps.iter().any(|a| a == name)
+                    && not_serving_yet(&why) =>
+            {
+                ""
             }
             Err(why) => return Err(why),
         };

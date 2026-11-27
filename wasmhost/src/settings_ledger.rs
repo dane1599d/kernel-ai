@@ -16,6 +16,22 @@ use alloc::vec::Vec;
 /// What a change not made by a key or click is answered with.
 pub const NOT_BY_USER: &str = "a change needs your key or click";
 
+/// What a request is answered with when nothing came back for it in
+/// [`SILENT_MS`].
+pub const NO_ANSWER: &str = "no answer came; ask again";
+
+/// What a request is answered with when too many wait already.
+pub const TOO_MANY: &str = "too many requests are waiting; ask again";
+
+/// How long a request may be in flight before it is given up: `desktop`
+/// restarted without it, or the shell's answer was lost. Past it the ticket
+/// is answered [`NO_ANSWER`] and its room is free again. Long enough for a
+/// click held while the shell answers a model's line.
+pub const SILENT_MS: u64 = 120_000;
+
+/// Most requests held for room; a later one is owed [`TOO_MANY`].
+pub const MAX_HELD: usize = 64;
+
 /// A request ready to leave, under the host's own ticket.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Outgoing {
@@ -48,6 +64,8 @@ struct Held {
 }
 
 struct Flight {
+    /// The time of the last [`Ledger::expire`] when it left.
+    sent_ms: u64,
     wire: u32,
     serial: u64,
     ticket: u32,
@@ -57,6 +75,8 @@ struct Flight {
 pub struct Ledger {
     /// The next ticket on the wire.
     next: u32,
+    /// The time [`Ledger::expire`] was last given.
+    now_ms: u64,
     held: VecDeque<Held>,
     flight: Vec<Flight>,
 }
@@ -80,6 +100,14 @@ impl Ledger {
                 });
                 continue;
             }
+            if self.held.len() >= MAX_HELD {
+                refused.push(Owed {
+                    serial,
+                    ticket: request.ticket,
+                    outcome: Err(String::from(TOO_MANY)),
+                });
+                continue;
+            }
             self.held.push_back(Held {
                 serial,
                 ticket: request.ticket,
@@ -99,6 +127,7 @@ impl Ledger {
             let wire = self.next;
             self.next = self.next.wrapping_add(1);
             self.flight.push(Flight {
+                sent_ms: self.now_ms,
                 wire,
                 serial: held.serial,
                 ticket: held.ticket,
@@ -110,6 +139,24 @@ impl Ledger {
             });
         }
         out
+    }
+
+    /// Notes that it is `now_ms`, and gives up the requests that have been in
+    /// flight for [`SILENT_MS`]: each is owed [`NO_ANSWER`]. An answer that
+    /// comes after finds no ticket and is dropped.
+    pub fn expire(&mut self, now_ms: u64) -> Vec<Owed> {
+        self.now_ms = now_ms;
+        let (late, kept): (Vec<Flight>, Vec<Flight>) = core::mem::take(&mut self.flight)
+            .into_iter()
+            .partition(|f| now_ms.saturating_sub(f.sent_ms) >= SILENT_MS);
+        self.flight = kept;
+        late.into_iter()
+            .map(|f| Owed {
+                serial: f.serial,
+                ticket: f.ticket,
+                outcome: Err(String::from(NO_ANSWER)),
+            })
+            .collect()
     }
 
     /// Requests in flight.

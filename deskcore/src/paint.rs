@@ -98,6 +98,9 @@ pub struct Painter {
     /// What the last [`Painter::paint`] (and [`Painter::cursor`]) drew over
     /// the windows ([`Painter::covered`]).
     pub(crate) covered: alloc::vec::Vec<Rect>,
+    /// What the shadows drawn in the last [`Painter::paint`] left of the light
+    /// at each px of the frame (255: none), for [`Painter::shade`].
+    pub(crate) shade: alloc::vec::Vec<u8>,
 }
 
 /// `0xFF` alpha on a token.
@@ -137,6 +140,7 @@ impl Painter {
             chat_laid: alloc::vec::Vec::new(),
             monograms: alloc::vec::Vec::new(),
             covered: alloc::vec::Vec::new(),
+            shade: alloc::vec::Vec::new(),
         })
     }
 
@@ -169,6 +173,24 @@ impl Painter {
     /// client's own px never land on them, whatever colour they are painted.
     pub fn covered(&self) -> &[Rect] {
         &self.covered
+    }
+
+    /// The light the shadows of the last [`Painter::paint`] left at each px of
+    /// the frame, a byte a px and as wide as the frame (255: untouched).
+    /// A client drawn at the screen's scale has only a key colour in the frame
+    /// under a shadow; [`crate::overlay`] darkens its own px by this, so the
+    /// shadow of the focused window, the pane or Start falls on them too (H6-19).
+    pub fn shade(&self) -> &[u8] {
+        &self.shade
+    }
+
+    /// Draws the shadow of a window at `r` into `c` and into [`Painter::shade`].
+    pub(crate) fn cast(&mut self, c: &mut Canvas<'_>, r: Rect, clip: Rect) {
+        let width = c.width as usize;
+        for shadow in [&self.far, &self.near] {
+            shadow.draw(c, g(r), g(clip));
+            shadow.shade(&mut self.shade, width, g(r), g(clip));
+        }
     }
 
     /// Notes that `r`, its corners rounded to `radius` as
@@ -205,6 +227,17 @@ impl Painter {
     ) {
         let desk = scene.desk;
         self.covered.clear();
+        let (width, height) = (c.width as usize, c.height as usize);
+        if self.shade.len() != width * height {
+            self.shade = alloc::vec![255; width * height];
+        }
+        let cut = g(clip).intersect(&c.bounds());
+        for y in cut.y..cut.bottom() {
+            let from = y as usize * width + cut.x as usize;
+            if let Some(row) = self.shade.get_mut(from..from + cut.w as usize) {
+                row.fill(255);
+            }
+        }
         c.fill(g(clip), opaque(self.palette.desk));
         for window in desk.windows().iter().filter(|w| !w.minimized) {
             if reach(window.frame).intersect(&clip).is_none() {
@@ -212,8 +245,7 @@ impl Painter {
             }
             let focused = desk.focus() == Focus::Window(window.id);
             if focused && desk.dragged() != Some(window.id) {
-                self.far.draw(c, g(window.frame), g(clip));
-                self.near.draw(c, g(window.frame), g(clip));
+                self.cast(c, window.frame, clip);
             }
             let hovered = desk
                 .hovered()

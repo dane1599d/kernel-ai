@@ -11,7 +11,7 @@ fn call(json: &str) -> Result<Call, ActError> {
 }
 
 fn theme(host: &FakeHost) -> String {
-    crate::appearance::current(host).theme
+    crate::appearance::current(host).unwrap().theme
 }
 
 #[test]
@@ -65,6 +65,7 @@ fn undo_leaves_a_setting_changed_since_alone() {
     assert!(shell.eval("switch to the light theme").ok);
     // Settings, or another change, picked high-contrast since.
     let changed = crate::appearance::current(host.as_ref())
+        .unwrap()
         .set("theme", "high-contrast", &::look::appearance::Shipped)
         .unwrap();
     *host.appearance.borrow_mut() = Some(changed.encode());
@@ -81,7 +82,7 @@ fn a_save_from_before_shell_and_hover_keeps_its_settings_and_audits_the_colour()
         "kai-appearance 1\ntheme = light\ntoken = muted #666666\nscale = 150\nlegible = on\n";
     let (host, _shell) = with_calls(vec![]);
     *host.appearance.borrow_mut() = Some(String::from(saved));
-    let now = crate::appearance::current(host.as_ref());
+    let now = crate::appearance::current(host.as_ref()).unwrap();
     assert_eq!(
         (now.theme.as_str(), now.scale, now.legible),
         ("light", 150, true)
@@ -95,7 +96,7 @@ fn a_save_from_before_shell_and_hover_keeps_its_settings_and_audits_the_colour()
     // A save that was short before is still refused whole, and says so.
     let short = "kai-appearance 1\ntheme = dark\ntoken = muted #30343C\nscale = 150\n";
     *host.appearance.borrow_mut() = Some(String::from(short));
-    let now = crate::appearance::current(host.as_ref());
+    let now = crate::appearance::current(host.as_ref()).unwrap();
     assert_eq!((now.theme.as_str(), now.scale), ("dark", 100));
     assert!(
         host.audit

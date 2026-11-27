@@ -51,7 +51,7 @@ use goalcore::planner::{self, JobPlanner, Llm, Taken};
 use goalcore::reply::{self, Reply};
 use goalcore::report::Report;
 use goalcore::runner::{Event, Outcome, Parts, Plan, Runner, Steps};
-use goalcore::{AskKind, Door, Goal, Goals, Presence, State, Step, Tier};
+use goalcore::{Door, Goal, Goals, Presence, State, Step, Tier};
 use llmproto::act::ActRequest;
 use user::{arg, args, println, route, sys};
 
@@ -124,7 +124,7 @@ fn run() -> i32 {
             report(event);
             match event {
                 Event::Done { goal } | Event::Failed { goal } => end(*goal),
-                Event::Waiting { goal, .. } => agent.hold_question(*goal),
+                Event::Waiting { goal, .. } => agent.park_ask(*goal),
                 _ => {}
             }
         }
@@ -242,21 +242,13 @@ impl Agent {
         }
     }
 
-    /// A goal waiting on the planner's question has no answer path yet: it pauses,
-    /// with the question as what comes next, and the person's resume plans it again.
-    fn hold_question(&mut self, id: u64) {
-        let Some(goal) = self.goals.get_mut(id) else {
-            return;
-        };
-        let question = match &goal.waiting {
-            Some(ask) if ask.kind == AskKind::Question => ask.why.clone(),
-            _ => return,
-        };
-        if goal.answered().is_ok() {
-            let planned = goal.planned;
-            goal.plan(planned, &format!("waits for your answer: {question}"));
-            let _ = goal.pause();
-            println!("goals: goal {id} paused with a question: {question}");
+    /// A goal goalcore made wait has no answer path here but the shell's card:
+    /// the planner's question, or a step outside the scope (H2-8). It pauses,
+    /// with why as what comes next, the step never run, and the person's resume
+    /// plans it again ([`Goal::park_ask`]).
+    fn park_ask(&mut self, id: u64) {
+        if let Some(next) = self.goals.get_mut(id).and_then(Goal::park_ask) {
+            println!("goals: goal {id} paused: {next}");
         }
     }
 }
@@ -271,8 +263,9 @@ fn end(goal: u64) {
 
 /// The goals agent's door: inside the ceiling the person approved, every step goes
 /// to the shell, whose own door decides its tier on the empty line and asks the
-/// person on the card. So goalcore never asks on its own, and the person answers
-/// once.
+/// person on the card, so the person answers once. goalcore still asks on its own
+/// for a step outside the goal's scope; that ask is parked ([`Agent::park_ask`]),
+/// never run.
 struct InCeiling;
 
 impl Door<String> for InCeiling {
@@ -297,23 +290,8 @@ impl Llm for RouteLlm {
 /// The `agent-start act` request that plans `goal`'s next step, without its
 /// command word, which llm puts back from the kind.
 fn plan_request(goal: &Goal) -> Result<String, String> {
-    let done: Vec<&str> = goal
-        .log
-        .iter()
-        .rev()
-        .take(4)
-        .map(|step| step.proposal.row.as_str())
-        .collect();
-    let done = match done.is_empty() {
-        true => String::from("nothing yet"),
-        false => done.join(", "),
-    };
-    let next = match goal.next.is_empty() {
-        true => "the first step",
-        false => goal.next.as_str(),
-    };
     let request = ActRequest {
-        line: format!("goal: {}\ndone: {done}\nnext: {next}", goal.text),
+        line: planner::plan_line(goal),
         state: String::new(),
         timeout_ms: STEP_MS,
         read: None,
@@ -417,6 +395,10 @@ impl Steps<String> for ShellSteps {
                 self.refused.push(goal);
                 Outcome::Done(reply::failed(None, why))
             }
+            // A question is up at the console: the step did not reach the
+            // door. It stays in flight and is sent again next turn, billed as
+            // nothing (H2-9).
+            Reply::Busy(_) => Outcome::Later,
             Reply::Done(done) => Outcome::Done(done),
         }
     }
@@ -442,13 +424,10 @@ fn report(event: &Event) {
     }
 }
 
-/// The time goals count in, in ms: the host's clock when the firmware gave one, so
-/// a deadline is a wall-clock time; else the boot's.
+/// The time goals count in, in ms: the boot's, as the shell stamps them
+/// ([`goalcore::now_ms`], H2-7).
 fn now_ms() -> u64 {
-    match sys::clock_now() {
-        Ok(secs) => secs.saturating_mul(1000),
-        Err(_) => sys::time_ns() / 1_000_000,
-    }
+    goalcore::now_ms(sys::time_ns())
 }
 
 /// One request to the shell on this agent's badged route, and its reply.

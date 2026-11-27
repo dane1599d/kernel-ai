@@ -13,10 +13,56 @@
 
 use crate::Goal;
 use crate::Goals;
+use crate::StepStatus;
 use crate::runner::{Plan, Planner};
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+
+/// How many of a goal's latest steps the planner's line tells.
+const LINE_STEPS: usize = 4;
+
+/// The line a planner is given for `goal`: its text, the latest steps that ran
+/// ok, the latest ones that did not (failed, refused by the person, held,
+/// waiting), each with why, and what it plans next when it said. Only a step
+/// that ran is "done": a goal whose write failed or was refused is not told it
+/// was written, so it is not closed as met (H6-28).
+pub fn plan_line(goal: &Goal) -> String {
+    let mut done: Vec<String> = Vec::new();
+    let mut not: Vec<String> = Vec::new();
+    for step in goal.log.iter().rev().take(LINE_STEPS) {
+        let row = step.proposal.row.as_str();
+        let why = |what: &str| match crate::valid::clean(&step.note)
+            .chars()
+            .take(80)
+            .collect::<String>()
+        {
+            note if note.is_empty() => format!("{row} {what}"),
+            note => format!("{row} {what}: {note}"),
+        };
+        match step.status {
+            StepStatus::Ran => done.push(row.to_string()),
+            StepStatus::Failed => not.push(why("failed")),
+            StepStatus::Denied => not.push(why("refused by the person")),
+            StepStatus::Held => not.push(why("held back")),
+            StepStatus::Asked => not.push(why("waits on the person")),
+            StepStatus::Running => not.push(why("is running")),
+        }
+    }
+    let done = match done.is_empty() {
+        true => String::from("nothing yet"),
+        false => done.join(", "),
+    };
+    let mut line = format!("goal: {}\ndone: {done}", goal.text);
+    if !not.is_empty() {
+        line.push_str(&format!("\nnot done: {}", not.join("; ")));
+    }
+    // What the goal said it plans next, when it said: never a guess.
+    if !goal.next.is_empty() {
+        line.push_str(&format!("\nnext: {}", goal.next));
+    }
+    line
+}
 
 /// llm, on the agent's route.
 pub trait Llm {

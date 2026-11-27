@@ -402,6 +402,9 @@ impl Host for FakeHost {
     }
 
     fn fs_change(&self, change: FsChange) -> Result<u64, String> {
+        if let Some(refused) = self.dropped_or_refused() {
+            return refused;
+        }
         if let Some(why) = self.fs_fail.borrow_mut().take() {
             return Err(why);
         }
@@ -452,6 +455,9 @@ impl Host for FakeHost {
     /// made, or one a later change removed, is left. A restore that put any
     /// file back is a transaction of its own; one that put none back is refused.
     fn fs_undo(&self, txn: u64) -> Result<FsUndone, FsRefused> {
+        if let Some(undone) = self.undo_lost(txn) {
+            return undone;
+        }
         let (before, after) = self
             .txns
             .borrow()
@@ -616,8 +622,8 @@ impl Host for FakeHost {
         Ok(())
     }
 
-    fn restart_read(&self) -> Option<String> {
-        self.restart_file.borrow().clone()
+    fn restart_read(&self) -> Result<Option<String>, String> {
+        self.state_read("restart_read", &self.restart_file)
     }
 
     fn restart_write(&self, text: &str) -> Result<(), String> {
@@ -699,8 +705,8 @@ impl Host for FakeHost {
         })
     }
 
-    fn appearance_read(&self) -> Option<String> {
-        self.appearance.borrow().clone()
+    fn appearance_read(&self) -> Result<Option<String>, String> {
+        self.state_read("appearance_read", &self.appearance)
     }
 
     fn appearance_write(&self, text: &str) -> Result<(), String> {

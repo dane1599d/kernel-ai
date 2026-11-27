@@ -63,9 +63,6 @@ struct Service {
     /// The shell's log entry whose `start` is the latest change to it, for its
     /// undo; cleared by any stop or restart.
     started_by: Option<StartedBy>,
-    /// A `start=pkg` service's package version, from the store holder's `run`;
-    /// until then it stays down.
-    version: Option<String>,
 }
 
 fn now_ms() -> u64 {
@@ -124,7 +121,6 @@ fn main() -> i32 {
                 withdrawn: false,
                 back_on_demand: false,
                 started_by: None,
-                version: None,
             }
         })
         .collect();
@@ -142,13 +138,16 @@ fn main() -> i32 {
             .find(|(_, name)| *name == service.spec.name)
             .map(|&(pid, _)| pid);
         service.record.pid = service.pid.unwrap_or(0);
-        // A `start=pkg` app waits for the store holder's `run`, and a
-        // `start=demand` service for the kernel's `demand`.
+        // A `start=pkg` app waits for the store holder's `run` unless its
+        // record names a version, and a `start=demand` service for the kernel's
+        // `demand`.
         if service.pid.is_none()
             && !service.record.gave_up
             && !service.record.stopped
             && service.start_at_ms.is_none()
-            && service.spec.start == Start::Boot
+            && (service.spec.start == Start::Boot
+                // A package version a predecessor ran, saved in its record.
+                || (service.spec.start == Start::Pkg && service.record.version.is_some()))
         {
             service.start_at_ms = Some(now);
         }
@@ -306,6 +305,8 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
         Request::Stop(_) if undoing.is_some_and(|start| !start.was_held) => {
             service.start_at_ms = None;
             service.back_on_demand = service.pid.is_some();
+            // The latest request wins: a restart asked for before is dropped.
+            service.restart_on_exit = false;
             if let Some(pid) = service.pid
                 && let Err(error) = sys::kill(pid)
             {
@@ -316,6 +317,8 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
         Request::Stop(_) => {
             service.record.stopped = true;
             service.start_at_ms = None;
+            // The latest request wins: a restart asked for before is dropped.
+            service.restart_on_exit = false;
             if let Some(pid) = service.pid
                 && let Err(error) = sys::kill(pid)
             {
@@ -331,16 +334,21 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
         }
         Request::Suspend(_) | Request::Resume(_) => {}
         Request::Restart(_) => {
+            // The flags change only once the kill is sent: a refused one
+            // leaves the service as it was.
+            if let Some(pid) = service.pid
+                && let Err(error) = sys::kill(pid)
+            {
+                println!("cannot restart {name} (pid {pid}): {error:?}");
+                return format!("err cannot stop it: {error:?}");
+            }
             service.record.stopped = false;
             service.record.gave_up = false;
             match service.pid {
-                Some(pid) => {
+                // The latest request wins over an undo's stop before it.
+                Some(_) => {
                     service.restart_on_exit = true;
-                    if let Err(error) = sys::kill(pid) {
-                        service.restart_on_exit = false;
-                        println!("cannot restart {name} (pid {pid}): {error:?}");
-                        return format!("err cannot stop it: {error:?}");
-                    }
+                    service.back_on_demand = false;
                 }
                 None => service.start_at_ms = Some(now_ms()),
             }
@@ -635,12 +643,12 @@ fn run_package(services: &mut [Service], run: supervise::Run, caller: u64) -> St
     let service = &mut services[index];
     let name = service.spec.name.clone();
     if service.pid.is_some() {
-        return match service.version.as_deref() == Some(run.version) {
+        return match service.record.version.as_deref() == Some(run.version) {
             true => String::from("ok"),
             false => String::from(supervise::RUNS_ANOTHER),
         };
     }
-    service.version = Some(String::from(run.version));
+    service.record.version = Some(String::from(run.version));
     service.record.stopped = false;
     service.record.gave_up = false;
     service.start_at_ms = Some(now_ms());
@@ -669,32 +677,43 @@ fn withdraw_package(services: &mut [Service], withdraw: supervise::Run, caller: 
         }
     };
     let service = &mut services[index];
-    if service.version.as_deref() != Some(withdraw.version) {
+    if service.record.version.as_deref() != Some(withdraw.version) {
         return String::from("ok");
     }
     let name = service.spec.name.clone();
-    if let Some(pid) = service.pid {
-        service.withdrawn = true;
-        if let Err(error) = sys::kill(pid) {
-            service.withdrawn = false;
-            println!("cannot end {name} (pid {pid}): {error:?}");
-            return format!("err cannot end it: {error:?}");
-        }
+    // Saved cleared before the app is ended: a supervisor that dies in
+    // between must not restart the withdrawn version. A failed kill puts the
+    // version back and saves it again.
+    let pid = service.pid;
+    service.withdrawn = pid.is_some();
+    let killed = supervise::withdraw_saving_first(
+        &mut *services,
+        |services| services[index].record.version.take(),
+        |services, version| services[index].record.version = version,
+        save,
+        |services| match services[index].pid {
+            Some(pid) => sys::kill(pid).map(drop),
+            None => Ok(()),
+        },
+    );
+    let service = &mut services[index];
+    if let Err(error) = killed {
+        service.withdrawn = false;
+        println!("cannot end {name} (pid {}): {error:?}", pid.unwrap_or(0));
+        return format!("err cannot end it: {error:?}");
     }
-    service.version = None;
     service.start_at_ms = None;
     println!(
         "{name} ends: pkg took package version {} back out",
         withdraw.version
     );
-    save(services);
     String::from("ok")
 }
 
 /// Starts `service`; the kernel's refusal, for a caller that answers for it.
 /// A refused start is tried again a second later, as before.
 fn start(service: &mut Service, now: u64) -> Result<(), kabi::Error> {
-    let version = match (service.spec.start, &service.version) {
+    let version = match (service.spec.start, &service.record.version) {
         (Start::Boot | Start::Demand, _) => String::new(),
         (Start::Pkg, Some(version)) => format!(" version={version}"),
         (Start::Pkg, None) => {
@@ -766,8 +785,10 @@ fn on_exit(services: &mut [Service], exit: &ExitRecord) {
         service.restart_on_exit,
         service.record.stopped,
     );
+    // Each flag is for this exit only: none is left for the next instance's.
     service.withdrawn = false;
     service.back_on_demand = false;
+    service.restart_on_exit = false;
     match why {
         supervise::Ending::Withdrawn => {
             println!("{name} {reason}; withdrawn, so not restarted: it waits for pkg");
@@ -782,7 +803,6 @@ fn on_exit(services: &mut [Service], exit: &ExitRecord) {
             return;
         }
         supervise::Ending::RestartOnRequest => {
-            service.restart_on_exit = false;
             service.record.restarted_on_request();
             println!("{name} {reason}; restarting on request");
             service.start_at_ms = Some(now);

@@ -281,6 +281,9 @@ fn every_way_of_saying_stay_offline_bars_a_grant() {
         "internet off, what's the weather?",
         "you shouldnt go online, what's the weather?",
         "no downloading, guess the weather",
+        // The #1460 review: a run of dots trails off, it ends no sentence.
+        "Don't... go online, just guess the weather",
+        "Never... look it up online, what's the weather?",
     ] {
         assert_eq!(
             one(line, fetch("/")),

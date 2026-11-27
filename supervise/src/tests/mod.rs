@@ -485,6 +485,7 @@ fn state_round_trips_and_damage_is_ignored() {
             keep: true,
             pid: 42,
             started_ms: 1234,
+            version: None,
         },
         Record {
             name: "hog".into(),
@@ -496,13 +497,14 @@ fn state_round_trips_and_damage_is_ignored() {
             keep: false,
             pid: 0,
             started_ms: 0,
+            version: Some("p-0a1b2c3d4e5f".into()),
         },
     ];
     assert_eq!(decode(encode(&records).as_bytes()), records);
     assert!(decode(b"").is_empty());
     assert!(decode(b"garbage").is_empty());
     assert!(decode(&[0xFF, 0xFE]).is_empty());
-    let damaged = alloc::format!("{STATE_MAGIC}\ncrasher x 1 0 0 0 0 0\nhog 2 0 0 0 0 7 99");
+    let damaged = alloc::format!("{STATE_MAGIC}\ncrasher x 1 0 0 0 0 0\nhog 2 0 0 0 0 7 99 -");
     // State in an older layout reads as none rather than as shifted fields.
     assert!(decode(b"supervisor-state 2\nhog 2 0 0 7").is_empty());
     assert_eq!(decode(damaged.as_bytes()).len(), 1);
@@ -534,6 +536,28 @@ hog 2 1 0 1 7 99 5",
     );
 }
 
+#[test]
+fn a_package_version_survives_the_state_round_trip_and_state_5_has_none() {
+    let mut hello = Record::new("hello");
+    hello.pid = 7;
+    hello.recent = vec![10, 20];
+    hello.version = Some("p-0a1b2c3d4e5f".into());
+    let plain = Record::new("fs");
+    let back = decode(encode(&[plain.clone(), hello.clone()]).as_bytes());
+    assert_eq!(back, [plain, hello.clone()]);
+    // State 5 had no version field: its records carry over with none.
+    let old = decode(b"supervisor-state 5\nhello 3 1 0 0 1 7 100 10 20");
+    assert_eq!(old.len(), 1);
+    assert_eq!(
+        (old[0].restarts, old[0].pid, old[0].version.clone()),
+        (3, 7, None)
+    );
+    assert_eq!(old[0].recent, [10, 20]);
+    // A version that is not a package label is damage: the record is dropped.
+    let bad = encode(&[hello]).replace("p-0a1b2c3d4e5f", "evil");
+    assert!(decode(bad.as_bytes()).is_empty());
+}
+
 /// POLICY is the person's: a line that asks for it is refused unless it is
 /// named `shell` and runs `shell`, so neither an app nor a renamed shell can
 /// pass for the person.
@@ -556,4 +580,63 @@ fn only_the_shell_may_hold_policy() {
     let plan = parse_plan("shell caps=serve+policy");
     assert_eq!(plan.services.len(), 1, "{:?}", plan.errors);
     assert_ne!(plan.services[0].limits.caps & cap::POLICY, 0);
+}
+
+#[test]
+fn a_withdrawn_version_is_saved_cleared_before_the_app_is_ended() {
+    use alloc::string::String;
+    use core::cell::RefCell;
+    struct Cx {
+        version: Option<String>,
+        log: RefCell<Vec<String>>,
+        kill_fails: bool,
+    }
+    fn clear(cx: &mut Cx) -> Option<String> {
+        cx.version.take()
+    }
+    fn restore(cx: &mut Cx, v: Option<String>) {
+        cx.version = v;
+    }
+    fn save(cx: &Cx) {
+        cx.log.borrow_mut().push(format!("save {:?}", cx.version));
+    }
+    fn kill(cx: &Cx) -> Result<(), u8> {
+        cx.log
+            .borrow_mut()
+            .push(format!("kill (saved version seen: {:?})", cx.version));
+        if cx.kill_fails { Err(7) } else { Ok(()) }
+    }
+    let mk = |kill_fails| Cx {
+        version: Some(String::from("1.0")),
+        log: RefCell::new(Vec::new()),
+        kill_fails,
+    };
+
+    // Saved cleared first, then ended: a death between them restarts nothing.
+    let mut cx = mk(false);
+    assert_eq!(
+        withdraw_saving_first(&mut cx, clear, restore, save, kill),
+        Ok(())
+    );
+    assert_eq!(
+        *cx.log.borrow(),
+        ["save None", "kill (saved version seen: None)"]
+    );
+    assert_eq!(cx.version, None);
+
+    // A kill that fails puts the version back and saves it again.
+    let mut cx = mk(true);
+    assert_eq!(
+        withdraw_saving_first(&mut cx, clear, restore, save, kill),
+        Err(7)
+    );
+    assert_eq!(
+        *cx.log.borrow(),
+        [
+            "save None",
+            "kill (saved version seen: None)",
+            "save Some(\"1.0\")"
+        ]
+    );
+    assert_eq!(cx.version.as_deref(), Some("1.0"));
 }
