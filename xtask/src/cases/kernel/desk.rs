@@ -152,6 +152,7 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
         min_timeout: Some(std::time::Duration::from_secs(1_200)),
         expect: &[
             "desk-perf: reference p50 ",
+            "desk-perf: stream p50 ",
             "desk-perf: (a) full composite at 1920x1080: ",
             "desk-perf: (b) drag render: ",
             "desk-perf: (b) drag flush: ",
@@ -171,6 +172,7 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
         min_timeout: Some(std::time::Duration::from_secs(1_200)),
         expect: &[
             "desk-perf: reference p50 ",
+            "desk-perf: stream p50 ",
             "desk-perf: (a) full composite at 2560x1440: ",
             "desk-perf: (b) drag render: ",
             "desk-perf: (b) drag flush: ",

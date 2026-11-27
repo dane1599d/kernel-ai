@@ -65,7 +65,7 @@ pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u6
         }
         call::SLOT_READ => {
             checked(slot, a[0], Rights::READ)?;
-            read_in(slot, kind_of(a[1])?, a[2], a[3], a[4])
+            read_in("slot read", slot, kind_of(a[1])?, a[2], a[3], a[4])
         }
         // The update and import disks are read-only, whatever the handle says.
         call::SLOT_WRITE if disk_serial(a[1]).is_some() => {
@@ -78,11 +78,11 @@ pub(super) fn handle(slot: usize, number: u64, a: &[u64; 6]) -> Option<Result<u6
             if !writable(target) {
                 return Err(Error::Permission);
             }
-            write_in(slot, kind_of(a[1])?, a[2], a[3], a[4])
+            write_in("slot write", slot, kind_of(a[1])?, a[2], a[3], a[4])
         }
         call::SLOT_FLUSH => {
             checked(slot, a[0], Rights::WRITE)?;
-            flush_in(kind_of(a[1])?)
+            flush_in("slot flush", kind_of(a[1])?)
         }
         call::BOOTREC_GET => get(slot, a[0], a[1]),
         call::BOOTREC_SET => set(slot, a[0], a[1], a[2], a[3]),

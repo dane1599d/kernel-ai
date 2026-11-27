@@ -32,7 +32,7 @@ use deskcore::geom::Rect;
 use gfx2d::term::{self, Layout};
 use gfx2d::{Image, Text};
 use kabi::input::{InputEvent, Kind};
-use kabi::perf::{OVER_BUDGET, REFERENCE, REFERENCE_WORDS};
+use kabi::perf::{OVER_BUDGET, REFERENCE, REFERENCE_WORDS, STREAM, STREAM_WORDS};
 use termcore::style::Kind as Row;
 use user::{println, sys};
 
@@ -158,7 +158,7 @@ pub fn request(state: &mut State, screen: &Screen, bytes: &[u8], pid: u64) -> Op
             Ok(n) if (1..=MAX_FRAMES).contains(&n) => Vec::from([open(state, screen, n)]),
             _ => return Some(String::from("err perf open takes 1 to 1000 frames")),
         },
-        ["reference"] => Vec::from([reference()]),
+        ["reference"] => reference(),
         _ => return Some(String::from("err unknown perf request")),
     };
     // The kernel says which misses count: only under KVM.
@@ -327,16 +327,25 @@ fn text_page(frames: usize) -> Vec<String> {
 }
 
 /// `kabi::perf::reference_work` timed [`REFERENCE_ROUNDS`] times, as
-/// `reference p50 <ns> ns: ...`; a pause after each, outside the timing.
-fn reference() -> String {
+/// `reference p50 <ns> ns: ...`, then `kabi::perf::stream_work` as
+/// `stream p50 <ns> ns: ...` as a second line; a pause after each, outside the
+/// timing.
+fn reference() -> Vec<String> {
     let mut words = alloc::vec![0u32; REFERENCE_WORDS];
+    let reference = timed(REFERENCE, &mut words, kabi::perf::reference_work);
+    drop(words);
+    let mut words = alloc::vec![0u32; STREAM_WORDS];
+    let stream = timed(STREAM, &mut words, kabi::perf::stream_work);
+    Vec::from([reference, stream])
+}
+
+/// `work` timed [`REFERENCE_ROUNDS`] times over `words`, as `<label><p50> ns:
+/// n=.. p50 .. max .. ms`.
+fn timed(label: &str, words: &mut [u32], work: fn(&mut [u32], u32) -> u32) -> String {
     let mut samples: Vec<u64> = (0..REFERENCE_ROUNDS)
         .map(|round| {
             let start = sys::time_ns();
-            core::hint::black_box(kabi::perf::reference_work(
-                core::hint::black_box(&mut words),
-                round as u32,
-            ));
+            core::hint::black_box(work(core::hint::black_box(&mut *words), round as u32));
             let took = sys::time_ns() - start;
             sys::sleep_ms(1);
             took
@@ -345,7 +354,7 @@ fn reference() -> String {
     samples.sort_unstable();
     let (p50, max) = (samples[samples.len() / 2], samples[samples.len() - 1]);
     format!(
-        "{REFERENCE}{p50} ns: n={} p50 {} max {} ms",
+        "{label}{p50} ns: n={} p50 {} max {} ms",
         samples.len(),
         ms(p50),
         ms(max)

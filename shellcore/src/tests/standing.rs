@@ -457,9 +457,15 @@ fn an_allow_that_makes_no_instruction_revokes_its_rule_node() {
     while shell.standing.rules().len() < crate::standing::MAX_RULES {
         notes_rule(&mut shell.standing);
     }
+    // A firing waits for another instruction with the same action and app.
+    *host.triggers.waiting.borrow_mut() = String::from("minimize notes\n");
     let refused = shell.eval(&alloc::format!("answer {id} allow once={once} rule=11"));
     assert!(!refused.ok, "{refused:?}");
     assert_eq!(*host.revoked.borrow(), [9, 11]);
+    // #1595's review: the refusal comes before the events settle, so no
+    // firing ran while the Allow's node stood.
+    assert!(host.triggers.runs.borrow().is_empty());
+    assert_eq!(*host.triggers.waiting.borrow(), "minimize notes\n");
 }
 
 /// What `desk-standing-undo` (kernel/src/standing_tests.rs) waits for in

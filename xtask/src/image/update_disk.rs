@@ -17,9 +17,17 @@
 //! `release_seq` in `custom.kai`. It is signed by the test root of this xtask
 //! run (P4 plan section 4, item 3), the same root every slot case's bundle
 //! carries as `kai.root.json`, so `updated` checks it as it will a download.
+//!
+//! The key-rotation drill (P8 row 3, with throwaway roots only): [`rotated`]
+//! is a second test root, v2, with four keys of its own. An update disk
+//! signed under it ([`Signer::Root2`]) carries `metadata/2.root.json`, root
+//! version 2 naming v2's keys and signed by v1's root key and v2's. A device
+//! that trusts v1 moves to v2 on reading it, and from then refuses metadata
+//! signed under v1 alone.
 
 use crate::pkgrepo::tuf::{self, Key, SPEC_VERSION};
 use kaipkg::generation::Time;
+use kaipkg::sign;
 use serde_json::json;
 use std::sync::OnceLock;
 
@@ -82,6 +90,16 @@ impl Stamp {
     }
 }
 
+/// Which test root signs an update disk's metadata.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Signer {
+    /// The run's test root, v1: what every slot trusts as `kai.root.json`.
+    Root1,
+    /// The rotated root, v2, with `2.root.json` signed by v1's root key and
+    /// v2's.
+    Root2,
+}
+
 /// This run's throwaway test root: four keys and the time the metadata counts
 /// its expiry from, made once so every boot of a chained case shares them.
 pub struct TestRoot {
@@ -92,10 +110,8 @@ pub struct TestRoot {
     now: Time,
 }
 
-/// The test root, made on first use.
-pub fn test_root() -> Result<&'static TestRoot, String> {
-    static ROOT: OnceLock<TestRoot> = OnceLock::new();
-    if let Some(root) = ROOT.get() {
+fn make(cell: &'static OnceLock<TestRoot>) -> Result<&'static TestRoot, String> {
+    if let Some(root) = cell.get() {
         return Ok(root);
     }
     let now = std::time::SystemTime::now()
@@ -108,7 +124,30 @@ pub fn test_root() -> Result<&'static TestRoot, String> {
         timestamp: tuf::generate_key()?,
         now: Time(now.as_secs()),
     };
-    Ok(ROOT.get_or_init(|| made))
+    Ok(cell.get_or_init(|| made))
+}
+
+/// The test root, v1, made on first use.
+pub fn test_root() -> Result<&'static TestRoot, String> {
+    static ROOT: OnceLock<TestRoot> = OnceLock::new();
+    make(&ROOT)
+}
+
+/// The rotated test root, v2: four keys none of v1's, made on first use.
+/// Only [`TestRoot::rotation`] names them, as root version 2.
+pub fn rotated() -> Result<&'static TestRoot, String> {
+    static ROOT: OnceLock<TestRoot> = OnceLock::new();
+    make(&ROOT)
+}
+
+/// `signed` with a signature by each of `keys`, as canonical JSON.
+fn envelope_by(signed: &serde_json::Value, keys: &[&Key]) -> Result<Vec<u8>, String> {
+    let bytes = sign::canonical(signed)?;
+    let signatures: Vec<_> = keys
+        .iter()
+        .map(|k| json!({ "keyid": k.id(), "sig": sign::hex_bytes(&k.sign_bytes(&bytes)) }))
+        .collect();
+    sign::canonical(&json!({ "signed": signed, "signatures": signatures }))
 }
 
 impl TestRoot {
@@ -118,12 +157,23 @@ impl TestRoot {
 
     /// `1.root.json`: the device's trust anchor, `kai.root.json` in a slot's bundle.
     pub fn root_json(&self) -> Result<Vec<u8>, String> {
+        tuf::envelope(&self.root_signed(1), &self.root)
+    }
+
+    /// `2.root.json`: root version 2 naming `next`'s keys, signed by this
+    /// root's key and `next`'s, as a rotation must be (TUF 5.3.4).
+    pub fn rotation(&self, next: &TestRoot) -> Result<Vec<u8>, String> {
+        envelope_by(&next.root_signed(2), &[&self.root, &next.root])
+    }
+
+    /// The `signed` part of a root at `version` naming this root's four keys.
+    fn root_signed(&self, version: u64) -> serde_json::Value {
         let [root, targets, snapshot, timestamp] =
             [&self.root, &self.targets, &self.snapshot, &self.timestamp].map(|k| k.public_key());
-        let root = json!({
+        json!({
             "_type": "root",
             "spec_version": SPEC_VERSION,
-            "version": 1,
+            "version": version,
             "expires": self.expires(365),
             "consistent_snapshot": true,
             "keys": tuf::key_map(&[&root, &targets, &snapshot, &timestamp]),
@@ -133,8 +183,7 @@ impl TestRoot {
                 "snapshot": tuf::role(&snapshot),
                 "timestamp": tuf::role(&timestamp),
             },
-        });
-        tuf::envelope(&root, &self.root)
+        })
     }
 
     /// The four metadata files of a repository whose `targets` role is `targets`
@@ -230,9 +279,45 @@ impl TestRoot {
         self.metadata_with(&targets, stamp)
     }
 
-    /// The update disk carrying `image` as release `release_seq`. With
-    /// `tampered`, one byte of the image on the disk is flipped after signing.
+    /// The update disk carrying `image` as release `release_seq`, signed by
+    /// this root. With `tampered`, one byte of the image on the disk is flipped
+    /// after signing.
     pub fn disk(&self, image: &[u8], release_seq: u32, tampered: bool) -> Result<Vec<u8>, String> {
+        self.disk_from(image, release_seq, tampered, Vec::new())
+    }
+
+    /// The update disk signed by `signer`. Under [`Signer::Root2`], the
+    /// targets, snapshot and timestamp are v2's, and the disk carries v1's
+    /// `1.root.json` and the rotation `2.root.json`.
+    pub fn signed_disk(
+        image: &[u8],
+        release_seq: u32,
+        tampered: bool,
+        signer: Signer,
+    ) -> Result<Vec<u8>, String> {
+        let v1 = test_root()?;
+        match signer {
+            Signer::Root1 => v1.disk(image, release_seq, tampered),
+            Signer::Root2 => {
+                let v2 = rotated()?;
+                let roots = vec![
+                    ("metadata/1.root.json".into(), v1.root_json()?),
+                    ("metadata/2.root.json".into(), v1.rotation(v2)?),
+                ];
+                v2.disk_from(image, release_seq, tampered, roots)
+            }
+        }
+    }
+
+    /// The disk of [`Self::disk`], its root files replaced by `roots` when
+    /// there are any.
+    fn disk_from(
+        &self,
+        image: &[u8],
+        release_seq: u32,
+        tampered: bool,
+        roots: Vec<(String, Vec<u8>)>,
+    ) -> Result<Vec<u8>, String> {
         let sha = crate::sha256_hex(image);
         let targets = json!({
             "_type": "targets",
@@ -253,6 +338,10 @@ impl TestRoot {
             body[middle] ^= 0xFF;
         }
         let mut files = self.metadata(&targets)?;
+        if !roots.is_empty() {
+            files.retain(|(path, _)| !path.ends_with(".root.json"));
+            files.extend(roots);
+        }
         files.push((format!("targets/{TARGET}"), body));
         let refs: Vec<(&str, &[u8])> = files
             .iter()
@@ -283,5 +372,96 @@ mod tests {
         let tampered = keys.disk(&image, 2, true).unwrap();
         let bundle = kaibundle::parse(&tampered).unwrap();
         assert_ne!(bundle.get(&target).unwrap(), image);
+    }
+
+    /// An update disk as `updated`'s `Remote`, and a cache in memory.
+    struct Disk<'a>(kaibundle::Bundle<'a>);
+    #[derive(Default)]
+    struct Memory(std::collections::BTreeMap<String, Vec<u8>>);
+
+    impl kaituf::updater::Remote for Disk<'_> {
+        fn fetch(&mut self, name: &str, _: u64) -> Result<Option<Vec<u8>>, kaituf::Error> {
+            Ok(self.0.get(&format!("metadata/{name}")).map(<[u8]>::to_vec))
+        }
+    }
+
+    impl kaituf::updater::Cache for Memory {
+        fn load(&mut self, role: &str) -> Result<Option<Vec<u8>>, kaituf::Error> {
+            Ok(self.0.get(role).cloned())
+        }
+        fn save(&mut self, role: &str, bytes: &[u8]) -> Result<(), kaituf::Error> {
+            self.0.insert(role.into(), bytes.to_vec());
+            Ok(())
+        }
+    }
+
+    /// Refreshes from `cache` over `disk`, as `updated` does: the root
+    /// version it ends on and the release `slot.img` names, or why not.
+    fn refresh(disk: &[u8], cache: &mut Memory) -> Result<(u64, u64), String> {
+        let mut remote = Disk(kaibundle::parse(disk).map_err(|e| format!("{e:?}"))?);
+        let now = test_root().unwrap().clock();
+        let mut updater =
+            kaituf::updater::Updater::new(&mut remote, cache, now).map_err(|e| e.to_string())?;
+        updater.refresh().map_err(|e| e.to_string())?;
+        let version = updater.trusted().root().version;
+        let target = updater
+            .top_level_target(TARGET)
+            .map_err(|e| e.to_string())?
+            .ok_or("no slot.img")?;
+        Ok((
+            version,
+            target.custom["kai"]["release_seq"].as_u64().unwrap(),
+        ))
+    }
+
+    /// The drill: a device trusting v1 moves to v2 on a disk signed under v2
+    /// and takes its release; from then a disk signed under v1 alone is
+    /// refused, and so is a rotation only one of the two root keys signed.
+    #[test]
+    fn a_device_on_v1_moves_to_v2_and_then_refuses_v1() {
+        let (v1, v2) = (test_root().unwrap(), rotated().unwrap());
+        let image = vec![0x5Au8; 8192];
+        let mut cache = Memory::default();
+        cache.0.insert("root".into(), v1.root_json().unwrap());
+        let disk = TestRoot::signed_disk(&image, 2, false, Signer::Root2).unwrap();
+        assert_eq!(refresh(&disk, &mut cache), Ok((2, 2)));
+        assert_eq!(cache.0["root"], v1.rotation(v2).unwrap());
+
+        let old = TestRoot::signed_disk(&image, 3, false, Signer::Root1).unwrap();
+        let refused = refresh(&old, &mut cache).unwrap_err();
+        assert!(
+            refused.contains("below the signature threshold"),
+            "{refused}"
+        );
+        assert_eq!(
+            cache.0["root"],
+            v1.rotation(v2).unwrap(),
+            "the root fell back"
+        );
+
+        // A rotation signed by v2's root key alone, or v1's alone.
+        for keys in [[&v2.root], [&v1.root]] {
+            let mut bundle: Vec<(String, Vec<u8>)> = kaibundle::parse(&disk)
+                .unwrap()
+                .entries()
+                .map(|e| (e.path.to_string(), e.data.to_vec()))
+                .collect();
+            let half = envelope_by(&v2.root_signed(2), &keys).unwrap();
+            for (path, bytes) in &mut bundle {
+                if path == "metadata/2.root.json" {
+                    *bytes = half.clone();
+                }
+            }
+            let refs: Vec<(&str, &[u8])> = bundle
+                .iter()
+                .map(|(p, b)| (p.as_str(), b.as_slice()))
+                .collect();
+            let half_disk = kaibundle::build(&refs).unwrap();
+            let mut fresh = Memory::default();
+            fresh.0.insert("root".into(), v1.root_json().unwrap());
+            let got = refresh(&half_disk, &mut fresh).unwrap_err();
+            assert!(got.contains("below the signature threshold"), "{got}");
+            assert_eq!(fresh.0["root"], v1.root_json().unwrap());
+        }
     }
 }

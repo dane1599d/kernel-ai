@@ -79,16 +79,20 @@ impl Shell {
         }
     }
 
-    /// Why `what`'s file may not be written: it could not be read at start, or
-    /// was refused and could not be kept aside.
+    /// Why `what`'s file may not be written: it could not be read at start,
+    /// or, for the rules alone, was refused and could not be kept aside.
     pub(crate) fn not_unread(&self, what: &str) -> Result<(), String> {
-        match self.unread.contains(&what) {
-            true => Err(format!(
-                "the {what} on disk could not be read at start, or could not be kept \
-                 aside once refused, so the file is not written over"
-            )),
-            false => Ok(()),
+        if !self.unread.contains(&what) {
+            return Ok(());
         }
+        let refused = match what == RULES {
+            true => ", or could not be kept aside once refused",
+            false => "",
+        };
+        Err(format!(
+            "the {what} on disk could not be read at start{refused}, so the file is not \
+             written over"
+        ))
     }
 
     /// Writes the rules to `/system/state/rules`; a failure is audited, and

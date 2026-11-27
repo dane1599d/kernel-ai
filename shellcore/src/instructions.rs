@@ -93,6 +93,19 @@ impl Shell {
             };
             return Reply::ok(format!("No standing instruction made{why}"));
         }
+        // Refused before the events settle, so the Allow's node never covers
+        // a waiting firing of another instruction (#1595's review).
+        let checked = self.standing.check(
+            Origin::Line,
+            &draft.on,
+            &draft.action,
+            &draft.target,
+            draft.until.as_ref(),
+        );
+        if let Err(refused) = checked {
+            self.revoke_unkept(carried);
+            return Reply::err(refusal(&refused));
+        }
         self.settle_events();
         let made = self.standing.create(
             Origin::Line,

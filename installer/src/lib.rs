@@ -27,9 +27,11 @@
 extern crate alloc;
 
 mod apply;
+mod current;
 mod data;
 
-pub use apply::{Current, Disk, IoError, Window, apply, current};
+pub use apply::{Disk, IoError, Window, apply};
+pub use current::{Current, Found, HEAD, TAIL, current};
 pub use data::{FOLDERS, format_data};
 
 use alloc::format;
@@ -107,9 +109,13 @@ pub enum Error {
     /// The target has the running disk's GUID: it is the running disk, or
     /// another disk written from the same image (which shares its GUIDs).
     RunningDisk,
-    /// The target is not the size the plan was made for, or its table is not
-    /// the one the plan was made over (and the user agreed to wipe).
+    /// The target is not the size the plan was made for, or it no longer
+    /// holds what the plan was made over ([`Plan::wipes`], which the user
+    /// agreed to wipe).
     Target,
+    /// The target fails to read ([`Current::ReadFails`]), so what it holds
+    /// cannot be shown or checked.
+    TargetUnreadable,
     /// A copy did not read back as it should; nothing past it was written.
     Verify(&'static str),
     /// `diskmap` refused the layout.
@@ -261,8 +267,8 @@ fn parts(sectors: u64, id: &str) -> Vec<Part> {
     out
 }
 
-/// The plan that installs the running disk `source` to `target`, whose table
-/// now is `current` ([`current`] reads it). Nothing is read or written:
+/// The plan that installs the running disk `source` to `target`, which
+/// holds `current` now ([`current`] reads it). Nothing is read or written:
 /// [`apply`] does that. A target with the running disk's GUID is refused,
 /// so another disk written from the same image is refused too.
 pub fn plan(target: Target<'_>, source: Source<'_>, current: &Current) -> Result<Plan, Error> {
@@ -273,6 +279,9 @@ pub fn plan(target: Target<'_>, source: Source<'_>, current: &Current) -> Result
         return Err(Error::BadId);
     }
     let sectors = target.sectors;
+    if *current == Current::ReadFails {
+        return Err(Error::TargetUnreadable);
+    }
     if matches!(current, Current::Gpt(t) if t.disk_guid == source.table.disk_guid) {
         return Err(Error::RunningDisk);
     }

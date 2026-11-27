@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 use common::*;
 use diskmap::{Guid, KAI_A_TYPE, KAI_B_TYPE, Table};
 use installer::{
-    CLEARED, Committed, Current, Error, Expect, FOLDERS, PARTITION_MIB, Plan, Source, Step, Target,
-    Window, apply, current, minimum_sectors, plan,
+    CLEARED, Committed, Current, Error, Expect, FOLDERS, Found, PARTITION_MIB, Plan, Source, Step,
+    Target, Window, apply, current, minimum_sectors, plan,
 };
 use kaifs::Fs;
 
@@ -390,6 +390,34 @@ fn no_table(disk: &Mem) -> bool {
         .all(|(lba, s)| !decides(*lba, s.len()) || s.iter().all(|x| *x == [0; S]))
 }
 
+/// A disk whose sector `at` fails to read.
+struct Failing {
+    disk: Mem,
+    at: u64,
+}
+
+impl installer::Disk for Failing {
+    fn sectors(&self) -> u64 {
+        self.disk.sectors
+    }
+
+    fn read(&mut self, lba: u64, out: &mut [u8]) -> Result<(), installer::IoError> {
+        let n = (out.len() / S) as u64;
+        if (lba..lba + n).contains(&self.at) {
+            return Err(installer::IoError);
+        }
+        installer::Disk::read(&mut self.disk, lba, out)
+    }
+
+    fn write(&mut self, lba: u64, data: &[u8]) -> Result<(), installer::IoError> {
+        installer::Disk::write(&mut self.disk, lba, data)
+    }
+
+    fn flush(&mut self) -> Result<(), installer::IoError> {
+        installer::Disk::flush(&mut self.disk)
+    }
+}
+
 /// A source whose sector `at` changes at its `change_at`th read.
 struct Flaky<'a> {
     disk: &'a mut Mem,
@@ -486,43 +514,142 @@ fn a_copy_that_does_not_read_back_writes_no_table() {
         let mut disk = Mem::new(disk_sectors());
         let got = apply(&base, &mut source, &mut disk);
         assert!(matches!(got, Err(Error::Verify(_))), "{why}: {got:?}");
+        // The copies landed, so it is not blank, but no GPT reads.
         assert!(
-            matches!(current(&mut disk.cut()), Current::Blank),
+            !matches!(current(&mut disk.cut()), Current::Gpt(_)),
             "{why}: a table"
         );
         assert!(no_table(&disk), "{why}: a table write");
     }
 }
 
-/// What a target holds, as the device shows it before it asks to go on.
+/// `sector` with `bytes` at `at`.
+fn with_bytes(mut sector: Sector, at: usize, bytes: &[u8]) -> Sector {
+    sector[at..at + bytes.len()].copy_from_slice(bytes);
+    sector
+}
+
+/// A blank disk with `sectors` put at their LBAs.
+fn holding(sectors: &[(u64, Sector)]) -> Mem {
+    let mut disk = Mem::new(disk_sectors());
+    for (lba, s) in sectors {
+        disk.put(*lba, *s);
+    }
+    disk
+}
+
+fn found(disk: &mut Mem) -> Found {
+    match current(disk) {
+        Current::Other { found, .. } => found,
+        other => panic!("not Other: {other:?}"),
+    }
+}
+
+/// What a target holds, as the device shows it before it asks to go on:
+/// blank only when both GPT areas are zero, and what else is there when it
+/// is neither blank nor a GPT.
 #[test]
-fn the_current_contents_say_blank_gpt_or_unreadable() {
+fn the_current_contents_say_blank_gpt_or_what_else() {
     let running = Running::new(7, KAI_A_TYPE);
     let mut disk = Mem::new(disk_sectors());
     assert_eq!(current(&mut disk), Current::Blank);
     install(&mut disk, &running, "x");
     assert!(matches!(current(&mut disk), Current::Gpt(_)));
-    // Both arrays fail their checksums.
+
+    // A refused GPT: both arrays fail their checksums.
     let mut bad = disk.cut();
-    let array = 2;
-    let mut s = bad.get(array);
-    s[0] ^= 1;
-    bad.put(array, s);
     let tail = disk_sectors() - 1 - diskmap::ENTRY_SECTORS;
-    let mut s = bad.get(tail);
-    s[0] ^= 1;
-    bad.put(tail, s);
-    assert!(matches!(current(&mut bad), Current::Unreadable(_)));
-    // An MBR disk, no GPT.
-    let mut mbr = Mem::new(disk_sectors());
-    let mut s = [0u8; S];
-    s[510..].copy_from_slice(&[0x55, 0xAA]);
-    mbr.put(0, s);
-    assert!(matches!(current(&mut mbr), Current::Unreadable(_)));
-    // Planned over an MBR disk: applied to a blank one, refused.
-    let over_mbr = plan(target("y"), running.source(), &current(&mut mbr)).unwrap();
-    let mut blank = Mem::new(disk_sectors());
-    let got = apply(&over_mbr, &mut running.disk.clone(), &mut blank);
-    assert_eq!(got, Err(Error::Target));
-    assert!(blank.log.is_empty());
+    for lba in [2, tail] {
+        let s = bad.get(lba);
+        bad.put(lba, with_bytes(s, 0, &[s[0] ^ 1]));
+    }
+    assert_eq!(found(&mut bad), Found::GptHeader);
+
+    let zero = [0u8; S];
+    let signed = with_bytes(zero, 510, &[0x55, 0xAA]);
+    // A whole-disk LUKS volume: its header at sector 0, no boot signature.
+    let mut luks = holding(&[(0, with_bytes(zero, 0, b"LUKS\xba\xbe\x00\x02"))]);
+    assert_eq!(found(&mut luks), Found::Luks);
+    // A whole-disk ext4 volume: sectors 0 and 1 zero, its superblock at
+    // byte 1024 with the magic at 56.
+    let mut ext = holding(&[(2, with_bytes(zero, 56, &[0x53, 0xEF]))]);
+    assert_eq!(found(&mut ext), Found::Ext);
+    // An MBR stick with one FAT32 partition (type 0x0C).
+    let mbr = with_bytes(signed, 446 + 4, &[0x0C]);
+    let fat = with_bytes(
+        with_bytes(signed, 82, b"FAT32   "),
+        11,
+        &512u16.to_le_bytes(),
+    );
+    let mut stick = holding(&[(0, mbr), (2048, fat)]);
+    assert_eq!(found(&mut stick), Found::Mbr([0x0C, 0, 0, 0]));
+    // A whole-disk FAT32 volume, no MBR.
+    let mut floppy = holding(&[(0, fat)]);
+    assert_eq!(found(&mut floppy), Found::Fat);
+    // Bytes only in the last sector, the last of the primary array (LBA 33)
+    // or the first of the backup array (sectors - 33).
+    let n = disk_sectors();
+    for lba in [
+        n - 1,
+        diskmap::FIRST_USABLE - 1,
+        n - 1 - diskmap::ENTRY_SECTORS,
+    ] {
+        let mut one = holding(&[(lba, [0x11; S])]);
+        assert_eq!(found(&mut one), Found::Unknown, "bytes at {lba}");
+    }
+    // Volumes whose magic is past the GPT areas, or at offset 3.
+    let btrfs = with_bytes(zero, 64, b"_BHRfS_M");
+    let iso = with_bytes(zero, 1, b"CD001");
+    let ntfs = with_bytes(with_bytes(signed, 3, b"NTFS    "), 446 + 4, &[0x6E]);
+    let exfat = with_bytes(with_bytes(signed, 3, b"EXFAT   "), 446 + 4, &[0x61]);
+    for (want, lba, sector) in [
+        (Found::Btrfs, 128, btrfs),
+        (Found::Iso9660, 64, iso),
+        (Found::Ntfs, 0, ntfs),
+        (Found::ExFat, 0, exfat),
+    ] {
+        assert_eq!(found(&mut holding(&[(lba, sector)])), want);
+    }
+    // A zeroed table with its partitions left in place: not blank.
+    let mut zapped = disk.cut();
+    for lba in (0..diskmap::FIRST_USABLE).chain(n - 1 - diskmap::ENTRY_SECTORS..n) {
+        zapped.put(lba, zero);
+    }
+    assert_eq!(found(&mut zapped), Found::Unknown);
+    // Bytes just past what is read: blank, as the row says.
+    let past = holding(&[
+        (installer::HEAD, [0x11; S]),
+        (n - installer::TAIL - 1, [0x11; S]),
+    ]);
+    assert_eq!(current(&mut past.clone()), Current::Blank);
+
+    // A disk that fails to read, in its GPT or past it: refused outright.
+    for at in [1, 100] {
+        let mut failing = Failing {
+            disk: Mem::new(n),
+            at,
+        };
+        let got = current(&mut failing);
+        assert_eq!(got, Current::ReadFails, "a read at {at}");
+        let refused = plan(target("z"), running.source(), &got);
+        assert_eq!(refused, Err(Error::TargetUnreadable));
+    }
+
+    // Planned over one LUKS disk: applied to a blank disk, to an ext4 disk,
+    // or to another LUKS disk of the same size, refused and unwritten.
+    let over = plan(target("y"), running.source(), &current(&mut luks)).unwrap();
+    let mut other_luks = holding(&[(0, with_bytes(zero, 0, b"LUKS\xba\xbe\x00\x01"))]);
+    assert_eq!(found(&mut other_luks), Found::Luks);
+    for (why, mut swapped) in [
+        ("blank", Mem::new(disk_sectors())),
+        ("ext4", ext.clone()),
+        ("another LUKS", other_luks),
+    ] {
+        let got = apply(&over, &mut running.disk.clone(), &mut swapped);
+        assert_eq!(got, Err(Error::Target), "{why}");
+        assert!(swapped.log.is_empty(), "{why}: wrote");
+    }
+    // Applied to the disk it was planned over, it installs.
+    apply(&over, &mut running.disk.clone(), &mut luks).unwrap();
+    installed(&luks.cut(), &over, &running);
 }
