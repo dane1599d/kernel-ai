@@ -162,6 +162,12 @@ jobs:
         run: |
           cargo install --locked --version "$CYCLONEDX_VERSION" cargo-cyclonedx
           .github/release/sbom.sh "$OUT/kernel-ai.cdx.json"
+          # Both runners share a checkout path, so cmp in `assemble` cannot show
+          # a path leaking into the file: look for it here.
+          if grep -nF -e "$PWD" -e /home/runner "$OUT/kernel-ai.cdx.json"; then
+            echo "::error::the SBOM holds a path of this runner"
+            exit 1
+          fi
           cargo xtask notices --check-sbom "$OUT/kernel-ai.cdx.json"
           test -z "$(git status --porcelain)"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
