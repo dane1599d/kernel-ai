@@ -1,0 +1,97 @@
+# An SBOM of the workspace (ADR 0009, P8 row 5's first part): cargo-cyclonedx
+# 0.5.9 (Apache-2.0) writes one CycloneDX 1.5 JSON file per workspace package,
+# and a script step merges them into `kernel-ai.cdx.json`, which is uploaded as
+# an artifact. A second script step checks that the SBOM lists every crate
+# (name and version) that NOTICES.txt lists, and fails if one is missing.
+# On `main` and by hand (Actions tab, "SBOM", Run workflow); a pull request
+# runs it only when it changes this file. It is not attached to a release and
+# not signed: P8's release checklist takes the artifact from here.
+name: SBOM
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - .github/workflows/sbom.yml
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CYCLONEDX_VERSION: 0.5.9
+
+# A newer push to the same pull request cancels its older run; a push to main
+# or a dispatch is never cancelled.
+concurrency:
+  group: sbom-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  sbom:
+    name: SBOM (cargo-cyclonedx)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install cargo-cyclonedx
+        run: cargo install --locked --version "$CYCLONEDX_VERSION" cargo-cyclonedx
+      # --target all: wasm32 and other targets' dependencies too, not only the host's.
+      - name: Make one SBOM per workspace package
+        run: cargo cyclonedx --format json --spec-version 1.5 --all-features --target all
+      - name: Merge them into one SBOM
+        run: |
+          set -euo pipefail
+          mkdir -p sbom
+          mapfile -t boms < <(find . -path ./target -prune -o -path ./sbom -prune -o -name '*.cdx.json' -print | sort)
+          echo "${#boms[@]} per-package SBOMs"
+          test "${#boms[@]}" -gt 0
+          # Components are unique by purl (name, version, source); our own
+          # crates are listed as components too, so the whole workspace shows.
+          jq -s --arg ver "$CYCLONEDX_VERSION" '
+            {
+              bomFormat: "CycloneDX",
+              specVersion: "1.5",
+              version: 1,
+              metadata: {
+                tools: [{ vendor: "CycloneDX", name: "cargo-cyclonedx", version: $ver }],
+                component: { type: "application", name: "kernel-ai", "bom-ref": "kernel-ai" }
+              },
+              components: (
+                [ .[] | ((.metadata.component // empty), (.components // [])[]) ]
+                | map(del(.components))
+                | unique_by(.purl // (.name + "@" + .version))
+                | sort_by(.name, .version)
+              )
+            }' "${boms[@]}" > sbom/kernel-ai.cdx.json
+          jq -r '"\(.components | length) components"' sbom/kernel-ai.cdx.json
+      - name: Check that it lists every crate NOTICES.txt lists
+        run: |
+          set -euo pipefail
+          # The "Parts" list: "- name version: licence." lines are crates;
+          # the rest (core, Limine, fonts, ...) have no Cargo.lock entry.
+          sed -n '/^Parts$/,/^Licence texts$/p' NOTICES.txt \
+            | sed -nE 's/^- ([A-Za-z0-9_.-]+) ([0-9][^ :]*): .*/\1 \2/p' \
+            | sort -u > "$RUNNER_TEMP/noticed.txt"
+          jq -r '.components[] | "\(.name) \(.version)"' sbom/kernel-ai.cdx.json \
+            | sort -u > "$RUNNER_TEMP/sbom.txt"
+          echo "$(wc -l < "$RUNNER_TEMP/noticed.txt") crates in NOTICES.txt, $(wc -l < "$RUNNER_TEMP/sbom.txt") in the SBOM"
+          test -s "$RUNNER_TEMP/noticed.txt"
+          missing=$(comm -23 "$RUNNER_TEMP/noticed.txt" "$RUNNER_TEMP/sbom.txt")
+          if [ -n "$missing" ]; then
+            echo "::error::NOTICES.txt lists crates the SBOM does not:"
+            echo "$missing"
+            exit 1
+          fi
+          echo "every crate in NOTICES.txt is in the SBOM"
+      - name: Upload the SBOM
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sbom
+          path: sbom/kernel-ai.cdx.json
+          if-no-files-found: error
+          retention-days: 90
