@@ -170,3 +170,142 @@ fn adjust_refuses_what_the_cpu_cannot_do() {
         ))
     );
 }
+
+/// The capability MSRs of the Intel models the nesting census read under KVM
+/// (g16-vmx-census.md, runs 45845412730): the TRUE controls (VMX_BASIC bit
+/// 55 was set), and the plain ones, whose fixed-1 bits differ.
+struct Census {
+    name: &'static str,
+    plain: Capabilities,
+    true_controls: Capabilities,
+}
+
+fn census() -> [Census; 2] {
+    // Exit, entry and the secondary word are the same on both models.
+    let exit = 0x007F_FFFF_0003_6DFF;
+    let entry = 0x0000_F3FF_0000_11FF;
+    let true_exit = 0x007F_FFFF_0003_6DFB;
+    let true_entry = 0x0000_F3FF_0000_11FB;
+    let model = |name, pin, proc, true_proc, proc2| Census {
+        name,
+        plain: Capabilities {
+            pin,
+            primary: proc,
+            secondary: proc2,
+            exit,
+            entry,
+        },
+        true_controls: Capabilities {
+            pin,
+            primary: true_proc,
+            secondary: proc2,
+            exit: true_exit,
+            entry: true_entry,
+        },
+    };
+    [
+        model(
+            "Xeon 6975P-C",
+            0x00FF_0000_0016,
+            0xFFF9_FFFE_0401_E172,
+            0xFFF9_FFFE_0400_6172,
+            0x0613_7BFF_0000_0000,
+        ),
+        model(
+            "Xeon 8573C",
+            0x007F_0000_0016,
+            0xF7F9_FFFE_0401_E172,
+            0xF7F9_FFFE_0400_6172,
+            0x0210_58AE_0000_0000,
+        ),
+    ]
+}
+
+/// The G16 census's fitted words, as `adjust()` vectors: both models give the
+/// same ones, from the plain MSRs and from the TRUE ones.
+#[test]
+fn adjust_fits_the_minimum_to_each_intel_model_the_census_read() {
+    let need = Controls::required();
+    for model in census() {
+        let name = model.name;
+        let plain = need
+            .adjust(&model.plain)
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        assert_eq!(
+            (
+                plain.pin,
+                plain.primary,
+                plain.secondary,
+                plain.exit,
+                plain.entry
+            ),
+            (0x1f, 0x8601_e172, 0x2, 0x3f_6fff, 0xd1ff),
+            "{name}, plain MSRs"
+        );
+        let fitted = need
+            .adjust(&model.true_controls)
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        assert_eq!(
+            (
+                fitted.pin,
+                fitted.primary,
+                fitted.secondary,
+                fitted.exit,
+                fitted.entry
+            ),
+            (0x1f, 0x8600_6172, 0x2, 0x3f_6ffb, 0xd1fb),
+            "{name}, TRUE MSRs"
+        );
+        assert_eq!(fitted.exceptions, need.exceptions, "{name}");
+        assert_eq!(fitted.check(), Ok(()), "{name}");
+    }
+}
+
+/// The 8573C lacks controls the 6975P-C has (EPT A/D is an EPT_VPID_CAP bit,
+/// checked with the EPT pointer): the minimum asks for none of them, so it
+/// fits both.
+#[test]
+fn the_minimum_asks_for_nothing_the_8573c_lacks() {
+    let need = Controls::required();
+    let [xeon_6975, xeon_8573] = census();
+    for caps in [xeon_8573.plain, xeon_8573.true_controls] {
+        // Every bit of every word is one the model may set to 1.
+        for (word, bits, cap) in [
+            (Word::Pin, need.pin, caps.pin),
+            (Word::Primary, need.primary, caps.primary),
+            (Word::Secondary, need.secondary, caps.secondary),
+            (Word::Exit, need.exit, caps.exit),
+            (Word::Entry, need.entry, caps.entry),
+        ] {
+            assert_eq!(bits & !((cap >> 32) as u32), 0, "{word:?}");
+        }
+    }
+    // What the two models differ in, by name and by position (SDM tables
+    // 25-5 to 25-7): the minimum has none of it. (The census's list of the
+    // 8573C's gaps leaves out RDSEED exiting, bit 16, which its MSR lacks.)
+    let [p, d] = [xeon_6975.true_controls, xeon_8573.true_controls].map(|c| {
+        [
+            (c.pin >> 32) as u32,
+            (c.primary >> 32) as u32,
+            (c.secondary >> 32) as u32,
+        ]
+    });
+    let lacking = [p[0] & !d[0], p[1] & !d[1], p[2] & !d[2]];
+    assert_eq!(lacking[0], pin::POSTED_INTERRUPTS);
+    assert_eq!(lacking[1], primary::MONITOR_TRAP_FLAG);
+    let secondary_lacking = secondary::VIRTUALIZE_APIC_ACCESSES
+        | secondary::VIRTUALIZE_X2APIC
+        | secondary::WBINVD_EXITING
+        | secondary::APIC_REGISTER_VIRTUALIZATION
+        | secondary::VIRTUAL_INTERRUPT_DELIVERY
+        | secondary::VM_FUNCTIONS
+        | secondary::RDSEED_EXITING
+        | secondary::PML
+        | secondary::USER_WAIT_PAUSE;
+    assert_eq!(lacking[2], secondary_lacking);
+    assert_eq!(need.pin & lacking[0], 0);
+    assert_eq!(need.primary & lacking[1], 0);
+    assert_eq!(need.secondary & lacking[2], 0);
+    // And the minimum is an Ok on the model without them.
+    assert!(need.adjust(&xeon_8573.true_controls).is_ok());
+}

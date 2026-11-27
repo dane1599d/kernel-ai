@@ -242,6 +242,8 @@ fn random_bytes_behind_the_state_magic_never_panic() {
     let words = [
         "0",
         "1",
+        "2",
+        "01",
         "18446744073709551615",
         "18446744073709551616",
         "-1",
@@ -249,13 +251,19 @@ fn random_bytes_behind_the_state_magic_never_panic() {
         "x",
         " ",
         "\n",
+        "-",
+        "p-0123456789ab",
+        "p-0123456789AB",
+        "p-0123456789a",
+        "p-0123456789abc",
     ];
     for _ in 0..5_000 {
         let magic = [
+            "supervisor-state 6",
             "supervisor-state 5",
             "supervisor-state 4",
             "supervisor-state 3",
-        ][rng.below(3)];
+        ][rng.below(4)];
         let mut text = String::from(magic);
         for _ in 0..rng.below(4) {
             text.push('\n');
@@ -352,5 +360,52 @@ fn near_misses_of_a_keep_or_profile_request_are_refused() {
             supervise::profile::parse_before(31, bad).is_err(),
             "{bad:?}"
         );
+    }
+}
+
+#[test]
+fn each_version_s_line_reads_as_its_own_layout() {
+    use supervise::{Record, decode};
+    let read = |text: &str| decode(text.as_bytes());
+    let one = |name: &str| Record::new(name);
+    // v4 has no keep: the word after stopped is the pid, never keep.
+    let mut stopped = one("shell");
+    stopped.stopped = true;
+    stopped.pid = 1;
+    stopped.started_ms = 900;
+    stopped.recent = vec![5];
+    assert_eq!(read("supervisor-state 4\nshell 0 0 0 1 1 900 5"), [stopped]);
+    // v3 has neither: the fifth word is the pid.
+    let mut gave_up = one("fs");
+    gave_up.gave_up = true;
+    gave_up.pid = 1;
+    gave_up.started_ms = 1;
+    assert_eq!(read("supervisor-state 3\nfs 0 0 1 1 1"), [gave_up]);
+    // Only the word 1 sets a flag; a missing word or a bad number drops the line.
+    let mut kept = one("notes");
+    kept.pid = 3;
+    assert_eq!(
+        read("supervisor-state 5\nnotes 0 0 2 01 true 3 0\nshort 0 0 0 0 0 0\nbad 0 x 0 0 0 0 0"),
+        [kept]
+    );
+    // v6 adds the version after started: `-` is none, a label is kept, and
+    // any other word drops the line.
+    let mut pkg = one("notes");
+    pkg.keep = true;
+    pkg.pid = 4;
+    pkg.started_ms = 9;
+    pkg.version = Some("p-0123456789ab".into());
+    pkg.recent = vec![2];
+    let six = "supervisor-state 6\nnotes 0 0 0 0 1 4 9 p-0123456789ab 2\n\
+               none 0 0 0 0 0 0 0 -\nupper 0 0 0 0 0 0 0 p-0123456789AB\n\
+               short 0 0 0 0 0 0 0";
+    assert_eq!(read(six), [pkg, one("none")]);
+    for text in [
+        six,
+        "supervisor-state 4\nshell 0 0 0 1 1 900 5",
+        "supervisor-state 3\nfs 0 0 1 1 1",
+        "supervisor-state 5\nnotes 0 0 2 01 true 3 0\nshort 0 0 0 0 0 0",
+    ] {
+        state::supervisor_state(text.as_bytes());
     }
 }

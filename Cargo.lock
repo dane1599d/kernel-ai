@@ -1532,6 +1532,9 @@ dependencies = [
 [[package]]
 name = "kaigrants"
 version = "0.0.0"
+dependencies = [
+ "captable",
+]
 
 [[package]]
 name = "kailink"

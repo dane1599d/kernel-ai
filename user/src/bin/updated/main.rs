@@ -410,6 +410,12 @@ fn check(handle: Handle) -> Result<(), String> {
         record: record(handle)?,
         one_shot: Some(active),
     };
+    // As the update disk's stage: never over the committed slot from a trial.
+    if !bootslot::may_stage(&nv.record, active) {
+        return Err(format!(
+            "refused: {active:?} is a trial and {other:?} is committed; staging {other:?} would leave nothing to fall back to"
+        ));
+    }
     let mut bad = nv.record.encode();
     bad[10] ^= 0xFF;
     if sys::bootrec_set(handle, &bad, NONE, false) != Err(Error::Invalid) {
@@ -468,9 +474,26 @@ fn import_disk(handle: Handle) -> Result<(), String> {
     Ok(())
 }
 
+/// BOOTREC_SET of `nv`. A stage runs for minutes from the record it read,
+/// and probation may commit the running slot meanwhile: BOOTREC_SET then
+/// answers Busy rather than drop the commit, and the record is set again
+/// with that commit in it (`bootslot::rebase`), once, since a boot commits
+/// once.
 pub(crate) fn set(handle: Handle, nv: &Nv, restart: bool) -> Result<(), String> {
     let one_shot = nv.one_shot.map_or(NONE, |s| s as u64);
-    sys::bootrec_set(handle, &nv.record.encode(), one_shot, restart)
+    let mut result = sys::bootrec_set(handle, &nv.record.encode(), one_shot, restart);
+    if result == Err(Error::Busy) {
+        let running = sys::slot_info(handle, 1)
+            .map_err(|e| format!("SLOT_INFO: {e:?}"))
+            .and_then(|info| slot_of(info.active))?;
+        let firmware = record(handle)?;
+        let mut mine = nv.record;
+        if bootslot::rebase(&mut mine, &firmware, running) {
+            println!("updated: {running:?} committed meanwhile; setting the record again with it");
+            result = sys::bootrec_set(handle, &mine.encode(), one_shot, restart);
+        }
+    }
+    result
         .map(|_| ())
         .map_err(|e| format!("BOOTREC_SET: {e:?}"))
 }

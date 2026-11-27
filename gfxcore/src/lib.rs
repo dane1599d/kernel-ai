@@ -12,6 +12,8 @@ extern crate std;
 pub mod edid;
 pub mod mode;
 pub mod pattern;
+pub mod pixel;
 pub mod rect;
+pub mod scale;
 
 pub use rect::Rect;

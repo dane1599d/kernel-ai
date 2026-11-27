@@ -288,7 +288,7 @@ fn edgy(rng: &mut XorShift) -> u64 {
 fn random_program_tables_never_map_outside_allowed() {
     let mut rng = XorShift::new(0x5e9);
     let mut taken = 0;
-    for _ in 0..20_000 {
+    for _ in 0..30_000 {
         let count = if rng.below(8) == 0 {
             1 + rng.below(MAX_SEGMENTS + 2)
         } else {
@@ -323,7 +323,13 @@ fn random_program_tables_never_map_outside_allowed() {
                     } else {
                         0x40_0000 + PAGE * (4 * i + rng.below(2) as u64) + rng.below(64) as u64
                     },
-                    filesz: rng.below(0x100) as u64 % (memsz.max(1)),
+                    // Below memsz mostly, and at memsz and one past it,
+                    // the edge the reader must refuse.
+                    filesz: match rng.below(4) {
+                        0 => memsz,
+                        1 => memsz.wrapping_add(1),
+                        _ => rng.below(0x100) as u64 % (memsz.max(1)),
+                    },
                     memsz,
                 }
             })

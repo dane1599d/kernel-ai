@@ -287,15 +287,16 @@ pub fn run(_: usize) {
         };
         let asks = matches!(waiting, Some(Waiting::Confirm(..) | Waiting::Apply(_)));
         // The question is answered on the console, and only by keys typed once
-        // it is on screen: the flag and the hold first, then the screen, then
-        // the question, then the drop. Nothing another program or thread prints
+        // it is on screen: the hold first, then the flag with the screen's
+        // claim (one step, so no Ctrl+Alt+F12 falls between them), then the
+        // question, then the drop. Nothing another program or thread prints
         // lands among its rows or scrolls its top away (bug hunt 6, H6-10), and
         // a question asked again after Ctrl-C is printed again.
         if asks {
-            AWAITING_ANSWER.store(true, Ordering::Release);
             console::hold_others();
         }
-        let took = asks && claim::take_for_answer();
+        let took =
+            asks && claim::take_for_answer(|| AWAITING_ANSWER.store(true, Ordering::Release));
         match &waiting {
             Some(Waiting::Confirm(_, rows)) => rows.iter().for_each(|row| log!("{row}")),
             Some(Waiting::Apply(proposal)) => proposal.lines.iter().for_each(|l| log!("? {l}")),
@@ -507,9 +508,8 @@ pub(crate) fn answer_on_console(decoder: &mut Decoder, menu: &mut Menu) -> Answe
 /// [`answer_on_console`], with `shown` printed first, once the console has the
 /// screen: a send's text, above its card.
 fn answer_on_console_after(decoder: &mut Decoder, menu: &mut Menu, shown: &[String]) -> Answer {
-    AWAITING_ANSWER.store(true, Ordering::Release);
     console::hold_others();
-    let took = claim::take_for_answer();
+    let took = claim::take_for_answer(|| AWAITING_ANSWER.store(true, Ordering::Release));
     for row in shown {
         log!("{row}");
     }

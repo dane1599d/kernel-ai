@@ -37,6 +37,10 @@ struct State {
     /// The console took it for an answer ([`take_for_answer`]): only
     /// [`give_back`] returns it.
     answering: bool,
+    /// A claim was refused while `answering`: [`give_back`] sends the screen
+    /// event it is waiting for, which the holder's old claim cannot, if the
+    /// holder ended meanwhile (the desktop restarted during an ask).
+    refused: bool,
     /// The hardware cursor's hot spot.
     cursor: (u32, u32),
 }
@@ -46,6 +50,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     showing: None,
     taken_back: false,
     answering: false,
+    refused: false,
     cursor: (0, 0),
 });
 static SWITCH: AtomicBool = AtomicBool::new(false);
@@ -91,7 +96,9 @@ fn switcher(_: usize) {
     }
 }
 
-/// One Ctrl+Alt+F12.
+/// One Ctrl+Alt+F12. A press that finds no holder showing and none taken from
+/// is ignored, and logged. One that finds the screen kept for an answer is
+/// ignored silently.
 pub fn switch() {
     input::end_lease();
     let mut state = STATE.lock();
@@ -106,6 +113,12 @@ pub fn switch() {
         drop(state);
         input::screen(true);
         log!("display: Ctrl+Alt+F12 gave the screen back to its holder");
+    } else if !state.taken_back {
+        // No holder shows and none was taken from: the press does nothing.
+        // Said once per press (a keypress, not a hot path), since a press that
+        // vanished hid a key race in the release boot.
+        drop(state);
+        log!("display: Ctrl+Alt+F12 with no holder showing the screen; ignored");
     }
 }
 
@@ -114,33 +127,70 @@ pub fn switch() {
 /// (Ctrl+Alt+F12), the screen stays on the console until then: neither
 /// Ctrl+Alt+F12 nor a claim returns it, so no window gets keys meanwhile.
 /// Returns whether it took it.
-pub fn take_for_answer() -> bool {
+///
+/// `publish` makes the question visible (`terminal`'s flag). It runs under
+/// this lock once `answering` is set, so a Ctrl+Alt+F12 that comes after the
+/// question can be seen also sees the answer pending, and leaves the screen
+/// on the console. One just before it may have handed the screen back to a
+/// holder that has not claimed it yet: the console keeps it then too, and the
+/// answer hands it back (#1505's desk-ask flake).
+pub fn take_for_answer(publish: impl FnOnce()) -> bool {
     let mut state = STATE.lock();
     state.answering = true;
-    let Some(grant) = state.showing.take() else {
+    publish();
+    if let Some(grant) = state.showing.take() {
+        state.taken_back = true;
+        drop(state);
+        to_console(grant);
+        input::screen(false);
+        log!("display: the console took the screen for an answer");
+        return true;
+    }
+    // Not showing, not taken back, and a holder: it was given the screen
+    // (a second Ctrl+Alt+F12, or an earlier answer) and its claim is still
+    // to come. The claim would be refused while the answer waits, so the
+    // answer must give the screen back after.
+    if state.taken_back || state.holder.is_none() {
         return false;
-    };
+    }
     state.taken_back = true;
     drop(state);
-    to_console(grant);
+    input::end_lease();
     input::screen(false);
-    log!("display: the console took the screen for an answer");
+    log!("display: the console kept a screen handed back, for an answer");
     true
 }
 
 /// The answer [`take_for_answer`] waited for came. The holder gets the screen
 /// back, as on a second Ctrl+Alt+F12, if `took` says the answer took it; a
-/// screen the console had before stays the console's.
+/// screen the console had before stays the console's. A claim refused while
+/// the answer waited is told to come again (a `Screen` 1 event), unless
+/// Ctrl+Alt+F12 took the screen from a live holder: a `desktop` restarted
+/// during the ask then gets the screen.
 pub fn give_back(took: bool) {
     let mut state = STATE.lock();
     state.answering = false;
-    if !took || !state.taken_back || state.holder.is_none() {
-        return;
+    // A screen Ctrl+Alt+F12 took from a live holder stays the console's.
+    let retry = core::mem::take(&mut state.refused) && state.showing.is_none() && !state.taken_back;
+    let back = took && state.taken_back && state.holder.is_some();
+    if back {
+        state.taken_back = false;
     }
-    state.taken_back = false;
     drop(state);
-    input::screen(true);
-    log!("display: the answer came; the screen went back to its holder");
+    if back {
+        input::screen(true);
+        log!("display: the answer came; the screen went back to its holder");
+    } else if retry {
+        // A claim the answer refused is not lost: its holder ended or never
+        // had the screen, so no event would tell the new one to try again.
+        input::screen(true);
+        log!("display: the answer came; a refused claim may try again");
+    }
+}
+
+/// Whether a claim was refused while the answer waits, for `test=desk-ask`.
+pub fn refused_claim() -> bool {
+    STATE.lock().refused
 }
 
 /// Revokes the holder's `Shm` and repaints the console.
@@ -176,9 +226,13 @@ pub fn claim(slot: usize, info: &mut DisplayInfo) -> Result<u64, Error> {
     let pid = process::identity(slot).pid;
     let mut state = STATE.lock();
     let holder_alive = state.holder.is_some_and(|h| process::name_of(h).is_some());
-    // An answer waiting on the console keeps it there, for a new holder too.
+    // An answer waiting on the console keeps it there, for a new holder too;
+    // `give_back` tells the claim to come again.
+    if state.answering {
+        state.refused = true;
+        return Err(Error::Busy);
+    }
     if state.showing.is_some()
-        || state.answering
         || (state.taken_back && state.holder == Some(pid))
         || (holder_alive && state.holder != Some(pid))
     {
@@ -268,6 +322,28 @@ pub fn shows(slot: usize) -> bool {
     let pid = process::identity(slot).pid;
     let state = STATE.lock();
     state.holder == Some(pid) && state.showing.is_some_and(|g| Kernel.alive(g))
+}
+
+/// DISPLAY_FLUSH's `rect` for the process in `slot`, onto a shadowed screen
+/// (`display::shadowed`): packed band by band, each band under this module's
+/// lock and only while `slot` still shows. Ctrl+Alt+F12 and
+/// [`take_for_answer`] take `showing` under the same lock before the console
+/// repaints, so a band either finishes before the console has the screen or is
+/// never packed: no window pixel lands over the console. A busy display is no
+/// error: the next present sends the whole screen.
+pub fn present(slot: usize, rect: gfxcore::Rect) -> Result<(), Error> {
+    let pid = process::identity(slot).pid;
+    let mut shown = true;
+    gfxcore::rect::each_band(super::pending(rect), super::BAND_ROWS, |band| {
+        let state = STATE.lock();
+        shown = state.holder == Some(pid) && state.showing.is_some_and(|g| Kernel.alive(g));
+        // Packed with the lock held: the switch waits for this band.
+        shown && super::pack_band(band).is_ok()
+    });
+    match shown {
+        true => Ok(()),
+        false => Err(Error::Permission),
+    }
 }
 
 /// The hardware cursor's hot spot, for DISPLAY_CURSOR's image.

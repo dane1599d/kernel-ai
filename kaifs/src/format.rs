@@ -204,6 +204,11 @@ const FALLBACKS_AT: usize = OID_MARK_AT + 8;
 /// The superblock's own checksum sits in its last 32 bytes, over everything before.
 const SUPER_CSUM_AT: usize = BLOCK - 32;
 
+/// The highest generation a slot may hold. A slot past it is read as damaged:
+/// a writer counts transactions and frees from the generation up, and no real
+/// disk commits 2^63 times, so a slot this high was forged to overflow them.
+pub const MAX_GENERATION: u64 = u64::MAX / 2;
+
 /// One commit's root record. Slot `generation mod 8` of both rings holds it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Superblock {
@@ -325,6 +330,9 @@ impl Superblock {
         }
         if raw.block_size.get() != BLOCK as u32 {
             return Err(Unreadable::Newer("a block size other than 4 KiB"));
+        }
+        if raw.generation.get() > MAX_GENERATION {
+            return Err(Unreadable::Damaged);
         }
         let ptr = |raw: &RawPtr| BlockPtr::decode_at(raw.as_bytes(), 0);
         let ptrs = (
@@ -604,6 +612,28 @@ mod tests {
             Ok((true, false))
         );
         assert!(with(|s| s.format_minor = 9).is_ok());
+    }
+
+    /// A slot forged past [`MAX_GENERATION`] reads as damaged, so a mount
+    /// takes the newest real one and never counts transactions past `u64`.
+    #[test]
+    fn a_slot_past_the_highest_generation_reads_as_damaged() {
+        let mut disk = MemDisk::new(4096);
+        let sb = Superblock::new([1; 16], 4096, 3);
+        write_rings(&mut disk, &sb).unwrap();
+        for generation in [MAX_GENERATION + 1, u64::MAX] {
+            let forged = Superblock { generation, ..sb };
+            let read = Superblock::decode(&forged.encode());
+            assert!(matches!(read, Err(Unreadable::Damaged)));
+            write_rings(&mut disk, &forged).unwrap();
+        }
+        let found = read_rings(&mut disk).unwrap();
+        assert_eq!(found.iter().map(|s| s.generation).collect::<Vec<_>>(), [3]);
+        let highest = Superblock {
+            generation: MAX_GENERATION,
+            ..sb
+        };
+        assert!(Superblock::decode(&highest.encode()).is_ok());
     }
 
     #[test]

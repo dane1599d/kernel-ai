@@ -269,6 +269,13 @@ pub trait Host {
     fn unix_seconds(&self) -> Option<u64> {
         None
     }
+    /// Nanoseconds since 1970 for a record's `made=` stamp: the wall clock, or
+    /// 0 (1970-01-01T00:00:00Z) where there is no date. Never `now_ns`, which
+    /// counts from boot and is for timeouts.
+    fn wall_ns(&self) -> u64 {
+        self.unix_seconds()
+            .map_or(0, |s| s.saturating_mul(1_000_000_000))
+    }
 
     /// Installed package `package`'s `kai-actions 1` answer, read by `pkg`
     /// from its stored artifact: an app's rows before it first runs.
@@ -416,6 +423,11 @@ pub trait Host {
     /// Writes the whole rules file, after a rule is added or removed.
     fn rules_write(&self, _text: &str) -> Result<(), String> {
         Ok(())
+    }
+    /// Keeps a rules file refused at start as `/system/state/rules.refused`, so
+    /// `rules` may be written again; an error leaves `rules` unwritten all run.
+    fn rules_set_aside(&self, _text: &str) -> Result<(), String> {
+        Err(String::from("this host keeps no refused file"))
     }
     /// The keep-running list as `/system/state/keep` holds it, and why not
     /// when it could not be read.

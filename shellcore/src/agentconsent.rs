@@ -338,7 +338,10 @@ impl Shell {
         }
         self.close_agent_ask(id);
         if let Some((_, asker)) = self.card_for_desk.take() {
-            self.desk_told(id, asker, false, true, format!("Not run: {why}."));
+            // A window's wait ends in an error; the agent's step is a no, not
+            // a run that failed.
+            let failed = !matches!(asker, crate::deskask::Asker::Agent(_));
+            self.desk_told(id, asker, false, failed, format!("Not run: {why}."));
         }
         Reply::err(format!("Not run: {why}."))
     }

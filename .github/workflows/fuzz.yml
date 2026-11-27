@@ -5,8 +5,14 @@
 # parsers of an app's bytes (plan p3-desktop §1 and §6's fuzz gate): surfabi's
 # message stream, header page and tree records, and look's `kai-theme 1`; and
 # `desktop`'s readers of other processes' bytes (plan p3-desktop section 9):
-# deskcore's client calls, queues, wire parsers and agent requests; and
-# kaimedia's PNG, JPEG, GIF and WebP decoders (P6 groundwork G8).
+# deskcore's client calls, queues, wire parsers and agent requests; and what
+# `pkg` and `updated` read from a repository and `fs`'s wire (ADR 0000 P8):
+# kaipkg's `.kpkg` reader, kaituf's TUF metadata and fsproto's requests and
+# replies, whose bodies are fuzz/pkg_harness.rs and fuzz/fsproto_harness.rs;
+# kaimedia's PNG, JPEG, GIF and WebP decoders (P6 groundwork G8); and the
+# shell's records on disk, `kai-grants 1` and `actlog`, and an agent package's
+# manifest, whose bodies are fuzz/grants_harness.rs, fuzz/actlog_harness.rs and
+# fuzz/agent_harness.rs, seeded with their samples.
 # The targets are fuzz/fuzz_targets/*.rs, outside the workspace; their bodies
 # are fuzz/harness.rs, fuzz/surfabi_harness.rs, fuzz/look_harness.rs and
 # fuzz/media_harness.rs, which
@@ -22,8 +28,8 @@ on:
     - cron: "17 3 * * 1"
   workflow_dispatch:
     inputs:
-      # One run takes any list, so a new set of targets costs one job, not one
-      # job per target (four dispatches queued at once on 2026-11-18).
+      # One dispatch takes any list, so a new set of targets is one run, not one
+      # dispatch per target (four queued at once on 2026-11-18).
       targets:
         description: "Targets (fuzz/fuzz_targets/*.rs), comma- or space-separated, or all"
         type: string
@@ -41,10 +47,45 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  fuzz:
-    name: libFuzzer (${{ inputs.targets || 'all' }}, ${{ inputs.seconds || 300 }} s each)
+  # The targets to run: every file in fuzz/fuzz_targets for `all`, so a new one
+  # joins the weekly run, else the list given.
+  plan:
+    name: Targets
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.list.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - id: list
+        env:
+          # A scheduled run has no inputs: every target.
+          TARGETS: ${{ inputs.targets || 'all' }}
+        run: |
+          set -eu
+          targets=$(echo "$TARGETS" | tr ',' ' ')
+          if [ "$(echo $targets)" = all ]; then
+            targets=$(ls fuzz/fuzz_targets/*.rs | xargs -n1 basename | sed 's/\.rs$//' | xargs)
+          fi
+          for t in $targets; do
+            [ -f "fuzz/fuzz_targets/$t.rs" ] || { echo "::error::no fuzz target $t (fuzz/fuzz_targets/$t.rs)"; exit 1; }
+          done
+          [ -n "$targets" ] || { echo "::error::no fuzz targets"; exit 1; }
+          matrix=$(printf '%s\n' $targets | sort -u | jq -R . | jq -sc '{target: .}')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "$matrix"
+
+  fuzz:
+    name: libFuzzer ${{ matrix.target }} (${{ inputs.seconds || 300 }} s)
+    needs: plan
+    runs-on: ubuntu-24.04
+    # The build of a target and the corpora's tests come before its own
+    # seconds, so the budget is the build's, not the run's.
+    timeout-minutes: 60
+    strategy:
+      # One target's crash must not cancel the others' runs.
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install pinned toolchain from rust-toolchain.toml
@@ -60,28 +101,24 @@ jobs:
         env:
           FUZZ_SEED_DIR: ${{ github.workspace }}/fuzz/corpus
         run: cargo test -p surfabi -p look -p deskcore -p kaimedia --test hostile write_fuzz_seeds -- --ignored
+      # The P8 targets start from their harness tests' samples.
+      - name: Seed the P8 corpora
+        env:
+          FUZZ_SEED_DIR: ${{ github.workspace }}/fuzz/corpus
+        run: |
+          cargo test -p kaipkg -p fsproto --test fuzz_harness write_fuzz_seeds -- --ignored
+          cargo test -p kaigrants -p kaiagent --test hostile write_fuzz_seeds -- --ignored
+          cargo test -p shellcore --test actlog_hostile write_fuzz_seeds -- --ignored
       - name: Fuzz
         env:
-          # A scheduled run has no inputs: every target, 300 s each.
-          TARGETS: ${{ inputs.targets || 'all' }}
+          TARGET: ${{ matrix.target }}
           SECONDS_EACH: ${{ inputs.seconds || 300 }}
         run: |
           set -o pipefail
-          targets=$(echo "$TARGETS" | tr ',' ' ')
-          # `all` is every target file, so a new one joins the weekly run.
-          if [ "$(echo $targets)" = all ]; then
-            targets=$(ls fuzz/fuzz_targets/*.rs | xargs -n1 basename | sed 's/\.rs$//' | xargs)
-          fi
-          for t in $targets; do
-            [ -f "fuzz/fuzz_targets/$t.rs" ] || { echo "::error::no fuzz target $t (fuzz/fuzz_targets/$t.rs)"; exit 1; }
-          done
-          for t in $targets; do
-            echo "::group::$t"
-            cargo fuzz run --fuzz-dir fuzz "$t" -- -max_total_time="$SECONDS_EACH" -rss_limit_mb=2048 \
-              | tail -n 20 | tee -a fuzz-summary.txt
-            echo "::endgroup::"
-          done
+          cargo fuzz run --fuzz-dir fuzz "$TARGET" -- -max_total_time="$SECONDS_EACH" -rss_limit_mb=2048 \
+            | tail -n 20 | tee fuzz-summary.txt
           {
+            echo "### $TARGET"
             echo "Runner: $RUNNER_NAME, run $GITHUB_RUN_ID, commit $GITHUB_SHA."
             echo '```'
             cat fuzz-summary.txt
@@ -90,5 +127,5 @@ jobs:
       - if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: fuzz-crashes
+          name: fuzz-crashes-${{ matrix.target }}
           path: fuzz/artifacts

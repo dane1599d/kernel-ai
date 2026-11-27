@@ -512,7 +512,7 @@ fn r_stores_the_record_even_when_the_one_shot_write_fails() {
         let got = arm_writes(
             armed,
             next,
-            || {
+            |_| {
                 order.set(order.get() * 10 + 1);
                 Err("refused")
             },
@@ -521,10 +521,107 @@ fn r_stores_the_record_even_when_the_one_shot_write_fails() {
                 Ok(())
             },
         );
-        assert_eq!(got, Err("refused"));
+        assert_eq!(got, Err(ArmFailed::OneShot("refused")));
         let want = if one_shot_first { 12 } else { 21 };
         assert_eq!(order.get(), want, "armed {armed:?}, next {next:?}");
     }
+}
+
+#[test]
+fn r_deletes_the_one_shot_again_when_the_record_fails_after_it() {
+    use core::cell::RefCell;
+    for (armed, next, want) in [
+        // The one-shot first: stored, the record refused, the one-shot gone.
+        (Some(Slot::B), Slot::B, &[Some(Slot::B), None][..]),
+        // The record first: refused, and no one-shot written.
+        (Some(Slot::B), Slot::A, &[][..]),
+    ] {
+        let one_shots = RefCell::new(([None; 2], 0));
+        let got = arm_writes(
+            armed,
+            next,
+            |one_shot| {
+                let (list, n) = &mut *one_shots.borrow_mut();
+                list[*n] = one_shot;
+                *n += 1;
+                Ok(())
+            },
+            || Err("refused"),
+        );
+        assert_eq!(got, Err(ArmFailed::Record("refused")));
+        let (list, n) = one_shots.into_inner();
+        assert_eq!(&list[..n], want, "armed {armed:?}, next {next:?}");
+    }
+}
+
+/// [`may_set`]'s refusals of a stage's records, and [`rebase`] after a Busy:
+/// the review's case, a probation commit during a stage from a fresh
+/// install's trial.
+#[test]
+fn a_stage_set_from_before_a_commit_is_refused_and_rebased_onto_it() {
+    let mut fresh = Nv::default();
+    install(&mut fresh, 1);
+    // `updated` in trial A reads the record and stages B.
+    let mut read = fresh;
+    up(&mut read, Slot::A);
+    let firmware = read.record;
+    let mut staging = read;
+    staging.one_shot = Some(Slot::A);
+    stage_begin(&mut staging, Slot::B);
+    // Probation commits A meanwhile.
+    let mut committed = Nv {
+        record: firmware,
+        one_shot: Some(Slot::A),
+    };
+    commit(&mut committed, Slot::A, 1);
+    let now = Some(&committed.record);
+    let set = |record: &Record, one_shot| may_set(now, record, one_shot, Some(Slot::A), false);
+    assert_eq!(
+        set(&staging.record, Some(Slot::A)),
+        Err(Refused::DropsCommit)
+    );
+    // Rebased, it keeps A's commit and floors and B Updating.
+    let mut mine = staging.record;
+    assert!(rebase(&mut mine, &committed.record, Slot::A));
+    assert!(mine.slot(Slot::A).successful);
+    assert_eq!(mine.slot(Slot::B).reason, Reason::Updating);
+    assert_eq!(mine.min_release_seq, committed.record.min_release_seq);
+    assert_eq!(mine.armed, staging.record.armed);
+    assert_eq!(set(&mine, Some(Slot::A)), Ok(()));
+    // Nothing to rebase onto from a record that already has the commit.
+    assert!(!rebase(&mut mine, &committed.record, Slot::A));
+    // A trial staging over the committed slot is refused.
+    let mut trial_b = committed;
+    stage_end(&mut trial_b, Slot::B, 2);
+    let mut over = trial_b;
+    stage_begin(&mut over, Slot::A);
+    assert_eq!(
+        may_set(
+            Some(&trial_b.record),
+            &over.record,
+            Some(Slot::B),
+            Some(Slot::B),
+            false
+        ),
+        Err(Refused::StagesCommitted)
+    );
+    // From a committed B, the same stage over a committed A is allowed.
+    let mut both = committed;
+    stage_end(&mut both, Slot::B, 1);
+    commit(&mut both, Slot::B, 1);
+    assert!(both.record.slot(Slot::A).successful);
+    let mut over_b = both;
+    stage_begin(&mut over_b, Slot::A);
+    assert_eq!(
+        may_set(
+            Some(&both.record),
+            &over_b.record,
+            Some(Slot::B),
+            Some(Slot::B),
+            false
+        ),
+        Ok(())
+    );
 }
 
 /// From `nv`, every boot lands in R because no one-shot is ever stored, while

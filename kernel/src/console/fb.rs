@@ -8,18 +8,29 @@
 
 use super::layout::Font;
 use core::ptr::NonNull;
+use gfxcore::pixel::Format;
 
 #[derive(Clone, Copy)]
 pub struct Fb {
     pub base: NonNull<u32>,
     /// Pixels per framebuffer row (pitch / 4).
     pub stride: usize,
+    /// How a pixel is packed. Every colour handed to `Fb` is `0x00RRGGBB`;
+    /// it is packed as it is written, so a framebuffer whose channels are in
+    /// another order (RGBX) or another size (10 bits) shows the same colours.
+    pub format: Format,
 }
 
 impl Fb {
-    fn put(self, x: usize, y: usize, color: u32) {
+    /// The pixel for `color` (`0x00RRGGBB`) in this framebuffer's format.
+    fn pack(self, color: u32) -> u32 {
+        self.format.pack(color)
+    }
+
+    /// Writes `pixel`, already packed.
+    fn put(self, x: usize, y: usize, pixel: u32) {
         // SAFETY: callers keep x and y inside the framebuffer Limine mapped.
-        unsafe { self.at(x, y).write_volatile(color) };
+        unsafe { self.at(x, y).write_volatile(pixel) };
     }
 
     /// The address of pixel (x, y).
@@ -28,6 +39,7 @@ impl Fb {
     }
 
     pub fn fill(self, x0: usize, y0: usize, width: usize, height: usize, color: u32) {
+        let color = self.pack(color);
         let mut line = self.at(x0, y0);
         for _ in 0..height {
             let (mut pixel, end) = (line, line.wrapping_add(width));
@@ -48,11 +60,21 @@ impl Fb {
             return self.fill(x0, y0, font.width, font.height, bg);
         };
         let mut out = self.at(x0, y0);
+        // Blended in `0x00RRGGBB`, packed once: the empty and full pixels (most
+        // of a glyph) from these, and the format's own pixels as they are.
+        let native = self.format.is_native();
+        let (packed_fg, packed_bg) = (self.pack(fg), self.pack(bg));
         for line in glyph.raster() {
             let (mut pixel, mut i) = (out, 0);
             while i < line.len() {
+                let value = match line[i] {
+                    0 => packed_bg,
+                    255 => packed_fg,
+                    n if native => blend(n, fg, bg),
+                    n => self.pack(blend(n, fg, bg)),
+                };
                 // SAFETY: callers keep the cell inside the framebuffer.
-                unsafe { pixel.write_volatile(blend(line[i], fg, bg)) };
+                unsafe { pixel.write_volatile(value) };
                 (pixel, i) = (pixel.wrapping_add(1), i + 1);
             }
             out = out.wrapping_add(self.stride);
@@ -80,6 +102,9 @@ impl Fb {
         let r = radius as isize;
         // Squared distances in quarter pixels: inside, on the edge, outside.
         let (inner, outer) = ((4 * r - 2).pow(2), (4 * r + 2).pow(2));
+        // The opaque and empty pixels, most of the disc's box, are packed once.
+        let native = self.format.is_native();
+        let (packed, packed_bg) = (self.pack(color), self.pack(bg));
         for dy in -r..=r {
             for dx in -r..=r {
                 let d = (4 * dx).pow(2) + (4 * dy).pow(2);
@@ -89,7 +114,13 @@ impl Fb {
                     d => 255 * (outer - d) / (outer - inner),
                 };
                 let (x, y) = (cx as isize + dx, cy as isize + dy);
-                self.put(x as usize, y as usize, blend(coverage as u8, color, bg));
+                let pixel = match coverage {
+                    255 => packed,
+                    0 => packed_bg,
+                    c if native => blend(c as u8, color, bg),
+                    c => self.pack(blend(c as u8, color, bg)),
+                };
+                self.put(x as usize, y as usize, pixel);
             }
         }
     }

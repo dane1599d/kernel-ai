@@ -145,10 +145,22 @@ const NEGATING_PARTS: &[&str] = &[
     "cannot", "can", "won", "wo", "shouldn", "mustn",
 ];
 
+/// Words before a joined word that make it a name, not a verb: "my
+/// do-not-delete folder". So does any possessive ("Bob's").
+const NAME_LEADS: &[&str] = &[
+    "my", "the", "a", "an", "this", "that", "these", "those", "our", "your", "his", "her", "their",
+    "its",
+];
+
 /// `words` without the names joined by `-`, `.` or `_` that hold a word none
 /// of `row`'s cues has: "do-not-delete" goes for `fs_trash`, "re-sort" or a
 /// cue's own "round-robin" stays, and so does a word made only of negation
 /// ("do-not move anything" still says not to; #1467's round 20).
+///
+/// A word of negation and the row's own cues stays too, unless a determiner
+/// before it makes it a name: "dont-delete the finals" says not to, "my
+/// do-not-delete folder" is a folder. A word that goes leaves its punctuation,
+/// so "todo.txt," still ends its clause (#1467's round 21).
 fn outside_names(words: &str, row: &Action) -> String {
     let own = |part: &str| {
         part == "re"
@@ -158,17 +170,31 @@ fn outside_names(words: &str, row: &Action) -> String {
                     .any(|w| !w.is_empty() && part.starts_with(w))
             })
     };
-    let kept: Vec<&str> = words
-        .split_whitespace()
-        .filter(|word| {
-            let word = word.trim_matches(|c: char| !c.is_ascii_alphanumeric());
-            let plain = plain(word);
-            let parts: Vec<&str> = plain.split(' ').filter(|p| !p.is_empty()).collect();
-            !word.contains(['-', '.', '_'])
-                || parts.iter().all(|p| own(p))
-                || parts.iter().all(|p| NEGATING_PARTS.contains(p))
-        })
-        .collect();
+    let negating = |part: &str| NEGATING_PARTS.contains(&part);
+    let mut kept: Vec<&str> = Vec::new();
+    let mut before = String::new();
+    for raw in words.split_whitespace() {
+        let word = raw.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+        let plain = plain(word);
+        let parts: Vec<&str> = plain.split(' ').filter(|p| !p.is_empty()).collect();
+        let named = NAME_LEADS.contains(&before.as_str())
+            || before.ends_with("'s")
+            || before.ends_with("\u{2019}s");
+        let stays = !word.contains(['-', '.', '_'])
+            || parts.iter().all(|p| own(p))
+            || parts.iter().all(|p| negating(p))
+            || (!named
+                && parts.iter().any(|p| negating(p))
+                && parts.iter().all(|p| negating(p) || own(p)));
+        before = word.to_ascii_lowercase();
+        if stays {
+            kept.push(raw);
+            continue;
+        }
+        let at = raw.find(word).unwrap_or(0);
+        let (lead, trail) = (&raw[..at], &raw[at + word.len()..]);
+        kept.extend([lead, trail].into_iter().filter(|p| !p.is_empty()));
+    }
     kept.join(" ")
 }
 

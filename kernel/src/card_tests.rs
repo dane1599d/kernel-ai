@@ -10,7 +10,8 @@
 //!   console never takes a key for it.
 //! - With a card up, `desktop` is killed: the kernel takes the ask back and
 //!   asks it on the console, where `n`, typed once its menu takes keys,
-//!   answers it.
+//!   answers it. The answer gives the restarted `desktop` the screen, and
+//!   Ctrl+Alt+F12 takes it back to the console.
 //! - With no card up, the same send's menu is denied by both without a key
 //!   read; another menu by `pick` is still asked on the console.
 
@@ -188,6 +189,14 @@ pub fn check() -> Result<(), &'static str> {
         return Err("desk-card: the ask did not come back to the console");
     }
     log!("desk-card: with desktop killed, the ask came back and the console answered it");
+    // The answer tells the restarted desktop, whose claim it refused, to claim
+    // again (#1524): once it shows, Ctrl+Alt+F12 takes the screen, so no card
+    // is up for the asks below.
+    wait("the restarted desktop on the screen", || {
+        claim::showing() && ask_box::alive()
+    })?;
+    crate::claim_tests::type_keys(&crate::claim_tests::CTRL_ALT_F12);
+    wait("the console to take the screen", || !claim::showing())?;
     // No card up: a send is denied unread; another menu is the console's.
     send_with_no_card(SEND, "answer")?;
     send_with_no_card(SEND_PICKED, "pick")?;

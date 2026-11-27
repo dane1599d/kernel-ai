@@ -645,8 +645,11 @@ pub const BOOTREC_GET: u64 = 174;
 /// `bootrec_set(handle, buf, one_shot, restart) -> 0`: writes the 64-byte
 /// record at `buf` (its CRC must hold), and Limine's one-shot for `one_shot`
 /// (a slot, or [`super::update::NONE`] to delete it); a one-shot naming a slot
-/// the record says may not boot is Invalid. With `restart` 1 the machine then
-/// resets into it. Needs WRITE.
+/// the record says may not boot is Invalid, as is a trial staging over the
+/// committed slot. A record that drops a commit or a floor the firmware holds
+/// (one read before probation committed the running slot) is Busy: read
+/// again, or `bootslot::rebase`, and set again (`bootslot::may_set`). With
+/// `restart` 1 the machine then resets into it. Needs WRITE.
 pub const BOOTREC_SET: u64 = 175;
 /// `trust_root(handle, buf, cap) -> len`: the TUF root this slot was built
 /// with (ADR 0008 §2, `kai.root.json` in its bundle), the device's trust
@@ -737,7 +740,9 @@ pub const PART_PEER_NAME: u64 = 191;
 /// (never a loopback, link-local or broadcast answer). Returns at once with a
 /// `Stream` handle; [`NET_POLL`] says when it is connected or failed.
 /// `flags`: [`super::net::STREAM_BULK`]. Permission where the destination
-/// does not allow it; Busy past [`super::net::STREAMS_PER_PROCESS`],
+/// does not allow it, or while the day's bytes are spent (which can be brief:
+/// a receive in flight holds its `cap` of them until it reads, so ask again
+/// before treating the day as done); Busy past [`super::net::STREAMS_PER_PROCESS`],
 /// [`super::net::STREAMS_MAX`], or 4 bulk streams in all or 2 of one
 /// process's; Unavailable with no address yet. Closing the handle closes the
 /// stream. The stream is under the grant node `dest` was given under, if any:
@@ -748,14 +753,14 @@ pub const NET_CONNECT: u64 = 192;
 /// [`super::net::STREAM_MAX_CALL`] (TooBig over it); 0 while the send buffer
 /// is full. Busy before it connected, Dead once it can no longer send,
 /// Revoked once its grant was; Permission, sending nothing, when the bytes
-/// would pass the day's bytes of the agent `NetDest` it was connected on.
+/// would pass the day's bytes of the agent `NetDest` it was connected on. Permission can also be short-lived while another receive (or send) on the same meter holds its `cap` in the day's last bytes: ask again before treating it as spent for the day.
 pub const NET_SEND: u64 = 193;
 /// `net_recv(stream, ptr, cap) -> received`: up to `cap` bytes, at most
 /// [`super::net::STREAM_MAX_CALL`]; 0 once the peer closed and everything was
 /// read; Busy while nothing has come; Revoked once its grant was; Permission,
 /// with nothing read, once the day's bytes of the agent `NetDest` it was
 /// connected on are spent, as a send and a connect on it are refused then
-/// (a stream that ended with everything read still gives 0).
+/// (a stream that ended with everything read still gives 0). Permission can also be short-lived while another receive on the same meter holds its `cap` in the day's last bytes: ask again before treating it as spent for the day.
 pub const NET_RECV: u64 = 194;
 /// `net_poll(stream, want, timeout_ms) -> state`: waits up to `timeout_ms`
 /// (at most 60 s) until the stream is any of `want` (the `STREAM_*` bits of

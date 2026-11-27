@@ -446,7 +446,12 @@ impl<D: BlockDev> Fs<D> {
             let vol = vols
                 .get_mut(&id)
                 .ok_or(Error::Corrupt("a snapshot of no volume"))?;
-            vol.next_snap = list.keys().next_back().map_or(1, |id| id + 1);
+            vol.next_snap = match list.keys().next_back() {
+                Some(id) => id
+                    .checked_add(1)
+                    .ok_or(Error::Corrupt("a snapshot id past the highest"))?,
+                None => 1,
+            };
             vol.snaps = list;
         }
         let active = match vols.contains_key(&SYSTEM) {
@@ -771,6 +776,7 @@ impl<D: BlockDev> Fs<D> {
         let (vol, mut store) = split(&mut self.vols, &mut self.io, active, pinned);
         let root = vol.live.write_out(&mut store)?;
         let id = vol.next_snap;
+        let next = id.checked_add(1).ok_or(Error::NoSpace)?;
         let snap = Snap {
             root,
             generation: txn,
@@ -785,7 +791,7 @@ impl<D: BlockDev> Fs<D> {
             &mut Meta(&mut self.io),
         )?;
         let vol = self.vol_mut();
-        vol.next_snap += 1;
+        vol.next_snap = next;
         vol.snaps.insert(id, snap);
         Ok(id)
     }
@@ -845,6 +851,11 @@ impl<D: BlockDev> Fs<D> {
         // First, as in `abort`: a failed commit ends the transaction too.
         self.ended += 1;
         let generation = self.io.txn;
+        // Mount reads a slot past the cap as damaged: one written there would
+        // be lost at the next mount (a hostile image signs one at the cap).
+        if generation > format::MAX_GENERATION {
+            return Err(Error::Invalid("a generation past MAX_GENERATION"));
+        }
         if let Some(action) = self.action {
             self.write_undo(action, generation)?;
             self.action = None;

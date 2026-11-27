@@ -122,6 +122,41 @@ pub fn scaled_budget(budget: u64, reference_ns: u64) -> u64 {
     budget.saturating_mul(ratio) / REFERENCE_BASELINE_NS
 }
 
+/// The figure judged against the composite as well as the reference: (g), the
+/// full composite with Start and the pane open.
+pub const COMPOSITE_FIGURE: &str = "(g) ";
+/// The figure whose p50 stands for the composite's cost in this boot: (a).
+pub const COMPOSITE_REFERENCE: &str = "(a) full composite";
+/// (g)'s p99 may reach this many hundredths of (a)'s p50 from the same boot.
+/// The reference work undersells the composite on some CPU classes (an EPYC
+/// 9V45 or a Xeon 8573C runs (a) about 20% slower than the reference says),
+/// while (g) over (a)'s p50 stays within 1.15 to 1.43 on every class main has
+/// run on. At 1.40 no main run's verdict changes, nor that of the same run
+/// 15%, 20% or 25% slower in (g)
+/// (`docs/decisions/rows/2026-11-23-desk-perf-scaled-budgets.md`).
+pub const COMPOSITE_TIMES_HUNDREDTHS: u64 = 140;
+
+/// (g)'s budget in hundredths of a ms: the larger of its [`scaled_budget`] and
+/// [`COMPOSITE_TIMES_HUNDREDTHS`] of `composite_p50`, (a)'s p50 from the same
+/// boot, that second term never past the slow factor's scale of the budget.
+/// Only ever at least the scaled budget, so only (g)'s judging changes.
+pub fn composite_budget(budget: u64, reference_ns: u64, composite_p50: u64) -> u64 {
+    let composite = composite_p50.saturating_mul(COMPOSITE_TIMES_HUNDREDTHS) / 100;
+    let cap = budget.saturating_mul(SLOW_FACTOR_TENTHS) / 10;
+    scaled_budget(budget, reference_ns).max(composite.min(cap))
+}
+
+/// The p50 of the figure in `reply` whose name starts with `prefix`, in
+/// hundredths of a ms: 1864 for `(a) full composite at 2560x1440: n=300 p50
+/// 18.64 p95 ...`.
+pub fn p50(reply: &str, prefix: &str) -> Option<u64> {
+    let line = reply.lines().find(|l| l.starts_with(prefix))?;
+    let rest = line.split_once(": n=")?.1;
+    let mut words = rest.split(' ');
+    words.find(|&w| w == "p50")?;
+    hundredths(words.next()?)
+}
+
 /// The reference median a scene's two runs are judged by: the larger of the
 /// boot's first measurement and the one taken just before the second run.
 /// [`scaled_budget`] caps it.
@@ -186,16 +221,39 @@ pub fn hundredths_text(value: u64) -> alloc::string::String {
 /// does not parse is kept, so a line [`misses`] can name never passes a
 /// figure.
 pub fn misses_scaled(reply: &str, reference_ns: u64) -> Vec<&str> {
+    misses_judged(reply, reference_ns, None)
+}
+
+/// [`misses_scaled`], with (g) ([`COMPOSITE_FIGURE`]) judged against its
+/// [`composite_budget`] when `composite_p50`, (a)'s p50 from this boot, is
+/// known.
+pub fn misses_judged(reply: &str, reference_ns: u64, composite_p50: Option<u64>) -> Vec<&str> {
     reply
         .lines()
         .filter(|l| l.starts_with(OVER_BUDGET))
         .filter_map(|l| match over_line(l) {
             Some((name, value, budget)) => {
-                (value >= scaled_budget(budget, reference_ns)).then_some(name)
+                (value >= judged_budget(name, budget, reference_ns, composite_p50)).then_some(name)
             }
             None => misses(l).into_iter().next(),
         })
         .collect()
+}
+
+/// The budget figure `name` is judged against: [`composite_budget`] for (g)
+/// when (a)'s p50 is known, else [`scaled_budget`].
+pub fn judged_budget(
+    name: &str,
+    budget: u64,
+    reference_ns: u64,
+    composite_p50: Option<u64>,
+) -> u64 {
+    match composite_p50 {
+        Some(p50) if name.starts_with(COMPOSITE_FIGURE) => {
+            composite_budget(budget, reference_ns, p50)
+        }
+        _ => scaled_budget(budget, reference_ns),
+    }
 }
 
 /// How many times the baseline a reference median of `p50_ns` is, to a
@@ -398,6 +456,77 @@ mod tests {
         assert_eq!(misses_scaled(&g("22.00"), 21_318_740).len(), 1);
         // On a runner at the baseline the bare budget holds.
         assert_eq!(misses_scaled(&g("15.10"), REFERENCE_BASELINE_NS).len(), 1);
+    }
+
+    fn g1440(value: &str) -> alloc::string::String {
+        alloc::format!(
+            "OVER BUDGET (g) full composite with Start and the pane open at 2560x1440 {value} ms (budget p99 14.40 ms)"
+        )
+    }
+
+    #[test]
+    fn the_composites_p50_is_read_from_its_figure_line() {
+        let a = "(a) full composite at 2560x1440: n=300 p50 18.64 p95 19.68 p99 20.01 max 20.40 ms, budget p99 14.40 ms: OVER";
+        let reply = alloc::format!(
+            "{a}\n(b) drag render: n=10 p50 1.00 p95 1.00 p99 1.00 max 1.00 ms, budget p99 4.00 ms: within"
+        );
+        assert_eq!(p50(&reply, COMPOSITE_REFERENCE), Some(1864));
+        assert_eq!(
+            p50("(b) drag render: no samples", COMPOSITE_REFERENCE),
+            None
+        );
+    }
+
+    /// (g)'s budget is the larger of the reference's and 1.40 times (a)'s p50,
+    /// the second never past the slow factor; other figures are as before.
+    #[test]
+    fn the_composite_budget_is_the_larger_of_the_two() {
+        // Main's 8573C run (job 139591500596): 1.73x, (a) p50 18.64 ms.
+        assert_eq!(scaled_budget(1440, 27_689_930), 2492);
+        assert_eq!(composite_budget(1440, 27_689_930, 1864), 2609);
+        // A 7763 at 2.51x: the reference's 36.13 ms is the larger.
+        assert_eq!(composite_budget(1440, 40_147_810, 1848), 3613);
+        // A fast runner, under the baseline: never under the bare budget.
+        assert_eq!(composite_budget(1440, 15_000_000, 900), 1440);
+        // A stalled (a) cannot lift (g) past 3.5 times its budget.
+        assert_eq!(composite_budget(1440, 16_000_000, 10_000), 5040);
+        assert_eq!(
+            judged_budget("(f) drag under load", 1670, 21_467_770, Some(9999)),
+            2240
+        );
+        assert_eq!(judged_budget("(g) x", 1440, 27_689_930, None), 2492);
+    }
+
+    /// The three PR runs of 2026-11-27 that failed (g) with no desk change
+    /// pass, judged against (a) from their own boot; best of three, each run
+    /// at the reference it was judged by.
+    #[test]
+    fn the_runners_that_undersold_the_composite_pass() {
+        let g = "(g) full composite with Start and the pane open at 2560x1440";
+        let over = |value: &str, reference: u64, a: u64| {
+            misses_judged(&g1440(value), reference, Some(a)).contains(&g)
+        };
+        // Job 140323621715, EPYC 9V45 at 1.18x, (a) p50 13.28 ms.
+        assert!(!misses_scaled(&g1440("18.56"), 18_820_500).is_empty());
+        assert!(!over("17.40", 19_316_140, 1328));
+        // Job 140323631043, Xeon 6975P-C at 1.31x, (a) p50 14.61 ms.
+        assert!(!misses_scaled(&g1440("19.00"), 21_093_540).is_empty());
+        assert!(!over("19.00", 21_093_540, 1461));
+        // Job 140284960282, Xeon 8573C at 1.68x, (a) p50 19.62 ms.
+        assert!(!misses_scaled(&g1440("25.57"), 26_841_400).is_empty());
+        assert!(!over("25.57", 26_841_400, 1962));
+    }
+
+    /// What it still catches: on main's 8573C run (g) at 24.16 ms passes, and
+    /// 15% slower, 27.78 ms, fails; on main's usual 6975P-C (job 140190314306,
+    /// 1.35x, (a) p50 14.17 ms, (g) 17.55 ms) 15% slower, 20.18 ms, fails.
+    #[test]
+    fn a_slower_composite_with_start_still_fails() {
+        let g = "(g) full composite with Start and the pane open at 2560x1440";
+        assert!(misses_judged(&g1440("24.16"), 27_689_930, Some(1864)).is_empty());
+        assert_eq!(misses_judged(&g1440("27.78"), 27_689_930, Some(1864)), [g]);
+        assert!(misses_judged(&g1440("17.55"), 21_615_060, Some(1417)).is_empty());
+        assert_eq!(misses_judged(&g1440("20.18"), 21_615_060, Some(1417)), [g]);
     }
 
     #[test]

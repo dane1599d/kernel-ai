@@ -65,6 +65,10 @@ const NO_WAITER: usize = usize::MAX;
 /// Wake-latency statistics: measured wake-ups and the worst one.
 static WAKES: AtomicU64 = AtomicU64::new(0);
 static WORST_WAKE_NS: AtomicU64 = AtomicU64::new(0);
+/// The CPU the reader was on just after it woke, for the worst wake-up: read
+/// right after the block returns, but a preemption in between could make it
+/// approximate (a log aid, not a promise).
+static WORST_WAKE_CPU: AtomicUsize = AtomicUsize::new(0);
 /// Set once a mouse acknowledged stream mode.
 static MOUSE: AtomicBool = AtomicBool::new(false);
 /// Set once the mouse answered the IntelliMouse knock: 4-byte packets.
@@ -327,11 +331,14 @@ pub(crate) fn wait_with(gap: impl Fn()) -> Input {
         if crate::threads::block_unless(|| has_input() || slot_taken()) && has_input() {
             // After a real block the ring was empty, so the byte at TAIL is the first
             // to arrive since. A stale wake on an empty ring is not counted.
+            let cpu = crate::percpu::index();
             let tail = TAIL.load(Ordering::Relaxed);
             let arrived = ARRIVED_NS[tail % RING].load(Ordering::Relaxed);
             let latency = hpet::nanos().saturating_sub(arrived);
             WAKES.fetch_add(1, Ordering::Relaxed);
-            WORST_WAKE_NS.fetch_max(latency, Ordering::Relaxed);
+            if WORST_WAKE_NS.fetch_max(latency, Ordering::Relaxed) < latency {
+                WORST_WAKE_CPU.store(cpu, Ordering::Relaxed);
+            }
         }
     }
 }
@@ -390,6 +397,12 @@ pub fn wake_reader() {
             crate::threads::wake(tid);
         }
     });
+}
+
+/// The CPU the reader was on, approximately, when it woke for the worst
+/// wake-up [`wake_latency`] reports.
+pub fn worst_wake_cpu() -> usize {
+    WORST_WAKE_CPU.load(Ordering::Relaxed)
 }
 
 /// Number of measured wake-ups and the worst interrupt-to-running latency in ns.

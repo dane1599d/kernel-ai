@@ -151,7 +151,8 @@ fn a_release_is_planned_into_the_other_slot_with_its_files_under_the_tag() {
 
 #[test]
 fn a_boot_in_b_writes_a_and_a_boot_in_r_writes_the_slot_it_names() {
-    let record = record(SEQ - 1);
+    let mut record = record(SEQ - 1);
+    record.slots[Slot::B as usize].successful = true;
     let mut m = machine(&record);
     m.running = Slot::B;
     assert_eq!(m.slot(), Ok(Slot::A));
@@ -161,6 +162,21 @@ fn a_boot_in_b_writes_a_and_a_boot_in_r_writes_the_slot_it_names() {
     assert!(matches!(m.slot(), Err(Refused::Slot(_))));
     m.into = Some(Slot::B);
     assert_eq!(m.slot(), Ok(Slot::B));
+}
+
+/// A trial never stages over the committed slot it would fall back to; with
+/// neither committed (a fresh install), it may.
+#[test]
+fn a_trial_slot_never_stages_over_the_committed_one() {
+    let record = record(SEQ - 1);
+    let mut m = machine(&record);
+    m.running = Slot::B;
+    assert!(matches!(m.slot(), Err(Refused::Slot(_))));
+    let fresh = Record::default();
+    let mut m = machine(&fresh);
+    assert_eq!(m.slot(), Ok(Slot::B));
+    m.running = Slot::B;
+    assert_eq!(m.slot(), Ok(Slot::A));
 }
 
 #[test]

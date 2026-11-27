@@ -13,6 +13,9 @@ name: nesting census
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: nesting-census-${{ github.ref }}
   cancel-in-progress: false
