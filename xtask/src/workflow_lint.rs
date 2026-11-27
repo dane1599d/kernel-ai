@@ -8,8 +8,9 @@
 //! `actions/cache` step (which saves in its post step wherever it runs) is
 //! `lookup-only`, and `Swatinem/rust-cache` sets `save-if` to main or `false`.
 //! Small entries a run's own later jobs restore (QEMU, tuftool) may be saved
-//! anywhere. On a tag, release.yml restores nothing: the jobs `publish` needs
-//! would otherwise run what any job on main could have written there.
+//! anywhere. On a tag, release.yml restores nothing, nor does any workflow it
+//! calls (release-images.yml, [`TAG_RUN`]): the jobs `publish` needs would
+//! otherwise run what any job on main could have written there.
 //!
 //! Two more rules guard what a workflow may do. Every workflow has a top-level
 //! `permissions:` block (without one it gets the repository's default token,
@@ -27,6 +28,9 @@ use std::path::{Path, PathBuf};
 const SMALL: &[&str] = &["qemu-", "tuftool-"];
 const MAIN: &str = "github.ref == 'refs/heads/main'";
 const NOT_A_TAG: &str = "!startsWith(github.ref, 'refs/tags/";
+/// The workflows a release tag runs: release.yml and each workflow it calls
+/// with `uses: ./.github/workflows/...` (a test holds the list to the calls).
+const TAG_RUN: &[&str] = &["release.yml", "release-images.yml"];
 
 /// One `- ` list item: its first line's number and its lines, the dash
 /// replaced by spaces.
@@ -103,7 +107,8 @@ impl Step {
 fn lint(file: &str, text: &str) -> (Vec<String>, usize) {
     let release = Path::new(file)
         .file_name()
-        .is_some_and(|n| n == "release.yml");
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| TAG_RUN.contains(&n));
     let (mut errors, mut seen) = (Vec::new(), 0);
     for step in steps(text) {
         let Some(uses) = step.field("uses") else {
@@ -365,4 +370,38 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 ";
     assert!(policy(".github/workflows/ci.yml", good, true).is_empty());
+}
+
+/// A release tag runs every workflow release.yml calls, so each is in
+/// [`TAG_RUN`], and the no-restore rule holds in a called one as in
+/// release.yml itself.
+#[test]
+fn a_workflow_release_yml_calls_restores_nothing_on_a_tag() {
+    let release = fs::read_to_string(root().join(".github/workflows/release.yml")).unwrap();
+    let called: Vec<&str> = release
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("uses: ./.github/workflows/"))
+        .collect();
+    assert!(called.contains(&"release-images.yml"), "{called:?}");
+    for name in called {
+        assert!(
+            TAG_RUN.contains(&name),
+            "release.yml calls {name}, not in TAG_RUN"
+        );
+    }
+    let restore = "\
+jobs:
+  a:
+    steps:
+      - uses: actions/cache/restore@v4
+        with:
+          key: model-1
+";
+    let (errors, _) = lint(".github/workflows/release-images.yml", restore);
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert!(
+        errors[0].starts_with(".github/workflows/release-images.yml:4: a release tag restores")
+    );
+    let (errors, _) = lint(".github/workflows/repro.yml", restore);
+    assert!(errors.is_empty(), "{errors:#?}");
 }
