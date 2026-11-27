@@ -54,6 +54,7 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
     let mut after = crate::sched_control::measure::Snapshots::new();
     let interrupts = net::interrupts_taken().unwrap_or(0);
     let clock_reads = hpet::hpet_reads();
+    let card = net::card_counts();
     let stages = net::profile::snapshot();
     before.take();
     let started = hpet::nanos();
@@ -65,6 +66,7 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
     let stages_after = net::profile::snapshot();
     let interrupts = net::interrupts_taken().unwrap_or(0) - interrupts;
     let clock_reads = hpet::hpet_reads() - clock_reads;
+    let card_after = net::card_counts();
     let _ = stream::close(OWNER, id);
     let moved = result?;
     // Every CPU's time but its idle thread's, from the connect to the end.
@@ -77,6 +79,12 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
         moved.bytes,
         wall_ns / 1_000_000,
         busy_ns / 1_000_000
+    );
+    log!(
+        "net-throughput: card frames={} rx_kicks={} tx_kicks={}",
+        card_after.0 - card.0,
+        card_after.1 - card.1,
+        card_after.2 - card.2
     );
     for (i, name) in net::profile::NAMES.iter().enumerate() {
         let count = stages_after[i].0 - stages[i].0;

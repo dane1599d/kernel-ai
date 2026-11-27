@@ -47,6 +47,7 @@ pub fn stream_check(cmdline: &str) -> Result<(), &'static str> {
         Some(_) => log!("net-stream: receive interrupts are on, but none came"),
         None => log!("net-stream: the card was polled, with no receive interrupts"),
     }
+    kicks_check()?;
     let (_, entry) = netdest(&spec)?;
     let args = alloc::format!("stream=hold port={port}");
     let request = SpawnRequest {
@@ -74,6 +75,27 @@ pub fn stream_check(cmdline: &str) -> Result<(), &'static str> {
     budget_check(&spec, port)?;
     budget_end_check(&spec, port)?;
     port_check(server, port)
+}
+
+/// The card is kicked for receive buffers only when it asked to hear of them
+/// (G67): with 256 buffers and slirp's few frames in flight it never runs dry,
+/// so after the echoes far fewer kicks than frames. A kick for each poll that
+/// gave a buffer back was about one a frame.
+fn kicks_check() -> Result<(), &'static str> {
+    let (frames, rx, tx) = net::card_counts();
+    log!(
+        "net-stream: {frames} frames received; the card was kicked {rx} times for receive buffers, {tx} for frames to send"
+    );
+    if frames < 32 {
+        return Err("net-stream: under 32 frames came, too few to count the kicks");
+    }
+    if rx * 8 > frames {
+        return Err(
+            "net-stream: the card was kicked for receive buffers more than once in 8 frames",
+        );
+    }
+    log!("net-stream: the card was kicked for receive buffers under once in 8 frames");
+    Ok(())
 }
 
 /// Whether the process `pid` comes to hold `n` open streams within

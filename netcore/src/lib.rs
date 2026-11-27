@@ -2,7 +2,8 @@
 //! command line's address settings (`config`) and putting one on the interface
 //! (`address`), what a DHCP lease is to the one held (`lease`), DNS queries
 //! and replies (`dns`), the resolver's TTL cache (`cache`), ping statistics
-//! (`ping`), and the test DNS zone (`fixture`). The
+//! (`ping`), the test DNS zone (`fixture`), and when a virtio driver notifies
+//! its device (`kick`). The
 //! kernel owns the card, the smoltcp interface and the clock, and drives these.
 
 #![no_std]
@@ -17,6 +18,7 @@ pub mod config;
 pub mod dns;
 pub mod ephemeral;
 pub mod fixture;
+pub mod kick;
 pub mod lease;
 pub mod ping;
 
