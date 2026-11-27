@@ -337,6 +337,10 @@ extern "C" fn boot_continue() -> ! {
     if test == SelfTest::TuneAb {
         console::status::keep_off();
     }
+    if test == SelfTest::DisplayClaim {
+        // QEMU's GOP needs no shadow; this case runs the shadow path on it.
+        display::force_shadow();
+    }
     // Not in kmain: configuring allocates, and the heap is mapped only by init_memory.
     if let Some(cmdline) = CMDLINE.response() {
         net::setup::configure(cmdline.cmdline());

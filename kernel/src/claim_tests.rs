@@ -6,11 +6,14 @@
 //!   claim it, and no process but `desktop` holds a `Display` handle: the plan's
 //!   `fakedesk`, which asks for the screen under another name, never starts.
 //! - A second Ctrl+Alt+F12 gives the screen back, and `desktop` claims it again.
+//! - On the shadow (forced here: QEMU's GOP is `0x00RRGGBB`), a flush that
+//!   Ctrl+Alt+F12 interrupts leaves no pixel of the window on the console.
 //! - A line typed in the Kai pane before the first press is there again once
 //!   the screen is back (H3-25): `desktop` says so.
 
-use crate::display::claim;
+use crate::display::{self, claim};
 use crate::{console, input, ipc, log, process, threads};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use x86_64::instructions::interrupts::without_interrupts;
 
 /// The plan lines this case adds. `desktop` logs the first key it is given (`key_log=on`,
@@ -92,6 +95,78 @@ fn desktop_slot() -> Option<usize> {
     process::with_table(|table| table.iter().position(|p| p.live() && p.pid == pid))
 }
 
+/// A colour the console never draws, which the flusher paints the shadow with.
+const MARK: u32 = 0x00FF_00FF;
+static FLUSHER_SLOT: AtomicUsize = AtomicUsize::new(0);
+static FLUSHER_DONE: AtomicBool = AtomicBool::new(false);
+static FLUSHER_PRESENTS: AtomicU64 = AtomicU64::new(0);
+
+/// Fills the shadow with [`MARK`] and presents it as `desktop`'s flush, until
+/// the screen is no longer `desktop`'s.
+fn flusher(_: usize) {
+    let slot = FLUSHER_SLOT.load(Ordering::Acquire);
+    if let Some(shadow) = display::surface() {
+        let screen = gfxcore::Rect::screen(shadow.width as u32, shadow.height as u32);
+        loop {
+            for y in 0..shadow.height {
+                let row = shadow.base.as_ptr().wrapping_add(y * shadow.stride);
+                for x in 0..shadow.width {
+                    // SAFETY: the shadow is `height` rows of `stride` pixels.
+                    unsafe { row.add(x).write_volatile(MARK) };
+                }
+            }
+            if claim::present(slot, screen).is_err() {
+                break;
+            }
+            FLUSHER_PRESENTS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    FLUSHER_DONE.store(true, Ordering::Release);
+}
+
+/// Ctrl+Alt+F12 while a full-screen flush packs bands onto the screen: when the
+/// console has the screen again, none of the flush's pixels are on it.
+fn switch_mid_flush() -> Result<(), &'static str> {
+    if !display::shadowed() {
+        return Err("display-claim: the shadow was not made, so no flush to interrupt");
+    }
+    let slot = desktop_slot().ok_or("display-claim: desktop is gone")?;
+    FLUSHER_SLOT.store(slot, Ordering::Release);
+    threads::spawn("claim-flusher", flusher, 0)?;
+    wait("the flusher's first full present", || {
+        FLUSHER_PRESENTS.load(Ordering::Relaxed) > 0
+    })?;
+    type_keys(&CTRL_ALT_F12);
+    wait("the console to take the screen back", || {
+        !console::suspended() && !input::taking()
+    })?;
+    wait("the flusher to be refused", || {
+        FLUSHER_DONE.load(Ordering::Acquire)
+    })?;
+    let screen = display::screen().ok_or("display-claim: no screen")?;
+    let mut marked = 0usize;
+    for y in 0..screen.height {
+        let row = screen.base.as_ptr().wrapping_add(y * screen.stride);
+        for x in 0..screen.width {
+            // SAFETY: the screen is `height` rows of `stride` pixels.
+            marked += usize::from(unsafe { row.add(x).read_volatile() } == MARK);
+        }
+    }
+    if marked != 0 {
+        log!("display-claim: {marked} pixels of a flush the switch should have stopped");
+        return Err("display-claim: a band of a flush landed on the console");
+    }
+    log!(
+        "display-claim: Ctrl+Alt+F12 stopped a flush after {} full presents; none of it is on the console",
+        FLUSHER_PRESENTS.load(Ordering::Relaxed)
+    );
+    // The second press: desktop gets the screen back for the rest of the case.
+    type_keys(&CTRL_ALT_F12);
+    wait("desktop to claim the screen again", || {
+        desktop_slot().is_some_and(claim::shows) && console::suspended()
+    })
+}
+
 pub fn check() -> Result<(), &'static str> {
     // The queue's overflow tells `desktop` input was lost (checked on a
     // queue of its own: a boot cannot make desktop fall behind on purpose).
@@ -136,6 +211,7 @@ pub fn check() -> Result<(), &'static str> {
     wait("desktop to claim the screen again", || {
         desktop_slot().is_some_and(claim::shows) && console::suspended()
     })?;
+    switch_mid_flush()?;
     log!(
         "display-claim: desktop claimed the screen, Ctrl+Alt+F12 gave it to the console and back, and only desktop could hold it ({} input events dropped)",
         input::dropped()
