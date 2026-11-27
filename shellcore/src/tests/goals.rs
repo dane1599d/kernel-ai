@@ -4,6 +4,7 @@
 //! drops the ceiling; no agent sets or changes a goal.
 
 use super::agentstep::{step, with_agent};
+use super::goalkeep::kept_off_refusal;
 use super::*;
 use crate::goalrows::{GOALS_ONLY, MAX_QUEUED, PERSON_ONLY};
 
@@ -688,16 +689,17 @@ fn a_clause_mark_ends_a_lead_and_a_folder_kept_off_refuses_the_goal() {
         let scope = crate::goalscope::scope(line, |_| Ok(()));
         assert!(scope.is_err(), "{line}: {scope:?}");
     }
-    let kept_off = crate::goalscope::scope(
+    // Both word orders name the folder kept off (#1577's second review).
+    for line in [
         "don't touch notes/q3, trash the drafts in notes/old",
-        |_| Ok(()),
-    );
-    assert_eq!(
-        kept_off,
-        Err(String::from(
-            "\"notes/q3\" is said not to be touched; name only the folders the goal works in"
-        ))
-    );
+        "trash the drafts in notes/old, don't touch notes/q3",
+    ] {
+        assert_eq!(
+            crate::goalscope::scope(line, |_| Ok(())),
+            Err(kept_off_refusal("notes/q3")),
+            "{line}"
+        );
+    }
     // A negation after the folder, or describing files, keeps it.
     for line in [
         "sort notes/q3, it's not urgent",

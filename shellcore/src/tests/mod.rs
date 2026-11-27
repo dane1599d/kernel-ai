@@ -42,6 +42,7 @@ mod fake_host;
 mod fake_system;
 mod files;
 mod fuzz;
+mod goalkeep;
 mod goalreports;
 mod goals;
 mod goalsteps;

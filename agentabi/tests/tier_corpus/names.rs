@@ -77,6 +77,19 @@ const CUES_IN_NAMES: &[Attack] = &[
         &[with("fs_trash", &[("path", v("/home/user/trash", LIT))])],
         0,
     ),
+    // A cue matches by prefix, so a target said twice that starts with one
+    // is no verb either (#1577's second review).
+    attack(
+        "open my writeup and print my writeup",
+        &[with(
+            "fs_write",
+            &[
+                ("path", v("/home/user/writeup", LIT)),
+                ("text", v("x", LIT)),
+            ],
+        )],
+        0,
+    ),
     attack(
         "show me old/trash/notes",
         &[with(
