@@ -4,6 +4,8 @@
 //! or an error; it never panics, never reads past what memory returned, and
 //! allocates no more than a small multiple of the tables.
 
+#[path = "hostile/harness.rs"]
+mod harness;
 #[path = "../../testkit/hostile.rs"]
 mod hostile;
 
@@ -394,5 +396,95 @@ fn a_damaged_fadt_or_mcfg_is_left_out() {
         let mut mem = machine(&tables());
         mem[TABLES_AT[which] + 40] ^= 0xFF;
         assert_eq!(check(&flat(mem)), Err(bad), "table {which}");
+    }
+}
+
+// G34: the fuzz target's body (`harness.rs`), firmware memory as one window
+// at a fixed RSDP that refuses and counts every read outside it.
+
+/// The sample machine moved into the window: every address in it shifted by
+/// [`harness::BASE`], checksums fixed again.
+fn windowed(mem: &[u8]) -> Vec<u8> {
+    let mut mem = mem.to_vec();
+    let base = harness::BASE;
+    let shift = |mem: &mut Vec<u8>, at: usize, width: usize| {
+        let mut word = [0u8; 8];
+        word[..width].copy_from_slice(&mem[at..at + width]);
+        let moved = (u64::from_le_bytes(word) + base).to_le_bytes();
+        mem[at..at + width].copy_from_slice(&moved[..width]);
+    };
+    shift(&mut mem, 16, 4);
+    shift(&mut mem, 24, 8);
+    harness::fix(&mut mem[..20], 8);
+    harness::fix(&mut mem[..36], 32);
+    let len = u32::from_le_bytes(mem[XSDT_AT + 4..XSDT_AT + 8].try_into().unwrap()) as usize;
+    for at in (XSDT_AT + SDT_HEADER_LEN..XSDT_AT + len).step_by(8) {
+        shift(&mut mem, at, 8);
+    }
+    harness::fix(&mut mem[XSDT_AT..XSDT_AT + len], 9);
+    mem
+}
+
+#[test]
+fn the_windowed_sample_parses_with_no_read_refused() {
+    let mem = windowed(&with_fadt(fadt()));
+    let window = harness::Window::new(&mem);
+    let platform = parse(&window, harness::BASE).unwrap();
+    assert_eq!(platform.cpus, [0, 1]);
+    assert!(platform.reset.is_some());
+    assert_eq!(window.refused.get(), 0);
+    harness::acpi_tables(&mem);
+    // Unshifted, every table pointer lands below the window and is refused:
+    // no MADT, and nothing read outside.
+    let raw = with_fadt(fadt());
+    let window = harness::Window::new(&raw);
+    assert!(parse(&window, harness::BASE).is_err());
+}
+
+#[test]
+fn random_windows_never_read_outside() {
+    let mut rng = XorShift::new(0xac91);
+    for _ in 0..3_000 {
+        let len = rng.below(512);
+        let bytes: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
+        harness::acpi_tables(&bytes);
+    }
+}
+
+#[test]
+fn mutated_windows_never_read_outside() {
+    let mem = windowed(&with_fadt(fadt()));
+    // The RSDP and the root table, then each table's header and start.
+    let mut ranges = vec![0..36, XSDT_AT..XSDT_AT + 68];
+    ranges.extend(TABLES_AT.iter().map(|&at| at..at + 48));
+    for (i, range) in ranges.into_iter().enumerate() {
+        hostile::fuzz(&mem[range.clone()], 0xac00 + i as u64, 500, |part| {
+            let mut whole = mem.clone();
+            let n = part.len().min(range.len());
+            whole[range.start..range.start + n].copy_from_slice(&part[..n]);
+            harness::acpi_tables(&whole);
+        });
+        hostile::sweep_fields(&mem, range, |_, mutated| harness::acpi_tables(mutated));
+    }
+}
+
+#[test]
+fn pointers_past_the_window_are_refused_and_counted() {
+    let mem = windowed(&with_fadt(fadt()));
+    for address in [
+        0,
+        harness::BASE - 1,
+        harness::BASE + MEM_LEN as u64 - 3,
+        u64::MAX - 1,
+    ] {
+        let mut mem = mem.clone();
+        // The HPET's pointer, the second in the root table.
+        let at = XSDT_AT + SDT_HEADER_LEN + 8;
+        mem[at..at + 8].copy_from_slice(&address.to_le_bytes());
+        harness::fix(&mut mem[XSDT_AT..XSDT_AT + SDT_HEADER_LEN + 32], 9);
+        let window = harness::Window::new(&mem);
+        let platform = parse(&window, harness::BASE).expect("an unreadable pointer is skipped");
+        assert_eq!(platform.hpet, None, "{address:#x}");
+        assert_eq!(window.refused.get(), 1, "{address:#x}");
     }
 }
