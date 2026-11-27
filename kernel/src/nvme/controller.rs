@@ -7,6 +7,7 @@
 use super::dma::Page;
 use crate::hpet;
 use alloc::boxed::Box;
+use core::sync::atomic::{AtomicU32, Ordering, fence};
 use nvme::command::{self as cmd, Command, Completion};
 use nvme::identify::{self, IDENTIFY_BYTES};
 use nvme::regs::{self, Capabilities};
@@ -20,6 +21,17 @@ const IO_QID: u16 = 1;
 /// reboot, so this is long enough for a slow SSD under load (garbage collection,
 /// a deep flush) and short enough that a dead one does not hang a boot.
 const COMMAND_TIMEOUT_NS: u64 = 30_000_000_000;
+
+/// Anomalies logged so far (a refused command, a bad head): the first few, then
+/// each power of two, so a controller that does it on every command does not
+/// fill the log.
+static NOTED: AtomicU32 = AtomicU32::new(0);
+
+/// Whether this anomaly is logged.
+fn noted() -> bool {
+    let count = NOTED.fetch_add(1, Ordering::Relaxed).saturating_add(1);
+    count <= 8 || count.is_power_of_two()
+}
 
 /// A queue pair's memory and bookkeeping.
 struct Pair {
@@ -180,10 +192,12 @@ impl Controller {
             true => match self.io.as_mut() {
                 Some(pair) => pair,
                 None => {
-                    crate::log!(
-                        "nvme: opcode {:#04x} refused: no I/O queue",
-                        command.dwords[0] & 0xFF
-                    );
+                    if noted() {
+                        crate::log!(
+                            "nvme: opcode {:#04x} refused: no I/O queue",
+                            command.dwords[0] & 0xFF
+                        );
+                    }
                     return Err("nvme: no I/O queue");
                 }
             },
@@ -192,13 +206,15 @@ impl Controller {
         let Some((slot, tail)) = pair.sq.push() else {
             // Commands run one at a time, so this is a head the controller
             // reported that left the queue looking full ([`SubmissionQueue::advance_head`]).
-            crate::log!(
-                "nvme: opcode {:#04x} refused: the submission queue {} is full (tail {}, head {})",
-                command.dwords[0] & 0xFF,
-                pair.qid,
-                pair.sq.tail(),
-                pair.sq.head()
-            );
+            if noted() {
+                crate::log!(
+                    "nvme: opcode {:#04x} refused: the submission queue {} is full (tail {}, head {})",
+                    command.dwords[0] & 0xFF,
+                    pair.qid,
+                    pair.sq.tail(),
+                    pair.sq.head()
+                );
+            }
             return Err("nvme: the submission queue is full");
         };
         let entry = pair.sq_mem.virt + u64::from(slot) * 64;
@@ -215,16 +231,27 @@ impl Controller {
         let deadline = hpet::nanos() + COMMAND_TIMEOUT_NS;
         loop {
             let at = pair.cq_mem.virt + u64::from(pair.cq.head()) * 16;
-            let mut words = [0u32; 4];
-            for (i, word) in words.iter_mut().enumerate() {
-                // SAFETY: the head is below the entry count, so the 16-byte entry lies
-                // inside the completion queue's page.
-                *word = unsafe { ((at + 4 * i as u64) as *const u32).read_volatile() };
-            }
-            let done = Completion::parse(words);
-            if pair.cq.is_new(done.phase) {
+            // The phase is in dword 3, which the controller writes last: read it
+            // first, and the rest of the entry only once it says the entry is
+            // new. Read in order 0 to 3, an entry still being written could
+            // pair the new phase with the previous lap's head (0 on the first
+            // lap), and a head of 0 with the tail at 63 leaves the queue
+            // looking full for good.
+            // SAFETY: the head is below the entry count, so the 16-byte entry lies
+            // inside the completion queue's page.
+            let dword3 = unsafe { ((at + 12) as *const u32).read_volatile() };
+            if pair.cq.is_new(Completion::phase_of(dword3)) {
+                // Loads stay in order on x86; the fence also keeps the compiler
+                // from moving the reads above the phase check.
+                fence(Ordering::Acquire);
+                let mut words = [0u32, 0, 0, dword3];
+                for (i, word) in words.iter_mut().take(3).enumerate() {
+                    // SAFETY: as above.
+                    *word = unsafe { ((at + 4 * i as u64) as *const u32).read_volatile() };
+                }
+                let done = Completion::parse(words);
                 let head = pair.cq.pop();
-                if !pair.sq.advance_head(done.sq_head) {
+                if !pair.sq.advance_head(done.sq_head) && noted() {
                     crate::log!(
                         "nvme: queue {} completed with a submission head {} outside the queue",
                         pair.qid,

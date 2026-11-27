@@ -27,7 +27,7 @@
 use crate::{hpet, i8042, threads};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
-use kabi::input::{Hands, INPUT_LOST, InputEvent, KeyRoute, Kind, Set1, TAP};
+use kabi::input::{Hands, INPUT_LOST, InputEvent, KeyRoute, Kind, Set1, TAP, usage};
 use spin::Mutex;
 use termcore::keys::Code;
 use termcore::mouse::{Button, Buttons, Decoder};
@@ -143,6 +143,8 @@ struct Decoders {
     hands: Hands,
 }
 
+/// A Ctrl+Alt+F12 press is down: its typematic repeats do not switch again.
+static SWITCH_HELD: AtomicBool = AtomicBool::new(false);
 /// A pointer button went down, or the screen changed hands, since the last
 /// key byte: the next one tells `Set1` that a Super held now is no tap.
 static BREAK_TAP: AtomicBool = AtomicBool::new(false);
@@ -284,10 +286,18 @@ fn route(byte: u8, aux: bool) -> (Route, bool) {
     };
     let route = decoders.keys.route(code, down, decoders.leased);
     drop(decoders);
+    // Any F12 release, chord or not, ends the press: a Ctrl let go first must
+    // not leave the next press taken for a repeat.
+    if code == usage::F12 && !down {
+        SWITCH_HELD.store(false, Ordering::Release);
+    }
     if route == KeyRoute::Screen {
-        // The press switches; its release is dropped too, so neither side sees F12.
+        // The press switches, once: a held key's typematic repeats are makes
+        // too, and each would switch again (and log a line). Its release is
+        // dropped too, so neither side sees F12.
         end_lease();
-        return (Route::Taken, down);
+        let press = down && !SWITCH_HELD.swap(true, Ordering::AcqRel);
+        return (Route::Taken, press);
     }
     if !taking {
         return (Route::Console, false);

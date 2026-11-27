@@ -101,13 +101,22 @@ pub struct Completion {
 }
 
 impl Completion {
+    /// The phase tag of an entry, from its dword 3 alone. The driver reads
+    /// that dword first and the others only once the phase says the entry is
+    /// new: the controller writes the phase last, so an entry read the other
+    /// way round can pair a new phase with the previous lap's head and
+    /// status.
+    pub fn phase_of(dword3: u32) -> bool {
+        (dword3 >> 16) & 1 == 1
+    }
+
     pub fn parse(dwords: [u32; 4]) -> Self {
         let dw3 = dwords[3];
         Self {
             sq_head: dwords[2] as u16,
             sq_id: (dwords[2] >> 16) as u16,
             cid: dw3 as u16,
-            phase: (dw3 >> 16) & 1 == 1,
+            phase: Self::phase_of(dw3),
             // Bits 17..28: SC (8 bits) then SCT (3 bits).
             status: ((dw3 >> 17) & 0x7FF) as u16,
         }
@@ -126,6 +135,19 @@ impl Completion {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_phase_is_read_from_dword_3_alone() {
+        for dw3 in [0u32, 1, 0x0001_0000, 0xFFFE_FFFF, u32::MAX, 0x0001_0007] {
+            assert_eq!(
+                Completion::phase_of(dw3),
+                Completion::parse([0, 0, 0, dw3]).phase,
+                "{dw3:#x}"
+            );
+        }
+        assert!(Completion::phase_of(0x0001_0000));
+        assert!(!Completion::phase_of(0xFFFE_FFFF));
+    }
 
     #[test]
     fn identify_puts_cns_and_page_where_the_spec_says() {
