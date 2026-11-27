@@ -27,6 +27,7 @@
 //! cargo xtask decisions [render | check [--base REV [--deny-new-rows]] | new <slug>]   (new decision rows, one file each in docs/decisions/rows/; see decisions.rs)
 //! cargo xtask fs mkfs|import|ls|cat|check|replay ...   (kaifs data disks on the host, no WSL; see fs/mod.rs)
 //! cargo xtask release-image [--test-root] [--out PATH]   (the release image and its NOTICES.txt; release.yml runs it)
+//! cargo xtask image-hashes list IMAGE | compare LABEL=LISTING...   (the release image's hashes by partition and file, for repro.yml; see image_hashes.rs)
 //! cargo xtask release-boot --image PATH --model PATH [--accel kvm|tcg] [--timeout SECS]   (boots a --test-root image and imports the model; see release_boot.rs)
 //! cargo xtask release-repo prepare|prepare-timestamp|assemble [--dir DIR] | check   (the founder-signed release/pkgrepo; see release_repo/mod.rs)
 //! cargo xtask limine   (fetches and checks Limine's pinned files, for the release's source tarball)
@@ -63,6 +64,7 @@ mod hang;
 mod httpd;
 mod icount;
 mod image;
+mod image_hashes;
 mod kai_actions;
 mod latency;
 mod licences;
@@ -142,6 +144,7 @@ fn main() -> ExitCode {
         Some("wpt") => wpt::main(&args[1..]),
         Some("pkgrepo") => pkgrepo::main(&args[1..]),
         Some("release-image") => release_image::main(&args[1..]),
+        Some("image-hashes") => image_hashes::main(&args[1..]),
         Some("release-boot") => release_boot::main(&args[1..]),
         Some("release-repo") => release_repo::main(&args[1..]),
         // The release's source tarball carries Limine's pinned files (ADR 0009 D7).
