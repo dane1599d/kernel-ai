@@ -198,7 +198,7 @@ pub fn publish(
 /// (ADR 0001 D9's `kai-app 1`) names it `name` once and holds only `id` and
 /// `abi` lines, no `use` or `expose`. A build on plain `kai:app/component` has
 /// none, and is an artifact only.
-fn is_app(artifact: &[u8], name: &str) -> Result<(), String> {
+pub fn is_app(artifact: &[u8], name: &str) -> Result<(), String> {
     let section = livecore::artifact::custom_section(artifact, APP_SECTION)?
         .ok_or_else(|| format!("{name} has no {APP_SECTION}: only apps install from local"))?;
     let text = core::str::from_utf8(section).map_err(|_| "its kai.app is not text")?;
