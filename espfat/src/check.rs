@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 
 use crate::bpb::PER_SECTOR;
 use crate::dir::ATTR_DIR;
-use crate::fat::KEPT;
+use crate::fat::kept;
 use crate::volume::{UNKNOWN, Volume};
 use crate::{Disk, Error, SECTOR, u32_at};
 
@@ -133,7 +133,7 @@ impl<D: Disk> Volume<D> {
                 for slot in 0..PER_SECTOR as usize {
                     let link = u32_at(&sector, slot * 4) & 0x0FFF_FFFF;
                     used[slot] |= link != 0;
-                    bad[slot] |= KEPT.contains(&link);
+                    bad[slot] |= kept(link, g.last_cluster());
                 }
             }
             for slot in 0..PER_SECTOR as usize {

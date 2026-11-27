@@ -10,8 +10,13 @@ use crate::{Disk, Error, SECTOR, u32_at};
 /// The low 28 bits of an entry. The top 4 are reserved and kept as they are.
 const MASK: u32 = 0x0FFF_FFFF;
 const BAD: u32 = 0x0FFF_FFF7;
-/// Marks no chain may hold and no reclaim frees: the reserved values, and bad.
-pub(crate) const KEPT: core::ops::RangeInclusive<u32> = 0x0FFF_FFF0..=BAD;
+/// Whether a FAT entry is a mark no reclaim frees: bad, or a reserved value
+/// (0x0FFF_FFF0 to 0x0FFF_FFF6). A reserved value is only one above the
+/// volume's last cluster: on a volume that large, 0x0FFF_FFF0 and up can be
+/// real clusters, which `link` follows.
+pub(crate) fn kept(link: u32, last_cluster: u32) -> bool {
+    link == BAD || (link > last_cluster && (0x0FFF_FFF0..BAD).contains(&link))
+}
 /// The end-of-chain mark espfat writes. Readers take 0x0FFF_FFF8 and above.
 pub(crate) const END: u32 = 0x0FFF_FFFF;
 /// FAT's limit on a directory: 65,536 entries of 32 bytes.
@@ -161,5 +166,30 @@ impl<D: Disk> Volume<D> {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reserved_values_are_kept_only_above_the_last_cluster() {
+        // An ESP's last cluster is far below them: all seven are reserved.
+        for v in 0x0FFF_FFF0..=BAD {
+            assert!(kept(v, 131_000), "{v:#x}");
+        }
+        assert!(!kept(0x0FFF_FFEF, 131_000));
+        assert!(!kept(END, 131_000));
+        assert!(!kept(5, 131_000));
+        // FAT32's largest volume: 0x0FFF_FFF0 to 0x0FFF_FFF6 are clusters.
+        let last = 0x0FFF_FFF6;
+        for v in 0x0FFF_FFF0..BAD {
+            assert!(!kept(v, last), "{v:#x}");
+        }
+        assert!(kept(BAD, last));
+        // One in between: above it, reserved.
+        assert!(!kept(0x0FFF_FFF3, 0x0FFF_FFF3));
+        assert!(kept(0x0FFF_FFF4, 0x0FFF_FFF3));
     }
 }
