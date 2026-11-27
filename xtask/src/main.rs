@@ -559,6 +559,10 @@ fn execute(options: &Options) -> Result<(), String> {
                     &cmdline,
                     &record,
                     case.keeps_slot_b,
+                    qemu::BootDisk {
+                        nvme: case.boot_nvme,
+                        four_k: case.four_k,
+                    },
                 )?;
             }
             if let Some(name) = &update_disk {

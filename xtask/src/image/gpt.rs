@@ -43,6 +43,38 @@ pub fn disk(volume: &[u8], image_id: &str) -> Vec<u8> {
     disk
 }
 
+/// The GPT of `parts` on a disk of `sectors`, both in 512-byte sectors, as
+/// a disk of `sector`-byte sectors holds it (G58): on a 4Kn disk the table's
+/// LBAs are 4 KiB, the same partitions at the same bytes. The sectors to write
+/// come back at 512-byte LBAs, so a writer seeks them as it always has. Every
+/// partition must start and end on a whole disk sector.
+pub fn layout_on(
+    sector: usize,
+    sectors: u64,
+    disk_guid: diskmap::Guid,
+    parts: &[diskmap::Spec<'_>],
+) -> Result<Vec<(u64, Vec<u8>)>, String> {
+    let per = (sector / SECTOR as usize) as u64;
+    let whole = |lba: u64| lba.is_multiple_of(per);
+    if !diskmap::sector_ok(sector)
+        || !whole(sectors)
+        || parts.iter().any(|p| !whole(p.first) || !whole(p.last + 1))
+    {
+        return Err(format!("the disk is not whole {sector}-byte sectors"));
+    }
+    let parts: Vec<_> = parts
+        .iter()
+        .map(|p| diskmap::Spec {
+            first: p.first / per,
+            last: (p.last + 1) / per - 1,
+            ..p.clone()
+        })
+        .collect();
+    let layout = diskmap::layout_in(sector, sectors / per, disk_guid, &parts)
+        .map_err(|e| format!("the disk does not lay out: {e:?}"))?;
+    Ok(layout.into_iter().map(|(lba, b)| (lba * per, b)).collect())
+}
+
 /// A zeroed disk of `sectors` with the GPT of `parts`.
 pub fn laid_out(sectors: u64, disk_guid: &[u8; 16], parts: &[diskmap::Spec<'_>]) -> Vec<u8> {
     let mut disk = vec![0u8; (sectors * SECTOR as u64) as usize];
@@ -134,5 +166,53 @@ mod tests {
         let last = u64::from_le_bytes(array[40..48].try_into().unwrap());
         assert_eq!(last, FIRST_LBA + 4095);
         assert!(last < sectors - 33);
+    }
+
+    /// A 4Kn layout (G58) puts the same partitions at the same bytes, its
+    /// LBAs in 4 KiB, and refuses a partition that is not whole 4 KiB sectors.
+    #[test]
+    fn a_4kn_layout_keeps_the_partitions_bytes() {
+        let sectors = 64 * 2048;
+        let parts = [diskmap::Spec {
+            kind: ESP_TYPE,
+            guid: diskmap::Guid(unique("x", "partition")),
+            first: FIRST_LBA,
+            last: FIRST_LBA + 16 * 2048 - 1,
+            name: "EFI system partition",
+        }];
+        let guid = diskmap::Guid(unique("x", "disk"));
+        let at_512 = layout_on(512, sectors, guid, &parts).unwrap();
+        let at_4k = layout_on(4096, sectors, guid, &parts).unwrap();
+        // Byte offsets: the header at 4096 on 4Kn, at 512 otherwise.
+        assert_eq!(at_512[1].0 * 512, 512);
+        assert_eq!(at_4k[1].0 * 512, 4096);
+        let mut disk = vec![0u8; (sectors * 512) as usize];
+        for (lba, bytes) in &at_4k {
+            let at = (*lba * 512) as usize;
+            disk[at..at + bytes.len()].copy_from_slice(bytes);
+        }
+        struct D(Vec<u8>);
+        impl diskmap::Disk for D {
+            fn sectors(&self) -> u64 {
+                (self.0.len() / 4096) as u64
+            }
+            fn read(&mut self, lba: u64, out: &mut [u8]) -> Result<(), diskmap::Error> {
+                let at = lba as usize * 4096;
+                out.copy_from_slice(&self.0[at..at + out.len()]);
+                Ok(())
+            }
+            fn sector_size(&self) -> usize {
+                4096
+            }
+        }
+        let table = diskmap::read(&mut D(disk)).unwrap();
+        let esp = table.find(ESP_TYPE).unwrap();
+        assert_eq!(esp.first * 4096, FIRST_LBA * 512);
+        assert_eq!(esp.sectors() * 4096, 16 * 2048 * 512);
+        // A partition ending inside a 4 KiB sector.
+        let mut odd = parts.clone();
+        odd[0].last -= 1;
+        assert!(layout_on(4096, sectors, guid, &odd).is_err());
+        assert!(layout_on(1024, sectors, guid, &parts).is_err());
     }
 }

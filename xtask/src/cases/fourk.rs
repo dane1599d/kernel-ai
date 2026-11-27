@@ -66,7 +66,64 @@ const BLK_2: TestCase = four_k(
     ],
 );
 
+/// Part B: a slot disk of 4 KiB sectors, its GPT in 4 KiB LBAs and its FAT
+/// volumes' BPBs still 512 bytes (decision row `2026-11-27-4kn-esp`), booted
+/// by OVMF and Limine from virtio-blk or NVMe. Boot 1 is R installing and
+/// arming A; boot 2 is A, which commits.
+const fn slot(
+    name: &'static str,
+    cmdline: &'static str,
+    nvme: bool,
+    expect: &'static [&'static str],
+) -> TestCase {
+    TestCase {
+        expect,
+        server: false,
+        resets: true,
+        slots: true,
+        four_k: true,
+        boot_nvme: nvme,
+        ..case(name, cmdline)
+    }
+}
+
+/// R's first boot of a fresh slot disk.
+const INSTALL: &[&str] = &[
+    "slots: booted recovery (record missing)",
+    "slots: in R with no record: installed release 1 in kai-a and kai-b as trials",
+    "slots: R arms kai-a (trial)",
+    "slots: next boot kai-a",
+];
+/// A's first boot, which commits it.
+const A_COMMITS: &[&str] = &[
+    "block: kai-a is ",
+    "slots: booted kai-a (record read)",
+    "slots: up in kai-a (trial, 2 tries left)",
+    "slots: committed kai-a",
+    "slots: next boot kai-a",
+];
+const SLOT_A: TestCase = slot(
+    "slot-4k (2: kai-a commits)",
+    "test=slot slot-do=commit panic=reset",
+    false,
+    A_COMMITS,
+);
+const SLOT_A_NVME: TestCase = slot(
+    "slot-4k-nvme (2: kai-a commits)",
+    "test=slot slot-do=commit panic=reset",
+    true,
+    A_COMMITS,
+);
+
 pub(super) const CASES: &[TestCase] = &[
+    TestCase {
+        then: Some(&SLOT_A),
+        ..slot("slot-4k", "test=slot panic=reset", false, INSTALL)
+    },
+    TestCase {
+        then: Some(&SLOT_A_NVME),
+        ..slot("slot-4k-nvme", "test=slot panic=reset", true, INSTALL)
+    },
     TestCase {
         then: Some(&NVME_2),
         ..four_k(
@@ -180,5 +237,38 @@ mod tests {
         assert_eq!(disk.cmdline(), cmdline);
         assert!(disk.qemu_args().join(" ").contains(crate::disk::BLOCKS_4K));
         fs::remove_dir_all(at).unwrap();
+    }
+
+    /// The boot disk's device for each of B's boots (G58).
+    #[test]
+    fn the_boot_disk_is_nvme_or_virtio_of_4k_blocks() {
+        let device = |nvme, four_k| {
+            let mut args = vec![
+                "-drive".to_string(),
+                "format=raw,file=fat:rw:esp".to_string(),
+            ];
+            let boot = crate::qemu::BootDisk { nvme, four_k };
+            crate::qemu::boot_from_disk_on(&mut args, "slots.img", boot).unwrap();
+            args[3].clone()
+        };
+        assert_eq!(
+            device(false, false),
+            "virtio-blk-pci,drive=slots,serial=kai-boot,bootindex=0"
+        );
+        assert_eq!(
+            device(true, true),
+            format!(
+                "nvme,drive=slots,serial=kai-boot,bootindex=0{}",
+                crate::disk::BLOCKS_4K
+            )
+        );
+        // Every B case boots a 4Kn slot disk.
+        for case in CASES.iter().filter(|c| c.slots) {
+            assert!(
+                case.four_k && case.then.is_some_and(|t| t.four_k),
+                "{}",
+                case.name
+            );
+        }
     }
 }
