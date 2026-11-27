@@ -85,10 +85,68 @@ pub fn chunks(len: u64, max_sectors: u64) -> impl Iterator<Item = Chunk> {
     })
 }
 
+/// A read of `sectors` sectors from `sector` on a disk whose blocks are
+/// `block` sectors, widened to whole blocks: the sectors to read, and the
+/// bytes of them to skip before the ones asked for (G58).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Widened {
+    pub sector: u64,
+    pub sectors: u64,
+    pub skip: u64,
+}
+
+/// `sector..sector + sectors` widened to whole blocks of `block` sectors (a
+/// power of two). None when that overflows.
+pub fn widen(sector: u64, sectors: u64, block: u64) -> Option<Widened> {
+    let start = sector & !(block - 1);
+    let end = sector
+        .checked_add(sectors)?
+        .checked_next_multiple_of(block)?;
+    Some(Widened {
+        sector: start,
+        sectors: end - start,
+        skip: (sector - start) * SECTOR,
+    })
+}
+
+/// The most sectors a read may ask for and still fit `max` sectors once
+/// widened to blocks of `block`: a read can gain up to `block - 1` on each side.
+pub fn widened_max(max: u64, block: u64) -> u64 {
+    max.saturating_sub(2 * (block - 1)).max(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloc::vec::Vec;
+
+    #[test]
+    fn a_read_widens_to_whole_blocks() {
+        // 512-byte blocks: nothing changes.
+        let same = widen(5, 3, 1).unwrap();
+        assert_eq!((same.sector, same.sectors, same.skip), (5, 3, 0));
+        // 4 KiB blocks: sector 0 alone reads block 0.
+        let first = widen(0, 1, 8).unwrap();
+        assert_eq!((first.sector, first.sectors, first.skip), (0, 8, 0));
+        // Sectors 9-17 read blocks 1 and 2, skipping one sector.
+        let middle = widen(9, 9, 8).unwrap();
+        assert_eq!((middle.sector, middle.sectors, middle.skip), (8, 16, 512));
+        // Already whole blocks stay as they are.
+        let whole = widen(16, 8, 8).unwrap();
+        assert_eq!((whole.sector, whole.sectors, whole.skip), (16, 8, 0));
+        assert_eq!(widen(u64::MAX - 1, 4, 8), None);
+    }
+
+    #[test]
+    fn a_widened_read_fits_the_buffer() {
+        let max = widened_max(256, 8);
+        assert_eq!(max, 242);
+        // The worst case: starting one sector before a block's end.
+        for at in 0..8 {
+            assert!(widen(at, max, 8).unwrap().sectors <= 256, "at {at}");
+        }
+        assert_eq!(widened_max(256, 1), 256);
+    }
 
     const HHDM: u64 = 0xFFFF_8000_0000_0000;
     const END: u64 = 512 * 1024 * 1024;

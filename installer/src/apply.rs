@@ -94,6 +94,7 @@ pub fn current(disk: &mut dyn Disk) -> Current {
             Some("a GPT header names partitions that are not valid")
         }
         Err(diskmap::Error::BadLayout) => Some("the GPT cannot be read"),
+        Err(diskmap::Error::SectorSize) => Some("the disk's sectors are not 512 bytes"),
     };
     if let Some(why) = why {
         return Current::Unreadable(why);

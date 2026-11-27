@@ -279,3 +279,71 @@ fn every_type_constant_is_in_types() {
         );
     }
 }
+
+/// A disk of `size`-byte sectors.
+struct Sized(Vec<u8>, usize);
+
+impl Disk for Sized {
+    fn sectors(&self) -> u64 {
+        (self.0.len() / self.1) as u64
+    }
+    fn read(&mut self, lba: u64, out: &mut [u8]) -> Result<(), Error> {
+        assert!(
+            out.len().is_multiple_of(self.1),
+            "a read of part of a sector"
+        );
+        let at = (lba as usize).checked_mul(self.1).ok_or(Error::Read)?;
+        let src = self.0.get(at..at + out.len()).ok_or(Error::Read)?;
+        out.copy_from_slice(src);
+        Ok(())
+    }
+    fn sector_size(&self) -> usize {
+        self.1
+    }
+}
+
+/// A 4Kn disk (G58): the header at byte 4096, a 4-sector array, partitions
+/// in 4 KiB LBAs on 1 MiB (256-LBA) boundaries; read back from either copy.
+#[test]
+fn a_4kn_table_reads_back_in_4k_lbas() {
+    const S4: usize = 4096;
+    let sectors: u64 = 64 * 256; // 64 MiB
+    assert_eq!(entry_sectors(S4), 4);
+    assert_eq!(first_usable(S4), 6);
+    assert_eq!(align_in(S4, first_usable(S4)), 256);
+    let parts = [Spec {
+        kind: KAI_DATA_TYPE,
+        guid: g(1),
+        first: 256,
+        last: last_usable_in(S4, sectors),
+        name: "kai-data",
+    }];
+    let mut bytes = vec![0u8; sectors as usize * S4];
+    for (lba, data) in layout_in(S4, sectors, g(9), &parts).unwrap() {
+        assert!(data.len().is_multiple_of(S4));
+        let at = lba as usize * S4;
+        bytes[at..at + data.len()].copy_from_slice(&data);
+    }
+    assert_eq!(&bytes[S4..S4 + 8], b"EFI PART");
+    assert_eq!(&bytes[510..512], &[0x55, 0xAA]);
+    let table = read(&mut Sized(bytes.clone(), S4)).unwrap();
+    assert!(!table.from_backup);
+    let data = table.find(KAI_DATA_TYPE).unwrap();
+    assert_eq!((data.first, data.last), (256, sectors - 6));
+    // The primary gone: the backup, at the last 4 KiB LBA.
+    bytes[S4..2 * S4].fill(0);
+    let backup = read(&mut Sized(bytes.clone(), S4)).unwrap();
+    assert!(backup.from_backup);
+    assert_eq!(backup.partitions, table.partitions);
+    // Read as 512-byte sectors, the 4Kn disk has no table.
+    assert!(read(&mut Sized(bytes, SECTOR)).is_err());
+}
+
+#[test]
+fn other_sector_sizes_are_refused() {
+    assert_eq!(
+        read(&mut Sized(vec![0; 2048 * 64], 2048)),
+        Err(Error::SectorSize)
+    );
+    assert_eq!(layout_in(1024, 1 << 16, g(9), &[]), Err(Error::SectorSize));
+}

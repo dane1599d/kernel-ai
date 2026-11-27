@@ -40,7 +40,11 @@ struct Disk {
     controller: Arc<Mutex<Controller>>,
     nsid: u32,
     serial: String,
+    /// Size in 512-byte sectors.
     sectors: u64,
+    /// The namespace's blocks are `1 << shift` sectors: 0 for 512 bytes, 3 for
+    /// 4 KiB (`nvme::blocks`).
+    shift: u32,
     write_protected: bool,
     /// Bytes one READ or WRITE command may move: the controller's MDTS, capped by
     /// the staging buffer.
@@ -72,6 +76,10 @@ impl block::Device for Disk {
 
     fn max_sectors(&self) -> u64 {
         STAGING_BYTES / SECTOR
+    }
+
+    fn block_sectors(&self) -> u64 {
+        1 << self.shift
     }
 
     fn read(&mut self, sector: u64, sectors: u64) -> Result<&[u8], &'static str> {
@@ -132,8 +140,11 @@ impl block::Device for Disk {
 
 impl Disk {
     /// Moves `bytes` between the staging buffer and the disk from `sector`, in
-    /// commands of at most `max_transfer`.
+    /// commands of at most `max_transfer`. Both must be whole blocks.
     fn transfer(&mut self, sector: u64, bytes: u64, write: bool) -> Result<(), &'static str> {
+        if nvme::blocks::lba_range(sector, bytes, self.shift).is_none() {
+            return Err("nvme: a transfer of part of a block");
+        }
         let mut done = 0;
         while done < bytes {
             let piece = (bytes - done).min(self.max_transfer);
@@ -143,8 +154,11 @@ impl Disk {
             for index in 0..prps.list_len {
                 self.prp_list.set_u64(index, prp::list_entry(phys, index));
             }
-            let lba = sector + done / SECTOR;
-            let blocks = (piece / SECTOR) as u32;
+            // MDTS and the staging buffer are whole pages, so every piece is
+            // whole blocks.
+            let (lba, blocks) = nvme::blocks::lba_range(sector + done / SECTOR, piece, self.shift)
+                .ok_or("nvme: a transfer of part of a block")?;
+            let blocks = blocks as u32;
             let mut controller = self.controller.lock();
             if write {
                 controller.write(self.nsid, lba, blocks, prps.prp1, prps.prp2)?;
@@ -198,33 +212,38 @@ fn start(function: Function) -> Result<(), &'static str> {
         let ns = controller.identify_namespace(nsid)?;
         if ns.metadata_bytes != 0 {
             log!(
-                "nvme: namespace {nsid} carries {} bytes of metadata a block; only plain 512-byte blocks are read",
+                "nvme: namespace {nsid} carries {} bytes of metadata a block; only plain blocks are read",
                 ns.metadata_bytes
             );
             continue;
         }
-        if !ns.is_plain(SECTOR as u32) {
+        let Some(shift) = nvme::blocks::shift_for(ns.block_bytes) else {
             log!(
-                "nvme: namespace {nsid} has {}-byte blocks; only 512 are read",
+                "nvme: namespace {nsid} has {}-byte blocks; only 512 and 4096 are read",
                 ns.block_bytes
             );
             continue;
-        }
-        found.push((nsid, ns));
+        };
+        found.push((nsid, ns, shift));
     }
     let max_transfer = id.max_transfer(controller.min_page_shift(), STAGING_BYTES);
     let controller = Arc::new(Mutex::new(controller));
-    for (nsid, ns) in found {
-        log!("nvme: namespace {nsid}, {} blocks of 512 bytes", ns.blocks);
+    for (nsid, ns, shift) in found {
+        log!(
+            "nvme: namespace {nsid}, {} blocks of {} bytes",
+            ns.blocks,
+            ns.block_bytes
+        );
         block::register(Box::new(Disk {
             controller: controller.clone(),
             nsid,
             serial: serial.clone(),
-            sectors: ns.blocks,
+            sectors: ns.blocks << shift,
+            shift,
             write_protected: ns.write_protected,
             max_transfer,
             volatile_cache: id.volatile_cache,
-            atomic_sectors: u64::from(id.atomic_blocks),
+            atomic_sectors: u64::from(id.atomic_blocks) << shift,
             staging: Page::contiguous(STAGING_BYTES / PAGE_SIZE)?,
             prp_list: Page::new()?,
         }));
