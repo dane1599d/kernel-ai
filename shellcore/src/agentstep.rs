@@ -287,7 +287,7 @@ impl Shell {
                     }
                     // A card nobody answered in two minutes is no no: the goals
                     // agent keeps it apart from the person's Don't.
-                    (false, false) if told.line == crate::deskask::UNANSWERED => {
+                    (false, false) if crate::deskask::is_lapse(&told.line) => {
                         Reply::err(format!("lapsed #{id}: {}", told.line))
                     }
                     (false, false) => Reply::err(format!("not run #{id}: {}", told.line)),

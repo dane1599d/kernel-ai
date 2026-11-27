@@ -62,6 +62,11 @@ const LAPSED: &str = "Not run: it waited more than two minutes for the card.";
 /// card's countdown says Deny then, and a late answer at the console finds it
 /// expired too (the kernel sends the two alike), so neither ran.
 pub(crate) const UNANSWERED: &str = "Not run: it was not answered within two minutes.";
+
+/// Whether `line` is what an agent's question is told when nobody answered it.
+pub(crate) fn is_lapse(line: &str) -> bool {
+    line == UNANSWERED || line == LAPSED
+}
 /// The line for a question on the card that the console's own line let go.
 const DROPPED: &str = "Not run: a line typed in the console let the question go.";
 /// What a window's decline is told once its question is on the card.
@@ -326,6 +331,12 @@ impl Shell {
             return;
         };
         let declined = word == termcore::menu::Answer::Deny.word();
+        // The kernel's countdown and a person late at the console both send
+        // Deny after the two minutes, and the two cannot be told apart. A window
+        // or the panel is told neither ran; an agent takes it as the person's
+        // no, which keeps a step that may have been refused from being asked
+        // over and over, where a Deny that is not one only costs a resume.
+        let lapsed = lapsed && !(declined && matches!(asker, Asker::Agent(_)));
         // A yes the shell then refused (its rule not kept, its Allow not
         // checked) is logged as declined and replies ok: it ran nothing, so
         // where the line was typed it is no "Done." (#17).
@@ -338,6 +349,12 @@ impl Shell {
         };
         // It ran, but its file changes did not land: that, never "Done".
         let not_landed = self.take_not_landed_line().filter(|_| !lapsed && !declined);
+        // An agent is told the fixed words, for the goals agent's planner to
+        // key on: what the log write said stays in the audit and the entry.
+        let not_landed = not_landed.map(|line| match asker {
+            Asker::Agent(_) => String::from(goalcore::reply::NOT_LANDED),
+            _ => line,
+        });
         // A send the card allowed is held, not done: its line says so, with
         // its undo, as the console's does (#1142's review), made from the
         // outbox's entry, never the reply's text.

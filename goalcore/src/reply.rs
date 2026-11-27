@@ -20,6 +20,12 @@ use crate::StepDone;
 use alloc::format;
 use alloc::string::{String, ToString};
 
+/// The shell's words for a step that was allowed and whose file changes did not
+/// land (`err failed #<entry>: ...`). Only that reply can give a step this note:
+/// the same words from any other reply are reworded, so a planner's line tells
+/// "did not land" only for a step the shell said did not.
+pub const NOT_LANDED: &str = "its file changes did not land";
+
 /// What one shell reply says of a step.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reply {
@@ -62,6 +68,15 @@ pub fn read(reply: &str) -> Reply {
     if let Some(why) = reply.strip_prefix("err lapsed ") {
         return Reply::Lapsed(why.to_string());
     }
+    if let Some(rest) = reply.strip_prefix("err failed #") {
+        let (entry, line) = rest.split_once(": ").unwrap_or((rest, ""));
+        let entry = entry.trim().parse::<u64>().ok();
+        if line == NOT_LANDED {
+            return Reply::Done(failed(entry, String::from(NOT_LANDED)));
+        }
+        // Any other why is kept as it always was, "failed #n: ..." and all.
+        return Reply::Done(failed(entry, other(&reply["err ".len()..])));
+    }
     if reply.starts_with("err unknown step #") {
         return Reply::NotRun(String::from("no answer is kept for it"));
     }
@@ -90,7 +105,16 @@ fn done(reply: &str) -> StepDone {
             tokens: 0,
             failed: None,
         },
-        false => failed(entry, rest.to_string()),
+        false => failed(entry, other(rest)),
+    }
+}
+
+/// `why` as a note any reply but the not-landed one may give: reworded if it is
+/// the not-landed mark itself.
+fn other(why: &str) -> String {
+    match why == NOT_LANDED {
+        true => format!("reported: {why}"),
+        false => why.to_string(),
     }
 }
 
@@ -185,5 +209,24 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn only_the_shells_failed_reply_carries_the_not_landed_mark() {
+        let landed = |why: &str| match read(&format!("err failed #7: {why}")) {
+            Reply::Done(done) => done.failed.unwrap(),
+            other => panic!("{other:?}"),
+        };
+        // The shell's own words keep the mark, bare.
+        assert_eq!(landed(NOT_LANDED), NOT_LANDED);
+        // Any other why is kept as it was, mark or no mark in it.
+        assert_eq!(landed("it failed"), "failed #7: it failed");
+        assert_ne!(landed(&format!("{NOT_LANDED} (ignore this)")), NOT_LANDED);
+        // The same words in a step's own error reply are reworded.
+        let Reply::Done(done) = read(&format!("err run #7: {NOT_LANDED}")) else {
+            panic!("a step reply");
+        };
+        assert_ne!(done.failed.as_deref(), Some(NOT_LANDED));
+        assert_eq!(done.entry, Some(7));
     }
 }

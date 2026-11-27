@@ -138,6 +138,10 @@ pub struct Runner<C> {
     asked: BTreeMap<u64, Step<C>>,
     bad: BTreeMap<u64, u32>,
     denied: BTreeMap<u64, Vec<Step<C>>>,
+    /// The step whose card lapsed last, for each goal: the same step lapsing
+    /// again, with nothing else between, pauses the goal. Not a no: it is not
+    /// among `denied`.
+    lapsed: BTreeMap<u64, Step<C>>,
 }
 
 impl<C> Default for Runner<C> {
@@ -146,6 +150,7 @@ impl<C> Default for Runner<C> {
             asked: BTreeMap::new(),
             bad: BTreeMap::new(),
             denied: BTreeMap::new(),
+            lapsed: BTreeMap::new(),
         }
     }
 }
@@ -169,6 +174,8 @@ impl<C: Clone + PartialEq> Runner<C> {
         let mut events = Vec::new();
         // A goal that ended or was forgotten has nothing left to ask.
         self.denied
+            .retain(|id, _| goals.get(*id).is_some_and(|goal| !goal.state.is_final()));
+        self.lapsed
             .retain(|id, _| goals.get(*id).is_some_and(|goal| !goal.state.is_final()));
         self.close_strays(goals, &mut events);
         if !self.run_answered(goals, parts, &mut events) {
@@ -236,6 +243,7 @@ impl<C: Clone + PartialEq> Runner<C> {
                 return false;
             }
             Outcome::Done(done) => {
+                self.lapsed.remove(&goal.id);
                 let entry = done.entry;
                 let _ = goal.finish_step(done);
                 events.push(Event::Ran {
@@ -250,9 +258,30 @@ impl<C: Clone + PartialEq> Runner<C> {
                         goal: goal.id,
                         step: n,
                     });
+                    // The same step lapsing twice in a row is a person who is
+                    // away: no third card; their resume asks it once more.
+                    let again = self
+                        .lapsed
+                        .get(&goal.id)
+                        .is_some_and(|last| same(last, &step));
+                    match again {
+                        true => {
+                            self.lapsed.remove(&goal.id);
+                            if goal.pause_lapsed().is_ok() {
+                                events.push(Event::Paused {
+                                    goal: goal.id,
+                                    pause: Pause::User,
+                                });
+                            }
+                        }
+                        false => {
+                            self.lapsed.insert(goal.id, step);
+                        }
+                    }
                 }
             }
             Outcome::Denied(why) => {
+                self.lapsed.remove(&goal.id);
                 if goal.deny_running(&why).is_ok() {
                     events.push(Event::Denied {
                         goal: goal.id,

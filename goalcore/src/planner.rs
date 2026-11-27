@@ -72,8 +72,9 @@ pub fn plan_line(goal: &Goal) -> String {
         let what = match step.status {
             StepStatus::Ran => continue,
             // Closed vocabulary only: a note can hold an app's or a server's
-            // text, so it picks between fixed words and is never quoted.
-            StepStatus::Failed if step.note.contains("did not land") => {
+            // text, so it picks between fixed words and is never quoted. The
+            // not-landed mark is one only `reply::read` gives (`NOT_LANDED`).
+            StepStatus::Failed if step.note == crate::reply::NOT_LANDED => {
                 "failed, its file changes did not land"
             }
             StepStatus::Failed => "failed",

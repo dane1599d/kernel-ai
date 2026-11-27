@@ -23,10 +23,11 @@
 //!   step then stays in flight (`Outcome::Later`) and this agent asks `agent-step
 //!   wait <entry>` once a turn, about once a second, until `ok ran #n`, `err failed
 //!   #n` (the person allowed it and it failed: a failed step), `err not run #n` (a
-//!   no), `err lapsed #n` (not answered in time: held, no no) or `err unknown step #n` (a no). Meanwhile the other goals go on,
-//!   and the person's queued pause or cancel comes through: a card left open holds
-//!   nothing else. The person answers once, on the card; this agent answers no
-//!   question itself.
+//!   no), `err lapsed #n` (not answered in time: held, no no; the same step
+//!   lapsing twice in a row pauses the goal) or `err unknown step #n` (a no).
+//!   Meanwhile the other goals go on, and the person's queued pause or cancel
+//!   comes through: a card left open holds nothing else. The person answers
+//!   once, on the card; this agent answers no question itself.
 //! - **A refusal at the ceiling** (`err refused`: the shell restarted and its
 //!   grants are gone, or the goal was revoked) pauses the goal: it is not tried
 //!   again until resumed.

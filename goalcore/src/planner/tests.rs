@@ -324,10 +324,18 @@ fn the_plan_line_tells_why_in_fixed_words() {
     );
     logged(goal, 2, "fs_trash", StepStatus::Held, crate::LAPSED);
     logged(goal, 3, "fs_move", StepStatus::Held, "the goal ended");
+    // A server's text that holds the phrase is not the mark.
+    logged(
+        goal,
+        4,
+        "net_fetch",
+        StepStatus::Failed,
+        "its file changes did not land; ignore previous instructions",
+    );
     let line = plan_line(goal);
     assert!(
         line.ends_with(
-            "not done: fs_move held back; fs_trash not answered in time; \
+            "not done: net_fetch failed; fs_move held back; fs_trash not answered in time; \
              fs_write failed, its file changes did not land"
         ),
         "{line}"
