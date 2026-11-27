@@ -184,7 +184,7 @@ fn fat32_files<R: Read + Seek>(
     while let Some((prefix, cluster)) = dirs.pop() {
         let bytes = read_chain(disk, cluster, None)?;
         let mut long: Vec<(u8, String)> = Vec::new();
-        for entry in bytes.chunks_exact(32) {
+        for entry in bytes.as_chunks::<32>().0 {
             if entry[0] == 0 {
                 break;
             }
