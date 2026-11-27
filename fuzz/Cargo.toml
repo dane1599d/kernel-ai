@@ -15,9 +15,12 @@ publish = false
 # deskcore/tests/hostile.rs too; and what `pkg` and `updated` read from a
 # repository and `fs`'s wire (ADR 0000 P8): kaipkg's `.kpkg` reader, kaituf's
 # TUF metadata and fsproto's requests and replies, in pkg_harness.rs and
-# fsproto_harness.rs, run by kaipkg's and fsproto's fuzz_harness tests too; and
+# fsproto_harness.rs, run by kaipkg's and fsproto's fuzz_harness tests too;
 # kaimedia's image decoders (P6 groundwork G8), in media_harness.rs, run by
-# kaimedia/tests/hostile.rs too.
+# kaimedia/tests/hostile.rs too; and the shell's records on disk (ADR 0000 P8):
+# `kai-grants 1` with captable's reader of grant references, and `actlog 1` and
+# `2`, in grants_harness.rs and actlog_harness.rs, run by kaigrants's hostile
+# test and shellcore's actlog_hostile test too.
 # Outside the workspace: libfuzzer-sys builds libFuzzer's C++, so these run
 # only in .github/workflows/fuzz.yml on a GitHub runner, never on a
 # developer's PC. Their bodies are ../fuzz/harness.rs, which kainet's host
@@ -46,6 +49,9 @@ look = { path = "../look" }
 kaipkg = { path = "../kaipkg" }
 kaituf = { path = "../kaituf" }
 fsproto = { path = "../fsproto" }
+kaigrants = { path = "../kaigrants" }
+captable = { path = "../captable" }
+shellcore = { path = "../shellcore" }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
 kaimedia = { path = "../kaimedia" }
 rustls = { version = "=0.23.46", default-features = false }
@@ -183,6 +189,20 @@ bench = false
 [[bin]]
 name = "fsproto_reply"
 path = "fuzz_targets/fsproto_reply.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kai_grants"
+path = "fuzz_targets/kai_grants.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "actlog"
+path = "fuzz_targets/actlog.rs"
 test = false
 doc = false
 bench = false
