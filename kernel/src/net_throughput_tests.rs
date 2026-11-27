@@ -13,9 +13,12 @@ use crate::{hpet, log, net, threads};
 /// The kernel's own streams.
 const OWNER: u64 = 0;
 const REQUEST: &[u8] = b"GET /blob HTTP/1.0\r\nHost: 10.0.2.2\r\n\r\n";
-/// A run stops at this many bytes, or this long after its first byte.
+/// A run stops at this many bytes, or this long after its first byte; with
+/// `bytes=N` on the command line, at N bytes, or [`LONG_WINDOW_NS`] (G67's
+/// path runs: 1 GiB each).
 const LIMIT: u64 = 128 * 1024 * 1024;
 const WINDOW_NS: u64 = 4_000_000_000;
+const LONG_WINDOW_NS: u64 = 300_000_000_000;
 /// No first byte by then is a failure.
 const FIRST_BYTE_MS: u64 = 20_000;
 const SETUP_WAIT_MS: u64 = 15_000;
@@ -38,11 +41,49 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
     if !up {
         return Err("net-throughput: the network was not set up in time");
     }
+    let (limit, window) = match cmdline
+        .split_whitespace()
+        .find_map(|w| w.strip_prefix("bytes=")?.parse::<u64>().ok())
+    {
+        Some(bytes) => (bytes, LONG_WINDOW_NS),
+        None => (LIMIT, WINDOW_NS),
+    };
     let id = stream::connect(OWNER, server, port, true, None, None)
         .map_err(|_| "net-throughput: cannot connect to the blob server")?;
-    let result = download(id);
+    let mut before = crate::sched_control::measure::Snapshots::new();
+    let mut after = crate::sched_control::measure::Snapshots::new();
+    let interrupts = net::interrupts_taken().unwrap_or(0);
+    let stages = net::profile::snapshot();
+    before.take();
+    let started = hpet::nanos();
+    let result = download(id, limit, window);
+    let wall_ns = hpet::nanos().saturating_sub(started);
+    after.take();
+    let stages_after = net::profile::snapshot();
+    let interrupts = net::interrupts_taken().unwrap_or(0) - interrupts;
     let _ = stream::close(OWNER, id);
     let moved = result?;
+    // Every CPU's time but its idle thread's, from the connect to the end.
+    let (_, idle_ns) = after.since(&before);
+    let cpus = after.cores.len() as u64;
+    let busy_ns = (wall_ns * cpus).saturating_sub(idle_ns);
+    let per_gib = busy_ns as u128 * (1 << 30) / u128::from(moved.bytes.max(1)) / 1_000_000;
+    log!(
+        "net-throughput: cpu bytes={} wall_ms={} busy_ms={} cpus={cpus} cpu_ms_per_gib={per_gib} interrupts={interrupts}",
+        moved.bytes,
+        wall_ns / 1_000_000,
+        busy_ns / 1_000_000
+    );
+    for (i, name) in net::profile::NAMES.iter().enumerate() {
+        let count = stages_after[i].0 - stages[i].0;
+        let ns = stages_after[i].1 - stages[i].1;
+        log!(
+            "net-throughput: stage {name} count={count} ms={} ns_each={} share_of_wall_pct={}",
+            ns / 1_000_000,
+            ns / count.max(1),
+            ns * 100 / wall_ns.max(1)
+        );
+    }
     let ms = (moved.elapsed_ns / 1_000_000).max(1);
     // MB/s to a tenth: bytes per ms is kB/s.
     let tenths = moved.bytes * 10 / ms / 1000;
@@ -65,7 +106,7 @@ struct Moved {
 
 /// Sends the request, then reads and throws away what comes, timed from the
 /// first byte.
-fn download(id: u64) -> Result<Moved, &'static str> {
+fn download(id: u64, limit: u64, window_ns: u64) -> Result<Moved, &'static str> {
     let start = hpet::nanos();
     let connected = stream::poll(OWNER, id, ready::CONNECTED, FIRST_BYTE_MS, || false)
         .map_err(|_| "net-throughput: the stream failed")?;
@@ -85,7 +126,7 @@ fn download(id: u64) -> Result<Moved, &'static str> {
     let mut first = None;
     loop {
         let now = hpet::nanos();
-        if bytes >= LIMIT || first.is_some_and(|f| now.saturating_sub(f) >= WINDOW_NS) {
+        if bytes >= limit || first.is_some_and(|f| now.saturating_sub(f) >= window_ns) {
             break;
         }
         if first.is_none() && now.saturating_sub(start) >= FIRST_BYTE_MS * 1_000_000 {

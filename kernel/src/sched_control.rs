@@ -14,7 +14,7 @@
 pub mod calls;
 pub mod guard;
 mod ledger;
-mod measure;
+pub(crate) mod measure;
 
 use crate::process::{self, Name};
 use crate::{hpet, metrics, quiet, smp, threads};

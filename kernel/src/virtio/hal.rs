@@ -92,14 +92,15 @@ unsafe impl Hal for KernelHal {
             return phys;
         }
         let len = buffer.len();
-        let phys =
-            allocate(len.div_ceil(PAGE_SIZE)).expect("virtio: out of frames for a bounce buffer");
+        let phys = crate::net::profile::timed(crate::net::profile::Stage::BounceAlloc, || {
+            allocate(len.div_ceil(PAGE_SIZE)).expect("virtio: out of frames for a bounce buffer")
+        });
         if direction != BufferDirection::DeviceToDriver {
             // SAFETY: the driver guarantees the buffer is valid for `len` bytes; the
             // bounce frames are ours and at least that large.
-            unsafe {
+            crate::net::profile::timed(crate::net::profile::Stage::BounceCopy, || unsafe {
                 core::ptr::copy_nonoverlapping(buffer.cast::<u8>().as_ptr(), direct_map(phys), len)
-            };
+            });
         }
         phys
     }
@@ -113,10 +114,12 @@ unsafe impl Hal for KernelHal {
         let len = buffer.len();
         if direction != BufferDirection::DriverToDevice {
             // SAFETY: `phys` came from `share` for this same buffer length.
-            unsafe {
+            crate::net::profile::timed(crate::net::profile::Stage::BounceCopy, || unsafe {
                 core::ptr::copy_nonoverlapping(direct_map(phys), buffer.cast::<u8>().as_ptr(), len)
-            };
+            });
         }
-        release(phys, len.div_ceil(PAGE_SIZE)).expect("virtio: bounce buffer was not allocated");
+        crate::net::profile::timed(crate::net::profile::Stage::BounceFree, || {
+            release(phys, len.div_ceil(PAGE_SIZE)).expect("virtio: bounce buffer was not allocated")
+        });
     }
 }

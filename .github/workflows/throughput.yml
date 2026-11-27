@@ -14,6 +14,12 @@ on:
       accel:
         description: kvm, or tcg for a run the floor must fail
         default: kvm
+      # G67: `net-path` boots net-throughput five times at +0 ms for 1 GiB
+      # each, with CPU per GiB and each stage's time (scripts/net_path.py),
+      # in place of the floors.
+      mode:
+        description: floors, or net-path for G67's five 1 GiB runs
+        default: floors
   push:
     branches: [main]
     paths:
@@ -96,6 +102,7 @@ jobs:
 
   part:
     name: part throughput
+    if: inputs.mode != 'net-path'
     runs-on: ubuntu-24.04
     needs: qemu
     timeout-minutes: 45
@@ -129,6 +136,7 @@ jobs:
 
   net:
     name: net-throughput
+    if: inputs.mode != 'net-path'
     runs-on: ubuntu-24.04
     needs: qemu
     timeout-minutes: 60
@@ -197,3 +205,56 @@ jobs:
           "$RUNNER_TEMP/net-20-1.log,$RUNNER_TEMP/net-20-2.log,$RUNNER_TEMP/net-20-3.log"
           "net-throughput +20 ms" "$NET_FLOOR_MBS"
           'net-throughput: [0-9]+ bytes in [0-9]+ ms = (?P<down>[0-9.]+) MB/s'
+
+  # G67: the kernel's network path as S07-4 measured it, one 1 GiB download
+  # at +0 ms, five boots, their medians (the exit check's figures).
+  net-path:
+    name: net path, five 1 GiB runs
+    if: inputs.mode == 'net-path'
+    runs-on: ubuntu-24.04
+    needs: qemu
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/qemu
+      - name: Allow KVM for the runner user
+        if: env.ACCEL == 'kvm'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for live components
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: qemu-release
+          save-if: false
+      - name: The runner's CPU
+        run: lscpu | grep -E 'Model name|^CPU\(s\)|Thread|Core' | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: A TAP device at 10.0.2.2 for the guest
+        run: |
+          sudo ip tuntap add dev kaitap0 mode tap user "$USER"
+          sudo ip addr add 10.0.2.2/24 dev kaitap0
+          sudo ip link set kaitap0 up
+      - name: Serve a 1 GiB blob on port 8765
+        run: |
+          mkdir -p "$RUNNER_TEMP/www"
+          head -c 1073741824 /dev/zero > "$RUNNER_TEMP/www/blob"
+          python3 -m http.server 8765 --bind 10.0.2.2 --directory "$RUNNER_TEMP/www" > "$RUNNER_TEMP/http.log" 2>&1 &
+          sleep 1
+      - name: Boot net-throughput five times, 1 GiB each
+        env:
+          XTASK_CASE: net-throughput
+          XTASK_NETDEV: tap,id=net0,ifname=kaitap0,script=no,downscript=no
+          XTASK_CMDLINE: bytes=1073741824
+        shell: bash
+        run: |
+          for run in 1 2 3 4 5; do
+            echo "== run $run"
+            cargo xtask test --release --accel "$ACCEL" --timeout 900 2>&1 | tee "$RUNNER_TEMP/net-path-$run.log"
+          done
+      - name: The medians
+        if: always()
+        run: python3 -I scripts/net_path.py "$RUNNER_TEMP" | tee -a "$GITHUB_STEP_SUMMARY"

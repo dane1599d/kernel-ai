@@ -11,6 +11,7 @@
 pub mod dest;
 mod device;
 pub mod ping;
+pub mod profile;
 pub mod resolve;
 pub mod setup;
 pub mod stream;
@@ -63,8 +64,10 @@ unsafe impl Send for Net {}
 impl Net {
     /// Moves frames both ways and applies whatever the DHCP client learned.
     fn poll(&mut self) {
-        self.iface.poll(now(), &mut self.device, &mut self.sockets);
-        self.device.refill();
+        profile::timed(profile::Stage::IfacePoll, || {
+            self.iface.poll(now(), &mut self.device, &mut self.sockets)
+        });
+        profile::timed(profile::Stage::Refill, || self.device.refill());
         self.setup
             .after_poll(&mut self.iface, &mut self.sockets, hpet::nanos());
         stream::reap(self);

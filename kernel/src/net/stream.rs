@@ -200,7 +200,7 @@ fn with<R>(
     f: impl FnOnce(&mut tcp::Socket, &mut bool) -> R,
 ) -> Result<R, Error> {
     crate::threads::ready::not_in_ready(&"the network");
-    let mut guard = NET.lock();
+    let mut guard = super::profile::timed(super::profile::Stage::Lock, || NET.lock());
     let net = guard.as_mut().ok_or(Error::Unavailable)?;
     net.poll();
     let mut streams = STREAMS.lock();
@@ -283,8 +283,17 @@ pub fn send(owner: u64, id: u64, data: &[u8]) -> Result<usize, Error> {
 /// the peer closed and everything was read; Busy while none has come yet.
 pub fn recv(owner: u64, id: u64, out: &mut [u8]) -> Result<usize, Error> {
     let cap = out.len().min(MAX_CALL);
+    super::profile::timed(super::profile::Stage::Recv, || {
+        recv_in(owner, id, &mut out[..cap])
+    })
+}
+
+fn recv_in(owner: u64, id: u64, out: &mut [u8]) -> Result<usize, Error> {
     with(owner, id, |socket, connected| {
-        match socket.recv_slice(&mut out[..cap]) {
+        let copied = super::profile::timed(super::profile::Stage::RecvCopy, || {
+            socket.recv_slice(&mut out[..])
+        });
+        match copied {
             Ok(0) | Err(tcp::RecvError::InvalidState) if *connected && !socket.may_recv() => Ok(0),
             Ok(0) => Err(Error::Busy),
             Ok(n) => Ok(n),
@@ -314,7 +323,9 @@ pub fn poll(
         if cancel() {
             return Err(Error::Interrupted);
         }
-        super::wait_for_frames(ticket, POLL_GAP_MS);
+        super::profile::timed(super::profile::Stage::Wait, || {
+            super::wait_for_frames(ticket, POLL_GAP_MS)
+        });
     }
 }
 
