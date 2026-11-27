@@ -1,11 +1,12 @@
 # An SBOM of the workspace (ADR 0009, P8 row 5's first part): cargo-cyclonedx
 # 0.5.9 (Apache-2.0) writes one CycloneDX 1.5 JSON file per workspace package,
-# and a script step merges them into `kernel-ai.cdx.json`, which is uploaded as
+# and the release's script (.github/release/sbom.sh) merges them into
+# `kernel-ai.cdx.json`, which is uploaded as
 # an artifact named `sbom-<commit>`. A second script step checks that the SBOM
 # lists every crate (name and version) that NOTICES.txt lists, and fails if one
 # is missing or a NOTICES line that looks like a crate does not parse.
 # On `main` and by hand (Actions tab, "SBOM", Run workflow); a pull request
-# runs it only when it changes this file. It is not attached to a release and
+# runs it only when it changes this file or the script. It is not attached to a release and
 # not signed: P8's release checklist takes the artifact from here.
 name: SBOM
 
@@ -16,6 +17,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/sbom.yml
+      - .github/release/sbom.sh
 
 permissions:
   contents: read
@@ -41,35 +43,12 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install cargo-cyclonedx
         run: cargo install --locked --version "$CYCLONEDX_VERSION" cargo-cyclonedx
-      # --target all: wasm32 and other targets' dependencies too, not only the host's.
-      - name: Make one SBOM per workspace package
-        run: cargo cyclonedx --format json --spec-version 1.5 --all-features --target all
-      - name: Merge them into one SBOM
+      # The release's script (.github/release/sbom.sh): cargo-cyclonedx for every
+      # workspace package and target, merged into one file.
+      - name: Make the SBOM
         run: |
-          set -euo pipefail
           mkdir -p sbom
-          mapfile -t boms < <(find . -path ./target -prune -o -path ./sbom -prune -o -name '*.cdx.json' -print | sort)
-          echo "${#boms[@]} per-package SBOMs"
-          test "${#boms[@]}" -gt 0
-          # Components are unique by purl (name, version, source); our own
-          # crates are listed as components too, so the whole workspace shows.
-          jq -s --arg ver "$CYCLONEDX_VERSION" '
-            {
-              bomFormat: "CycloneDX",
-              specVersion: "1.5",
-              version: 1,
-              metadata: {
-                tools: [{ vendor: "CycloneDX", name: "cargo-cyclonedx", version: $ver }],
-                component: { type: "application", name: "kernel-ai", "bom-ref": "kernel-ai" }
-              },
-              components: (
-                [ .[] | ((.metadata.component // empty), (.components // [])[]) ]
-                | map(del(.components))
-                | unique_by(.purl // (.name + "@" + .version))
-                | sort_by(.name, .version)
-              )
-            }' "${boms[@]}" > sbom/kernel-ai.cdx.json
-          jq -r '"\(.components | length) components"' sbom/kernel-ai.cdx.json
+          .github/release/sbom.sh sbom/kernel-ai.cdx.json
       - name: Check that it lists every crate NOTICES.txt lists
         run: |
           set -euo pipefail
