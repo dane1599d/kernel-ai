@@ -251,13 +251,19 @@ fn random_bytes_behind_the_state_magic_never_panic() {
         "x",
         " ",
         "\n",
+        "-",
+        "p-0123456789ab",
+        "p-0123456789AB",
+        "p-0123456789a",
+        "p-0123456789abc",
     ];
     for _ in 0..5_000 {
         let magic = [
+            "supervisor-state 6",
             "supervisor-state 5",
             "supervisor-state 4",
             "supervisor-state 3",
-        ][rng.below(3)];
+        ][rng.below(4)];
         let mut text = String::from(magic);
         for _ in 0..rng.below(4) {
             text.push('\n');
@@ -382,7 +388,20 @@ fn each_version_s_line_reads_as_its_own_layout() {
         read("supervisor-state 5\nnotes 0 0 2 01 true 3 0\nshort 0 0 0 0 0 0\nbad 0 x 0 0 0 0 0"),
         [kept]
     );
+    // v6 adds the version after started: `-` is none, a label is kept, and
+    // any other word drops the line.
+    let mut pkg = one("notes");
+    pkg.keep = true;
+    pkg.pid = 4;
+    pkg.started_ms = 9;
+    pkg.version = Some("p-0123456789ab".into());
+    pkg.recent = vec![2];
+    let six = "supervisor-state 6\nnotes 0 0 0 0 1 4 9 p-0123456789ab 2\n\
+               none 0 0 0 0 0 0 0 -\nupper 0 0 0 0 0 0 0 p-0123456789AB\n\
+               short 0 0 0 0 0 0 0";
+    assert_eq!(read(six), [pkg, one("none")]);
     for text in [
+        six,
         "supervisor-state 4\nshell 0 0 0 1 1 900 5",
         "supervisor-state 3\nfs 0 0 1 1 1",
         "supervisor-state 5\nnotes 0 0 2 01 true 3 0\nshort 0 0 0 0 0 0",

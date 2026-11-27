@@ -3,7 +3,8 @@
 //! (`testkit/hostile.rs`), the way `fuzz/harness.rs` serves its targets: a
 //! later `fuzz/fuzz_targets/supervise_state.rs` includes this file by `#[path]`
 //! and calls one of these with libFuzzer's input. Each must return for any
-//! input, and only a bug in `supervise` may panic.
+//! input, and only a bug in `supervise` may panic. [`keep_request`] reads
+//! `kabi::MAX_NAME`, so that target needs `kabi` as well as `supervise`.
 //!
 //! What each holds: the supervisor's saved state, a `keep` request, a
 //! `profile` request and its `ok` answer are read so that damaged bytes give
@@ -41,22 +42,28 @@ pub fn supervisor_state(data: &[u8]) {
 
 /// The records `text` says, line by line, from the layout of each version:
 ///
-/// - `supervisor-state 5`: name, restarts, quick failures, gave up, stopped,
-///   keep, pid, started, then the recent restarts;
+/// - `supervisor-state 6`: name, restarts, quick failures, gave up, stopped,
+///   keep, pid, started, the package version (`-` or `p-` and 12 lower-case
+///   hex digits), then the recent restarts;
+/// - `supervisor-state 5`: the same without the version;
 /// - `supervisor-state 4`: the same without keep;
 /// - `supervisor-state 3`: the same without stopped or keep.
 ///
-/// A flag is set only by the word `1`. A line with a word missing or a number
-/// that does not read is left out; a state with another first line has none.
+/// A flag is set only by the word `1`. A line with a word missing, a number
+/// that does not read or a version that is not a label is left out; a state
+/// with another first line has none.
 pub fn expected(text: &str) -> Vec<Record> {
     let mut lines = text.lines();
-    let (stopped_at, keep_at) = match lines.next() {
-        Some("supervisor-state 5") => (Some(4), Some(5)),
-        Some("supervisor-state 4") => (Some(4), None),
-        Some("supervisor-state 3") => (None, None),
+    let (stopped_at, keep_at, version_at) = match lines.next() {
+        Some("supervisor-state 6") => (Some(4), Some(5), Some(8)),
+        Some("supervisor-state 5") => (Some(4), Some(5), None),
+        Some("supervisor-state 4") => (Some(4), None, None),
+        Some("supervisor-state 3") => (None, None, None),
         _ => return Vec::new(),
     };
-    let fixed = 6 + usize::from(stopped_at.is_some()) + usize::from(keep_at.is_some());
+    let flags = usize::from(stopped_at.is_some()) + usize::from(keep_at.is_some());
+    let (pid_at, started_at) = (4 + flags, 5 + flags);
+    let fixed = 6 + flags + usize::from(version_at.is_some());
     let mut out = Vec::new();
     'lines: for line in lines {
         let words: Vec<&str> = line.split_whitespace().collect();
@@ -66,7 +73,7 @@ pub fn expected(text: &str) -> Vec<Record> {
         let mut numbers = Vec::new();
         for (i, word) in words.iter().enumerate() {
             let flag = i == 3 || Some(i) == stopped_at || Some(i) == keep_at;
-            if i == 0 || flag {
+            if i == 0 || flag || Some(i) == version_at {
                 continue;
             }
             match word.parse::<u64>() {
@@ -74,6 +81,11 @@ pub fn expected(text: &str) -> Vec<Record> {
                 Err(_) => continue 'lines,
             }
         }
+        let version = match version_at.map(|i| words[i]) {
+            None | Some("-") => None,
+            Some(label) if is_label(label) => Some(label.to_string()),
+            Some(_) => continue,
+        };
         let number = |i: usize| numbers.iter().find(|(at, _)| *at == i).unwrap().1;
         let flag = |at: Option<usize>| at.is_some_and(|i| words[i] == "1");
         out.push(Record {
@@ -83,12 +95,21 @@ pub fn expected(text: &str) -> Vec<Record> {
             gave_up: words[3] == "1",
             stopped: flag(stopped_at),
             keep: flag(keep_at),
-            pid: number(fixed - 2),
-            started_ms: number(fixed - 1),
+            pid: number(pid_at),
+            started_ms: number(started_at),
             recent: (fixed..words.len()).map(number).collect(),
+            version,
         });
     }
     out
+}
+
+/// A package version's label, read here rather than with `kabi`'s own check
+/// so a change to that check is seen: `p-` and 12 lower-case hex digits.
+fn is_label(word: &str) -> bool {
+    word.strip_prefix("p-").is_some_and(|hex| {
+        hex.len() == 12 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    })
 }
 
 /// `keep <name> on|off`: taken only as its three words, with a valid name, and
