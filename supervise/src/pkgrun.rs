@@ -91,6 +91,63 @@ pub enum WithdrawError<E> {
     NotEnded(E),
 }
 
+/// The answer to a withdraw whose cleared version could not be saved
+/// ([`WithdrawError::NotSaved`]), before `: <error>`.
+pub const NOT_SAVED: &str = "err cannot save it";
+/// The answer to a withdraw whose app could not be ended
+/// ([`WithdrawError::NotEnded`]), before `: <error>`.
+pub const NOT_ENDED: &str = "err cannot end it";
+
+/// How many times `pkg` sends one withdraw while the supervisor answers
+/// [`NOT_SAVED`] or [`NOT_ENDED`] ([`withdraw_may_retry`]).
+pub const WITHDRAW_TRIES: u32 = 3;
+/// How long `pkg` waits between those tries.
+pub const WITHDRAW_RETRY_MS: u64 = 250;
+
+impl<E: core::fmt::Debug> WithdrawError<E> {
+    /// The supervisor's line for service `name`, kept on package `version`
+    /// with its `pid` if it runs, and its answer to `pkg`. A failed save
+    /// ends nothing, so an app that was not running (crashed and waiting for
+    /// its restart, or stopped) is not said to keep running.
+    pub fn report(&self, name: &str, version: &str, pid: Option<u64>) -> (String, String) {
+        match (self, pid) {
+            (Self::NotSaved(error), Some(pid)) => (
+                format!(
+                    "{name} keeps running package version {version} (pid {pid}): \
+                     cannot save it withdrawn: {error:?}"
+                ),
+                format!("{NOT_SAVED}: {error:?}"),
+            ),
+            (Self::NotSaved(error), None) => (
+                format!(
+                    "{name} keeps package version {version}, not running now: \
+                     cannot save it withdrawn: {error:?}"
+                ),
+                format!("{NOT_SAVED}: {error:?}"),
+            ),
+            (Self::NotEnded(error), pid) => (
+                format!(
+                    "cannot end {name} (pid {}) on package version {version}: {error:?}",
+                    pid.unwrap_or(0)
+                ),
+                format!("{NOT_ENDED}: {error:?}"),
+            ),
+        }
+    }
+}
+
+/// Whether `pkg` may send a withdraw again after `reply`: only after
+/// [`NOT_SAVED`] or [`NOT_ENDED`], which leave the record as it was before
+/// the withdraw, so the same withdraw takes the same path; never after a
+/// refusal or an `ok`.
+pub fn withdraw_may_retry(reply: &str) -> bool {
+    [NOT_SAVED, NOT_ENDED].iter().any(|said| {
+        reply
+            .strip_prefix(said)
+            .is_some_and(|rest| rest.starts_with(": "))
+    })
+}
+
 /// Takes a package version back out in the order that survives a supervisor
 /// that dies between the steps: the cleared version is saved *before* the app
 /// is ended, so a restart never finds the withdrawn version recorded. If that
