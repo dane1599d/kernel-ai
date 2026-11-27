@@ -174,6 +174,10 @@ pub struct HubDescriptor {
     pub think_time: u8,
 }
 
+/// The most a hub descriptor takes: 7 bytes and two bit masks of 255 ports.
+/// Asked for whole, since a hub of 8 ports or more is longer than 9 bytes.
+pub const HUB_DESCRIPTOR_MAX: u16 = 71;
+
 /// Ports a hub may have (USB 2.0 11.23.2.1: 255), and the most the driver walks.
 pub const MAX_HUB_PORTS: u8 = 15;
 
@@ -181,7 +185,9 @@ impl HubDescriptor {
     pub fn parse(bytes: &[u8]) -> Result<Self, Error> {
         // bLength, type, ports, wHubCharacteristics (2), power-on to good,
         // control current, then the removable and power masks.
-        if bytes.len() < 7 || bytes[1] != HUB || usize::from(bytes[0]) > bytes.len() {
+        // A hub of 8 ports or more sends more than the 7 bytes read here; what
+        // follows (the removable and power masks) is not used.
+        if bytes.len() < 7 || bytes[1] != HUB || bytes[0] < 7 {
             return Err(Error::BadDescriptor);
         }
         if bytes[2] == 0 {
@@ -464,7 +470,7 @@ mod tests {
 
     #[test]
     fn hub_requests_encode_as_the_hub_class_says() {
-        assert_eq!(get_hub_descriptor(9), [0xA0, 6, 0, 0x29, 0, 0, 9, 0]);
+        assert_eq!(get_hub_descriptor(71), [0xA0, 6, 0, 0x29, 0, 0, 71, 0]);
         assert_eq!(get_port_status(3), [0xA3, 0, 0, 0, 3, 0, 4, 0]);
         assert_eq!(set_port_feature(2, PORT_POWER), [0x23, 3, 8, 0, 2, 0, 0, 0]);
         assert_eq!(set_port_feature(2, PORT_RESET), [0x23, 3, 4, 0, 2, 0, 0, 0]);
@@ -477,15 +483,18 @@ mod tests {
 
     #[test]
     fn a_hub_descriptor_gives_its_ports_power_good_time_and_think_time() {
-        // QEMU's usb-hub: 8 ports, 100 ms to power good.
-        let qemu = [9, 0x29, 8, 0x0A, 0x00, 50, 0, 0, 0xFF];
+        // QEMU's usb-hub (hw/usb/dev-hub.c): 8 ports, so bLength is 10, and
+        // 2 ms to power good.
+        let qemu = [10, 0x29, 8, 0x0A, 0x00, 1, 0, 0x00, 0xFF, 0xFF];
         let hub = HubDescriptor::parse(&qemu).unwrap();
-        assert_eq!((hub.ports, hub.power_good_ms, hub.think_time), (8, 100, 0));
+        assert_eq!((hub.ports, hub.power_good_ms, hub.think_time), (8, 2, 0));
+        // The first 7 bytes are enough, whatever bLength says of the rest.
+        assert_eq!(HubDescriptor::parse(&qemu[..7]), Ok(hub));
         // Think time is bits 6:5 of the characteristics.
         let mut slow = qemu;
         slow[3] = 0x60;
         assert_eq!(HubDescriptor::parse(&slow).unwrap().think_time, 3);
-        // No ports, a wrong type, and one that is shorter than it says are refused.
+        // No ports, a wrong type, and one that says it is under 7 bytes are refused.
         let mut none = qemu;
         none[2] = 0;
         assert_eq!(HubDescriptor::parse(&none), Err(Error::BadDescriptor));
@@ -493,9 +502,9 @@ mod tests {
         wrong[1] = 0x2A;
         assert_eq!(HubDescriptor::parse(&wrong), Err(Error::BadDescriptor));
         assert_eq!(HubDescriptor::parse(&qemu[..6]), Err(Error::BadDescriptor));
-        let mut long = qemu;
-        long[0] = 12;
-        assert_eq!(HubDescriptor::parse(&long), Err(Error::BadDescriptor));
+        let mut short = qemu;
+        short[0] = 6;
+        assert_eq!(HubDescriptor::parse(&short), Err(Error::BadDescriptor));
     }
 
     #[test]

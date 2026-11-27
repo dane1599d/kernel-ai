@@ -121,10 +121,12 @@ impl Device {
             return None;
         };
         let port = (route & 0xF) as usize;
-        ports
-            .get_mut(port.checked_sub(1)?)?
-            .as_mut()?
-            .at(route >> 4)
+        let behind = ports.get_mut(port.checked_sub(1)?)?.as_mut()?;
+        // Nothing is reached through a port that is not powered and enabled.
+        if !(behind.powered && behind.enabled) {
+            return None;
+        }
+        behind.at(route >> 4)
     }
 
     /// A control request to this device; None is a stall.
@@ -143,8 +145,14 @@ impl Device {
                 let Kind::Hub(ports) = &self.kind else {
                     return None;
                 };
-                // Characteristics: a TT think time of 8 bit times (field 0).
-                vec![9, 0x29, ports.len() as u8, 0, 0, 25, 0, 0, 0xFF]
+                // As QEMU's hub sends it: characteristics 0x000a (a think time of
+                // 8 bit times), 2 ms to power good, and a bLength of 7 plus the
+                // two masks, which is 10 for 8 ports and more.
+                let masks = (ports.len() + 1).div_ceil(8);
+                let mut bytes = vec![0, 0x29, ports.len() as u8, 0x0A, 0, 1, 0];
+                bytes.extend(vec![0xFF; 2 * masks]);
+                bytes[0] = bytes.len() as u8;
+                bytes
             }
             (0xA3, 0) => {
                 let port = self.port(index)?;
@@ -220,6 +228,8 @@ pub struct SlotRecord {
     /// Whether Address Device has run, and Configure Endpoint after it.
     pub addressed: bool,
     pub configures: u32,
+    /// The slot context's first four dwords, as Address Device read them.
+    pub raw: [u32; 4],
 }
 
 struct Slot {
@@ -293,6 +303,11 @@ impl Fake {
         self.state.borrow().slots.len() as u8
     }
 
+    /// The virtual time, in ns.
+    pub fn now(&self) -> u64 {
+        self.clock.get()
+    }
+
     /// The commands the controller ran, by TRB type.
     pub fn commands(&self) -> Vec<u8> {
         self.state.borrow().commands.clone()
@@ -300,6 +315,15 @@ impl Fake {
 }
 
 impl Xhc {
+    /// The device at `root_port` and `route`, if its root port is enabled.
+    fn device_at(&mut self, root_port: u8, route: u32) -> Option<&mut Device> {
+        let number = usize::from(root_port).checked_sub(1)?;
+        if !self.root.get(number)?.enabled {
+            return None;
+        }
+        self.ports.get_mut(number)?.as_mut()?.at(route)
+    }
+
     fn page_of(&self, phys: u64) -> *mut u8 {
         let base = phys & !0xFFF;
         let page = self
@@ -406,6 +430,7 @@ impl Xhc {
             parent_port: (d2 >> 8) as u8,
             addressed: false,
             configures: 0,
+            raw: [d0, d1, d2, self.read32(at + 12)],
         }
     }
 
@@ -415,12 +440,7 @@ impl Xhc {
         // The control endpoint's context follows the slot's.
         let ep0 = input + 64;
         let pointer = u64::from(self.read32(ep0 + 8)) | (u64::from(self.read32(ep0 + 12)) << 32);
-        let found = self
-            .ports
-            .get_mut(usize::from(record.root_port).wrapping_sub(1))
-            .and_then(Option::as_mut)
-            .and_then(|device| device.at(record.route))
-            .is_some();
+        let found = self.device_at(record.root_port, record.route).is_some();
         let entry = &mut self.slots[usize::from(slot) - 1];
         entry.record = record;
         entry.ep0 = pointer & !0xF;
@@ -477,10 +497,7 @@ impl Xhc {
                 trb::STATUS => {
                     let record = self.slots[index].record;
                     let answer = self
-                        .ports
-                        .get_mut(usize::from(record.root_port).wrapping_sub(1))
-                        .and_then(Option::as_mut)
-                        .and_then(|device| device.at(record.route))
+                        .device_at(record.root_port, record.route)
                         .and_then(|device| device.control(setup));
                     let Some(bytes) = answer else {
                         self.transfer(at, trb::STALL, 0, slot);
@@ -617,5 +634,28 @@ impl Hal for Fake {
 
     fn delay(&self, ns: u64) {
         self.clock.set(self.clock.get() + ns);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nothing_is_reached_through_a_port_that_is_not_powered_and_enabled() {
+        let mut hub = Device::hub(vec![Some(Device::keyboard())]);
+        assert!(hub.at(1).is_none(), "an unpowered port");
+        let Kind::Hub(ports) = &mut hub.kind else {
+            unreachable!()
+        };
+        let behind = ports[0].as_mut().unwrap();
+        behind.powered = true;
+        assert!(hub.at(1).is_none(), "a port not reset yet");
+        let Kind::Hub(ports) = &mut hub.kind else {
+            unreachable!()
+        };
+        ports[0].as_mut().unwrap().enabled = true;
+        assert!(hub.at(1).is_some());
+        assert!(hub.at(2).is_none(), "no such port");
     }
 }

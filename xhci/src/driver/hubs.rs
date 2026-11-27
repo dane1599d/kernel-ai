@@ -136,9 +136,11 @@ fn hubs_nest_five_deep_and_no_further() {
     }
     let fake = Fake::new(vec![Some(chain)]);
     let (_controller, reports) = enumerate(&fake);
-    // The keyboard would be behind six hubs: its port is reported, not set up.
+    // The sixth hub would have no nibble left in the route: it is reported, not
+    // set up, and the keyboard behind it is not looked for.
     assert_eq!(reports[0].route, 0x11111);
     assert_eq!(reports[0].outcome, Err(Error::TooMany));
+    assert_eq!(reports.len(), 6);
     assert!(
         reports[1..].iter().all(|r| r.outcome.is_ok()),
         "{reports:?}"
@@ -155,5 +157,76 @@ fn a_device_on_a_root_port_is_set_up_as_before() {
     assert_eq!(controller.listening(), 1);
     let slot = fake.slot(1);
     assert_eq!((slot.route, slot.parent_slot, slot.hub), (0, 0, false));
+    // The slot context as Address Device read it: what `slot` always wrote.
+    assert_eq!(slot.raw[..3], crate::context::slot(speed::FULL, 1, 1)[..3]);
     assert!(fake.commands().contains(&trb::ENABLE_SLOT));
+}
+
+/// Five hubs is the most the route string holds, and a device behind the fifth
+/// is set up.
+#[test]
+fn a_device_behind_exactly_five_hubs_is_set_up() {
+    let mut chain = Device::hub(vec![Some(Device::keyboard())]);
+    for _ in 0..4 {
+        chain = Device::hub(vec![Some(chain)]);
+    }
+    let fake = Fake::new(vec![Some(chain)]);
+    let (controller, reports) = enumerate(&fake);
+    assert!(reports.iter().all(|r| r.outcome.is_ok()), "{reports:?}");
+    assert_eq!((reports[0].port, reports[0].route), (1, 0x11111));
+    assert_eq!(attached(&reports[0]).kinds[0], Some(DeviceKind::Keyboard));
+    assert_eq!(reports.len(), 6);
+    assert_eq!(controller.listening(), 1);
+    assert_eq!(fake.slot(6).route, 0x11111);
+}
+
+/// QEMU's usb-hub has 8 ports by default, and a descriptor of 10 bytes: the
+/// device behind its last port is set up.
+#[test]
+fn a_hub_of_eight_ports_is_set_up_and_its_last_port_is_reached() {
+    let mut ports = vec![None; 8];
+    ports[7] = Some(Device::keyboard());
+    ports[0] = Some(Device::mouse());
+    let fake = Fake::new(vec![Some(Device::hub(ports))]);
+    let (controller, reports) = enumerate(&fake);
+    assert_eq!(routes(&reports), [(1, 1), (1, 8), (1, 0)]);
+    assert_eq!(attached(&reports[0]).kinds[0], Some(DeviceKind::Mouse));
+    assert_eq!(attached(&reports[1]).kinds[0], Some(DeviceKind::Keyboard));
+    assert_eq!(attached(&reports[2]).hub_ports, Some(8));
+    assert_eq!(controller.listening(), 2);
+}
+
+/// A hub whose every port hangs in its reset costs the boot a couple of
+/// seconds, not a minute or two.
+#[test]
+fn a_broken_hub_holds_the_boot_for_a_bounded_time() {
+    let ports = (0..15)
+        .map(|_| {
+            let mut stuck = Device::keyboard();
+            stuck.stuck = true;
+            Some(stuck)
+        })
+        .collect();
+    let fake = Fake::new(vec![Some(Device::hub(ports))]);
+    let (_controller, reports) = enumerate(&fake);
+    assert_eq!(reports.len(), 16);
+    assert!(
+        reports[..15]
+            .iter()
+            .all(|r| r.outcome == Err(Error::Timeout)),
+        "{reports:?}"
+    );
+    assert_eq!(attached(&reports[15]).hub_ports, Some(15));
+    assert!(fake.now() < 3_000_000_000, "{} ns", fake.now());
+}
+
+/// A SuperSpeed port gives a hub that says USB 2 no pass.
+#[test]
+fn a_hub_on_a_super_speed_port_is_left_alone_whatever_its_descriptor_says() {
+    let mut hub = Device::hub(vec![Some(Device::keyboard())]);
+    hub.speed = speed::SUPER;
+    let fake = Fake::new(vec![Some(hub)]);
+    let (_controller, reports) = enumerate(&fake);
+    assert_eq!(reports.len(), 1);
+    assert_eq!(reports[0].outcome, Err(Error::Unsupported));
 }

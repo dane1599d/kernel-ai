@@ -18,8 +18,14 @@ use crate::{Error, PAGE, hid};
 /// a reset (TRSTRCY, 10 ms).
 const SETTLE_NS: u64 = 100_000_000;
 const RESET_RECOVERY_NS: u64 = 10_000_000;
-/// Hubs deep a device may be: the route string has five nibbles (xHCI 8.9).
+/// Hubs deep a device may be: the route string has five nibbles (xHCI 8.9), so
+/// five hubs, and a device behind the fifth.
 pub const MAX_TIERS: u8 = 5;
+/// How long a hub port may take to finish its reset (USB 2.0 TDRST is 50 ms at
+/// most), and how long all the hub ports of one `enumerate` may spend waiting:
+/// a broken hub must not hold the boot.
+const HUB_RESET_TIMEOUT_NS: u64 = 250_000_000;
+const HUB_BUDGET_NS: u64 = 2_000_000_000;
 /// How often a hub port's status is read while it resets.
 const POLL_NS: u64 = 10_000_000;
 /// Report buffers are this long at most; HID reports are shorter.
@@ -65,6 +71,7 @@ impl<H: Hal> Controller<H> {
             }
         }
         self.hal.delay(SETTLE_NS);
+        self.hub_deadline = self.hal.now_ns().saturating_add(HUB_BUDGET_NS);
         for number in 1..=self.caps.max_ports {
             if self.hal.read32(self.caps.portsc(number)) & port::CONNECTED == 0 {
                 continue;
@@ -236,14 +243,20 @@ impl<H: Hal> Controller<H> {
         configuration: u8,
         report: &mut dyn FnMut(PortReport),
     ) -> Result<Attached, Error> {
-        if device.usb >= 0x0300 {
+        if device.usb >= 0x0300 || speed >= speed::SUPER || tier >= MAX_TIERS {
             // A SuperSpeed hub has its own descriptor and depth, and its ports
-            // reset differently.
-            return Err(Error::Unsupported);
+            // reset differently; a sixth hub has no nibble left in the route.
+            return Err(match tier >= MAX_TIERS {
+                true => Error::TooMany,
+                false => Error::Unsupported,
+            });
         }
         let slot = self.devices[index].as_ref().ok_or(Error::TooMany)?.slot;
         self.control(index, descriptor::set_configuration(configuration))?;
-        let bytes = self.read(index, descriptor::get_hub_descriptor(9))?;
+        let bytes = self.read(
+            index,
+            descriptor::get_hub_descriptor(descriptor::HUB_DESCRIPTOR_MAX),
+        )?;
         let hub = descriptor::HubDescriptor::parse(&bytes)?;
         let info = Hub {
             ports: hub.ports,
@@ -275,7 +288,7 @@ impl<H: Hal> Controller<H> {
             }
             let route = path.route | (u32::from(port) << (4 * u32::from(tier)));
             let outcome = match self.reset_hub_port(index, port) {
-                Ok(status) if tier + 1 < MAX_TIERS => {
+                Ok(status) => {
                     let child_speed = status.speed();
                     // A low- or full-speed device behind a high-speed hub talks
                     // through that hub's translator; behind a full-speed hub, the
@@ -292,7 +305,6 @@ impl<H: Hal> Controller<H> {
                     };
                     self.attach(child, child_speed, tier + 1, report)
                 }
-                Ok(_) => Err(Error::TooMany),
                 Err(error) => Err(error),
             };
             report(PortReport {
@@ -317,12 +329,16 @@ impl<H: Hal> Controller<H> {
             descriptor::set_port_feature(port, descriptor::PORT_RESET),
         )?;
         let start = self.hal.now_ns();
+        if start > self.hub_deadline {
+            return Err(Error::Timeout);
+        }
         loop {
             self.hal.delay(POLL_NS);
             if self.port_status(index, port)?.reset_done() {
                 break;
             }
-            if self.hal.now_ns().wrapping_sub(start) > RESET_TIMEOUT_NS {
+            let now = self.hal.now_ns();
+            if now.wrapping_sub(start) > HUB_RESET_TIMEOUT_NS || now > self.hub_deadline {
                 return Err(Error::Timeout);
             }
         }
