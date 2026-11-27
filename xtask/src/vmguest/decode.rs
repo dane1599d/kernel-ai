@@ -45,6 +45,9 @@ pub fn decode(mode: Mode, at: u32, bytes: &[u8]) -> Option<(usize, String)> {
     let mut op = r.u8()?;
     loop {
         match op {
+            // The operand-size prefix flips the mode's default size, once per
+            // instruction: a CPU takes a repeated 0x66 as one, this loop flips
+            // per byte. No instruction of the guest carries two.
             0x66 => {
                 wide = !wide;
                 prefixed = true;
