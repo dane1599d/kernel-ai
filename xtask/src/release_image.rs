@@ -1,4 +1,4 @@
-//! `cargo xtask release-image [--out PATH]` (ADR 0009 D7, ADR 0008 section 8;
+//! `cargo xtask release-image [--image-id SEED] [--out PATH]` (ADR 0009 D7, ADR 0008 section 8;
 //! measured by spike S09-1 with S08-2): the release-profile slot disk a `v*`
 //! tag ships (ESP, `kai-r`, `kai-a`, `kai-b` and an empty `kai-data`,
 //! `image/slots.rs`), with no model
@@ -25,6 +25,12 @@
 //! imports that model (`release_boot.rs`) while no repository is committed.
 //! Each boot module's hash is printed, so `release.yml` can check that the two
 //! builds differ only beneath `pkgrepo/`.
+//!
+//! `--image-id SEED` gives the disk, its partitions and `kai-data`'s volume
+//! GUIDs of their own (ADR 0008 §1), so two installs in one PC do not share
+//! one. Type GUIDs and every slot's bytes stay as they are. Without it the
+//! image takes the fixed id CI and `release.yml` use
+//! (`image::slots::DISK_NAME`), and two runners still print one hash.
 
 use crate::{components, esp, floatguard, image, options, userbuild};
 use image::modules::{Image, TRUST_ANCHOR};
@@ -51,18 +57,19 @@ pub(crate) fn release_seq(root: &std::path::Path) -> Result<u32, String> {
 
 pub fn main(args: &[String]) -> Result<(), String> {
     let root = crate::workspace_root();
-    let (test_root, args) = match args {
-        [flag, rest @ ..] if flag == "--test-root" => (true, rest),
-        _ => (false, args),
-    };
+    let Args {
+        test_root,
+        image_id,
+        out,
+    } = parse(args)?;
     let name = match test_root {
         true => "kernel-ai-test-root.img",
         false => "kernel-ai.img",
     };
-    let out = match args {
-        [] => root.join("target").join(name),
-        [flag, path] if flag == "--out" => PathBuf::from(path),
-        _ => return Err(USAGE.into()),
+    let out = out.unwrap_or_else(|| root.join("target").join(name));
+    let image_id = match &image_id {
+        Some(seed) => image::image_id(seed)?,
+        None => image::slots::DISK_NAME,
     };
     let options = options::parse_args(&["build".into(), "--release".into()])?;
     let kernel = crate::build_kernel(&root, &options)?;
@@ -106,8 +113,9 @@ pub fn main(args: &[String]) -> Result<(), String> {
     });
     esp::make_esp(&esp_dir, &kernel, &modules, &efi, "")?;
     let data_mib = image::slots::RELEASE_DATA_MIB;
-    let bytes = image::slots::build_release(&esp_dir, &out, &record, data_mib)?;
+    let bytes = image::slots::build_release(&esp_dir, &out, &record, data_mib, image_id)?;
     println!("xtask: release_seq {release_seq}");
+    println!("xtask: image id {image_id}");
     println!("xtask: kai-data {data_mib} MiB, partition 5");
     let notices = out.with_file_name(crate::notices::FILE);
     esp::copy(&esp_dir.join(crate::notices::FILE), &notices)?;
@@ -132,7 +140,34 @@ pub fn main(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-const USAGE: &str = "usage: cargo xtask release-image [--test-root] [--out PATH]";
+const USAGE: &str = "usage: cargo xtask release-image [--test-root] [--image-id SEED] [--out PATH]";
+
+/// `release-image`'s options.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Args {
+    test_root: bool,
+    image_id: Option<String>,
+    out: Option<PathBuf>,
+}
+
+/// The options in any order, each at most once.
+fn parse(args: &[String]) -> Result<Args, String> {
+    let mut parsed = Args::default();
+    let mut rest = args.iter();
+    while let Some(flag) = rest.next() {
+        match flag.as_str() {
+            "--test-root" if !parsed.test_root => parsed.test_root = true,
+            "--image-id" if parsed.image_id.is_none() => {
+                parsed.image_id = Some(rest.next().ok_or(USAGE)?.clone());
+            }
+            "--out" if parsed.out.is_none() => {
+                parsed.out = Some(PathBuf::from(rest.next().ok_or(USAGE)?));
+            }
+            _ => return Err(USAGE.into()),
+        }
+    }
+    Ok(parsed)
+}
 
 /// The modules for the image's repository: `signed`, the committed
 /// `release/pkgrepo`, beneath `pkgrepo/` with `packages`' bytes, which it
@@ -278,5 +313,40 @@ mod tests {
         );
         assert_eq!(tested[1].bytes, b"x");
         assert!(repository(None, None, &packages).unwrap().is_empty());
+    }
+
+    #[test]
+    fn its_options_come_in_any_order_once_each() {
+        let args = |words: &[&str]| words.iter().map(|w| w.to_string()).collect::<Vec<_>>();
+        assert_eq!(parse(&[]).unwrap(), Args::default());
+        let all = parse(&args(&[
+            "--out",
+            "x.img",
+            "--image-id",
+            "pc-1",
+            "--test-root",
+        ]))
+        .unwrap();
+        assert_eq!(
+            all,
+            Args {
+                test_root: true,
+                image_id: Some("pc-1".into()),
+                out: Some(PathBuf::from("x.img")),
+            }
+        );
+        for bad in [
+            &["--image-id"][..],
+            &["--image-id", "a", "--image-id", "b"],
+            &["--out"],
+            &["--test-root", "--test-root"],
+            &["extra"],
+        ] {
+            assert!(parse(&args(bad)).is_err(), "{bad:?}");
+        }
+        assert!(image::image_id("pc-1").is_ok());
+        for seed in ["", "a b", "é", &"x".repeat(65)] {
+            assert!(image::image_id(seed).is_err(), "{seed:?}");
+        }
     }
 }
