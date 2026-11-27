@@ -379,3 +379,29 @@ fn every_alignment_with_offsets_on_and_off_it() {
         }
     }
 }
+
+/// The files the range harness must be fed by name: a repeated tensor name and
+/// dims whose size overflows. Other tests make these, but not for the harness;
+/// each is refused with its own error, whole and as every prefix.
+#[test]
+fn the_range_harness_is_fed_duplicate_names_and_overflowing_dims() {
+    let mut twice = Writer::new();
+    twice
+        .tensor("w", &[1], TensorType::F32, &[0; 4])
+        .tensor("w", &[1], TensorType::F32, &[0; 4]);
+    let mut overflow = Writer::new();
+    overflow.tensor("w", &[u64::MAX, u64::MAX], TensorType::F32, &[0; 4]);
+    let mut wide = Writer::new();
+    wide.tensor("w", &[1 << 16; 4], TensorType::F32, &[0; 4]);
+    for (w, error) in [
+        (twice, Error::DuplicateTensor),
+        (overflow, Error::DimsOverflow),
+        (wide, Error::DimsOverflow),
+    ] {
+        let bytes = w.finish();
+        assert_eq!(Header::parse(&bytes).unwrap_err(), error);
+        harness::gguf_file(&bytes);
+        hostile::truncations(&bytes, |_, prefix| harness::gguf_file(prefix));
+        hostile::fuzz(&bytes, 0x1510, 500, harness::gguf_file);
+    }
+}

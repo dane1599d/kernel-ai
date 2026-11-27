@@ -31,6 +31,15 @@ pub fn gguf_file(data: &[u8]) {
     assert_eq!(header.data_offset() % align, 0);
     assert!(header.data_offset() - header.table_end() < align);
     assert!(header.tensors().len() as u64 <= gguf::MAX_TENSORS);
+    // A name that parsed is unique: a duplicate is refused, never kept.
+    let mut names = std::collections::HashSet::new();
+    for info in header.tensors() {
+        assert!(
+            names.insert(info.name),
+            "tensor {} appears twice",
+            info.name
+        );
+    }
 
     let mut inside = true;
     for info in header.tensors() {
