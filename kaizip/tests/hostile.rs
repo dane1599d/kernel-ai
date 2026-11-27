@@ -333,6 +333,40 @@ fn the_zip_bodies_keep_the_ceilings_and_the_root_on_hostile_archives() {
     let large = kit::archive(&[Raw::stored("noise.bin", &noise)]);
     // A deflate bomb past the small limits' ratio and size.
     let bomb = kit::archive(&[Raw::deflated("zeros", &vec![0; 3 << 20])]);
+    // Under their size, past their ratio: refused by the ratio alone.
+    let zeros = vec![0u8; 1 << 20];
+    let ratio = kit::archive(&[Raw::deflated("zeros", &zeros)]);
+    // A bomb that says it is small: it opens, under the ratio's floor, and
+    // is stopped as it is extracted, past the size it said. Its pair says
+    // more than it holds, and is stopped short.
+    let lying = kit::archive(&[
+        Raw {
+            size: 1000,
+            ..Raw::deflated("says-less", &zeros[..200 << 10])
+        },
+        Raw {
+            size: 5000,
+            ..Raw::deflated("says-more", &zeros[..100])
+        },
+    ]);
+    let says_more = kit::archive(&[Raw {
+        size: 5000,
+        ..Raw::deflated("says-more", &zeros[..100])
+    }]);
+    // A central directory said to start past the end of the archive.
+    let mut past_end = raw.clone();
+    let eocd = past_end.len() - 22;
+    assert_eq!(&past_end[eocd..eocd + 4], b"PK\x05\x06");
+    let at = (past_end.len() as u32 + 100).to_le_bytes();
+    past_end[eocd + 16..eocd + 20].copy_from_slice(&at);
+    let opened = |data: &[u8]| Archive::open(Cursor::new(data), zip::LIMITS).map(|_| ());
+    assert!(matches!(opened(&ratio), Err(Error::Ratio { .. })));
+    assert!(matches!(opened(&past_end), Err(Error::NotZip(_))));
+    for liar in [&lying, &says_more] {
+        let mut archive = Archive::open(Cursor::new(&liar[..]), zip::LIMITS).unwrap();
+        let got = archive.extract(&mut Tree::default());
+        assert!(matches!(got, Err(Error::Damaged { .. })), "{got:?}");
+    }
     let escapes = kit::archive(&[
         Raw::stored("../up", b"x"),
         Raw::stored("a/../../up", b"x"),
@@ -342,7 +376,7 @@ fn the_zip_bodies_keep_the_ceilings_and_the_root_on_hostile_archives() {
     for good in [&made, &raw, &large] {
         assert!(zip::zip_open(good).is_some(), "a good archive opens");
     }
-    for refused in [&bomb, &escapes] {
+    for refused in [&bomb, &escapes, &ratio, &past_end] {
         assert!(
             zip::zip_open(refused).is_none(),
             "a hostile archive is refused"
@@ -363,6 +397,9 @@ fn the_zip_bodies_keep_the_ceilings_and_the_root_on_hostile_archives() {
         (0x27_0002, &raw),
         (0x27_0003, &bomb),
         (0x27_0004, &escapes),
+        (0x27_0006, &ratio),
+        (0x27_0007, &lying),
+        (0x27_0008, &past_end),
     ] {
         run(sample);
         hostile::fuzz(sample, seed, cases, &mut run);
