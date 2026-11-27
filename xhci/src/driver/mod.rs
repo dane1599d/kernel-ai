@@ -3,6 +3,10 @@
 //! [`Controller::poll`] turns interrupt-IN completions into [`Input`].
 
 mod enumerate;
+#[cfg(test)]
+mod fake;
+#[cfg(test)]
+mod hubs;
 mod poll;
 #[cfg(test)]
 mod tests;

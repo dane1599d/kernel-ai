@@ -1,10 +1,13 @@
 //! Setting up the devices on the root ports: reset the port, enable a slot,
 //! address the device, read its descriptors, pick its HID interfaces, configure
 //! it and its interrupt endpoints, then queue the first report transfer on each.
+//! A hub (USB 2.0 chapter 11) is set up the same way, then each of its ports is
+//! powered and reset with hub class requests, and what is behind it is set up in
+//! turn, down to [`MAX_TIERS`] hubs deep.
 
 use super::{Controller, Decode, Device, DeviceKind, Endpoint, RESET_TIMEOUT_NS, Recovery};
-use crate::context::{self, Endpoint as EndpointContext};
-use crate::descriptor::{self, Configuration, HidInterface, MAX_HID};
+use crate::context::{self, Endpoint as EndpointContext, Hub, Path};
+use crate::descriptor::{self, Configuration, HidInterface, MAX_HID, PortStatus};
 use crate::hal::{Dma, Hal};
 use crate::regs::{port, speed};
 use crate::ring::{self, Producer};
@@ -15,6 +18,10 @@ use crate::{Error, PAGE, hid};
 /// a reset (TRSTRCY, 10 ms).
 const SETTLE_NS: u64 = 100_000_000;
 const RESET_RECOVERY_NS: u64 = 10_000_000;
+/// Hubs deep a device may be: the route string has five nibbles (xHCI 8.9).
+pub const MAX_TIERS: u8 = 5;
+/// How often a hub port's status is read while it resets.
+const POLL_NS: u64 = 10_000_000;
 /// Report buffers are this long at most; HID reports are shorter.
 const REPORT_BYTES: u16 = 64;
 /// The longest descriptor read: HID devices' configurations and report
@@ -29,12 +36,18 @@ pub struct Attached {
     pub product: u16,
     /// What each kept HID interface is.
     pub kinds: [Option<DeviceKind>; MAX_HID],
+    /// For a hub, its number of ports.
+    pub hub_ports: Option<u8>,
 }
 
 /// What happened on one connected root port.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PortReport {
+    /// The root port: for a device behind hubs, the one its hubs hang from.
     pub port: u8,
+    /// The route string: the port on each hub on the way, the first hub's in the
+    /// lowest nibble. 0 for a device on the root port itself.
+    pub route: u32,
     pub outcome: Result<Attached, Error>,
 }
 
@@ -56,9 +69,17 @@ impl<H: Hal> Controller<H> {
             if self.hal.read32(self.caps.portsc(number)) & port::CONNECTED == 0 {
                 continue;
             }
-            let outcome = self.attach(number);
+            let path = Path {
+                root_port: number,
+                ..Path::default()
+            };
+            let outcome = match self.reset_port(number) {
+                Ok(speed) => self.attach(path, speed, 0, &mut report),
+                Err(error) => Err(error),
+            };
             report(PortReport {
                 port: number,
+                route: 0,
                 outcome,
             });
         }
@@ -93,8 +114,16 @@ impl<H: Hal> Controller<H> {
         self.hal.dma(1, !self.caps.addr64).ok_or(Error::NoMemory)
     }
 
-    fn attach(&mut self, number: u8) -> Result<Attached, Error> {
-        let speed = self.reset_port(number)?;
+    /// Sets up the device at `path`, whose port is reset and at `speed`; `tier`
+    /// is the number of hubs above it. What is behind it, if it is a hub, is
+    /// reported through `report` before this returns.
+    fn attach(
+        &mut self,
+        path: Path,
+        speed: u8,
+        tier: u8,
+        report: &mut dyn FnMut(PortReport),
+    ) -> Result<Attached, Error> {
         let index = self
             .devices
             .iter()
@@ -123,7 +152,8 @@ impl<H: Hal> Controller<H> {
             1,
             &[(1, EndpointContext::control(packet, 0))],
             speed,
-            number,
+            &path,
+            None,
         );
         let input = self.input_phys(index);
         self.command(Trb::address_device(input, slot))?;
@@ -136,7 +166,8 @@ impl<H: Hal> Controller<H> {
                 1,
                 &[(1, EndpointContext::control(packet0, 0))],
                 speed,
-                number,
+                &path,
+                None,
             );
             self.command(Trb::evaluate_context(input, slot))?;
         }
@@ -158,6 +189,9 @@ impl<H: Hal> Controller<H> {
             index,
             descriptor::get_descriptor(descriptor::CONFIGURATION, 0, total),
         )?)?;
+        if device.class == descriptor::CLASS_HUB {
+            return self.attach_hub(index, speed, path, tier, &device, config.value, report);
+        }
         let mut chosen = [None; MAX_HID];
         for (at, interface) in config.interfaces().enumerate() {
             chosen[at] = self
@@ -177,13 +211,130 @@ impl<H: Hal> Controller<H> {
             }
             kinds[at] = Some(kind_of(decode));
         }
-        self.configure_endpoints(index, speed, number, &chosen)?;
+        self.configure_endpoints(index, speed, &path, &chosen)?;
         Ok(Attached {
             speed,
             vendor: device.vendor,
             product: device.product,
             kinds,
+            hub_ports: None,
         })
+    }
+
+    /// Sets up a hub and what is behind it. The hub is configured, told it is a
+    /// hub in its slot context, and each of its ports is powered; a port with
+    /// something connected is reset, and the device on it is set up like any
+    /// other, below this hub.
+    #[allow(clippy::too_many_arguments)]
+    fn attach_hub(
+        &mut self,
+        index: usize,
+        speed: u8,
+        path: Path,
+        tier: u8,
+        device: &descriptor::Device,
+        configuration: u8,
+        report: &mut dyn FnMut(PortReport),
+    ) -> Result<Attached, Error> {
+        if device.usb >= 0x0300 {
+            // A SuperSpeed hub has its own descriptor and depth, and its ports
+            // reset differently.
+            return Err(Error::Unsupported);
+        }
+        let slot = self.devices[index].as_ref().ok_or(Error::TooMany)?.slot;
+        self.control(index, descriptor::set_configuration(configuration))?;
+        let bytes = self.read(index, descriptor::get_hub_descriptor(9))?;
+        let hub = descriptor::HubDescriptor::parse(&bytes)?;
+        let info = Hub {
+            ports: hub.ports,
+            think_time: hub.think_time,
+        };
+        self.write_input(index, 1, 1, &[], speed, &path, Some(info));
+        let input = self.input_phys(index);
+        self.command(Trb::configure_endpoint(input, slot))?;
+        let attached = Attached {
+            speed,
+            vendor: device.vendor,
+            product: device.product,
+            kinds: [None; MAX_HID],
+            hub_ports: Some(hub.ports),
+        };
+        let ports = hub.ports.min(descriptor::MAX_HUB_PORTS);
+        for port in 1..=ports {
+            self.control(
+                index,
+                descriptor::set_port_feature(port, descriptor::PORT_POWER),
+            )?;
+        }
+        self.hal.delay(u64::from(hub.power_good_ms) * 1_000_000);
+        self.hal.delay(SETTLE_NS);
+        for port in 1..=ports {
+            let status = self.port_status(index, port)?;
+            if !status.connected() {
+                continue;
+            }
+            let route = path.route | (u32::from(port) << (4 * u32::from(tier)));
+            let outcome = match self.reset_hub_port(index, port) {
+                Ok(status) if tier + 1 < MAX_TIERS => {
+                    let child_speed = status.speed();
+                    // A low- or full-speed device behind a high-speed hub talks
+                    // through that hub's translator; behind a full-speed hub, the
+                    // translator its hub already uses.
+                    let translator = match child_speed {
+                        speed::LOW | speed::FULL if speed == speed::HIGH => Some((slot, port)),
+                        speed::LOW | speed::FULL => path.translator,
+                        _ => None,
+                    };
+                    let child = Path {
+                        root_port: path.root_port,
+                        route,
+                        translator,
+                    };
+                    self.attach(child, child_speed, tier + 1, report)
+                }
+                Ok(_) => Err(Error::TooMany),
+                Err(error) => Err(error),
+            };
+            report(PortReport {
+                port: path.root_port,
+                route,
+                outcome,
+            });
+        }
+        Ok(attached)
+    }
+
+    fn port_status(&mut self, index: usize, port: u8) -> Result<PortStatus, Error> {
+        let bytes = self.read(index, descriptor::get_port_status(port))?;
+        PortStatus::parse(&bytes)
+    }
+
+    /// Resets hub port `port` and returns its status once the reset is done and
+    /// the port enabled.
+    fn reset_hub_port(&mut self, index: usize, port: u8) -> Result<PortStatus, Error> {
+        self.control(
+            index,
+            descriptor::set_port_feature(port, descriptor::PORT_RESET),
+        )?;
+        let start = self.hal.now_ns();
+        loop {
+            self.hal.delay(POLL_NS);
+            if self.port_status(index, port)?.reset_done() {
+                break;
+            }
+            if self.hal.now_ns().wrapping_sub(start) > RESET_TIMEOUT_NS {
+                return Err(Error::Timeout);
+            }
+        }
+        for feature in [descriptor::C_PORT_RESET, descriptor::C_PORT_CONNECTION] {
+            self.control(index, descriptor::clear_port_feature(port, feature))?;
+        }
+        self.hal.delay(RESET_RECOVERY_NS);
+        let status = self.port_status(index, port)?;
+        match status.connected() && status.enabled() {
+            true => Ok(status),
+            false => Err(Error::Timeout),
+        }
     }
 
     /// Runs a reading control transfer and returns what came, up to
@@ -237,6 +388,7 @@ impl<H: Hal> Controller<H> {
     /// Fills device `index`'s input context: the add flags, the slot context
     /// (its last context `last`) and each (dci, endpoint). A control endpoint
     /// given ring 0 gets the device's EP0 ring.
+    #[allow(clippy::too_many_arguments)]
     fn write_input(
         &mut self,
         index: usize,
@@ -244,7 +396,8 @@ impl<H: Hal> Controller<H> {
         last: u8,
         endpoints: &[(u8, EndpointContext)],
         speed: u8,
-        port: u8,
+        path: &Path,
+        hub: Option<Hub>,
     ) {
         let bytes = self.caps.context_bytes;
         let Some(device) = self.devices[index].as_mut() else {
@@ -254,7 +407,7 @@ impl<H: Hal> Controller<H> {
         device.input.write_dwords(0, &context::input_control(add));
         device.input.write_dwords(
             context::input_offset(0, bytes),
-            &context::slot(speed, port, last),
+            &context::slot_at(speed, path, last, hub),
         );
         for (dci, endpoint) in endpoints {
             let mut endpoint = *endpoint;
@@ -273,7 +426,7 @@ impl<H: Hal> Controller<H> {
         &mut self,
         index: usize,
         speed: u8,
-        port: u8,
+        path: &Path,
         chosen: &[Option<(HidInterface, Decode)>; MAX_HID],
     ) -> Result<(), Error> {
         let slot = self.devices[index].as_ref().ok_or(Error::TooMany)?.slot;
@@ -312,7 +465,7 @@ impl<H: Hal> Controller<H> {
         if wanted == 0 {
             return Ok(());
         }
-        self.write_input(index, add, last, &contexts[..wanted], speed, port);
+        self.write_input(index, add, last, &contexts[..wanted], speed, path, None);
         let input = self.input_phys(index);
         self.command(Trb::configure_endpoint(input, slot))?;
         // Only endpoints the controller now knows are kept, and so armed.
