@@ -7,8 +7,10 @@
 /// One colour channel in a pixel: how many bits it has and where they start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Channel {
-    pub size: u8,
-    pub shift: u8,
+    // Private: `Format::from_masks` keeps `size` within 1..=16 and `size + shift`
+    // within 32, which `pack` and `mask` rely on to never overflow a shift.
+    size: u8,
+    shift: u8,
 }
 
 impl Channel {
@@ -32,9 +34,9 @@ impl Channel {
 /// A 32-bit pixel format: where red, green and blue go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Format {
-    pub red: Channel,
-    pub green: Channel,
-    pub blue: Channel,
+    red: Channel,
+    green: Channel,
+    blue: Channel,
 }
 
 impl Format {

@@ -57,6 +57,12 @@ struct Display {
     /// The screen's size in mm from its EDID, (0, 0) when unknown (GOP gives
     /// none, and virtio-gpu's is made up).
     size_mm: (u32, u32),
+    /// A GOP framebuffer whose pixels are not `0x00RRGGBB` (RGBX, 10 bits a
+    /// channel) cannot be drawn in by its clients: they get this back buffer in
+    /// `0x00RRGGBB` instead, and [`present`] packs what they flush into the
+    /// framebuffer. Made on the first claim, since GOP is set up before there is
+    /// a heap; the console draws on the framebuffer itself, packing as it goes.
+    shadow: Option<Surface>,
 }
 
 // SAFETY: the device state is used only under the DISPLAY mutex, by one CPU at a
@@ -91,10 +97,16 @@ pub fn edid_of(fb: &Framebuffer) -> &[u8] {
     // SAFETY: `Framebuffer` is `repr(C)`, 64 bytes long (checked above), and
     // its `edid_size` and `edid` are the 7th and 8th words, as Limine fills them.
     let (size, edid) = unsafe { (words.add(SIZE_AT).read(), words.add(SIZE_AT + 1).read()) };
+    // An EDID is 128 bytes a block, at most 256 blocks: a longer one is not
+    // read past that, whatever the size field says.
+    const MAX: u64 = 256 * 128;
     match (size, edid) {
         (0, _) | (_, 0) => &[],
-        // SAFETY: Limine's EDID is `size` bytes at `edid`, kept for the kernel's life.
-        (size, edid) => unsafe { core::slice::from_raw_parts(edid as *const u8, size as usize) },
+        // SAFETY: Limine's EDID is `size` bytes at `edid`, kept for the kernel's
+        // life; the first `MAX` of them are no more than that.
+        (size, edid) => unsafe {
+            core::slice::from_raw_parts(edid as *const u8, size.min(MAX) as usize)
+        },
     }
 }
 
@@ -115,6 +127,7 @@ pub fn init_gop(fb: &Framebuffer) -> Option<Surface> {
         surface,
         backend: Backend::Gop,
         size_mm: (0, 0),
+        shadow: None,
     });
     Some(surface)
 }
@@ -165,6 +178,7 @@ pub fn init_gpu(
         surface,
         backend: Backend::Gpu(Box::new(gpu)),
         size_mm: (0, 0),
+        shadow: None,
     });
     Ok(surface)
 }
@@ -178,9 +192,88 @@ pub fn size_mm() -> (u32, u32) {
         .map_or((0, 0), |display| display.size_mm)
 }
 
-/// The display's back buffer, if there is a display.
+/// The back buffer clients draw in, if there is a display: always `0x00RRGGBB`.
+/// On a GOP framebuffer of another format that is a shadow of it, made here the
+/// first time ([`present`] packs it onto the screen); None if there are no
+/// frames for it.
 pub fn surface() -> Option<Surface> {
-    DISPLAY.lock().as_ref().map(|display| display.surface)
+    let mut guard = DISPLAY.lock();
+    let display = guard.as_mut()?;
+    if display.surface.format.is_native() {
+        return Some(display.surface);
+    }
+    if display.shadow.is_none() {
+        display.shadow = make_shadow(display.surface);
+    }
+    display.shadow
+}
+
+/// A zeroed `0x00RRGGBB` back buffer the size of `screen`, in contiguous frames
+/// in the direct map (kept for the kernel's life).
+fn make_shadow(screen: Surface) -> Option<Surface> {
+    use crate::virtio::hal::KernelHal;
+    use virtio_drivers::{BufferDirection, Hal, PAGE_SIZE};
+    let pages = (screen.width * screen.height * 4).div_ceil(PAGE_SIZE);
+    let (phys, virt) = KernelHal::dma_alloc(pages, BufferDirection::Both);
+    if phys == 0 {
+        log!("display: no frames for a 0x00RRGGBB back buffer over a non-BGRX GOP");
+        return None;
+    }
+    log!(
+        "display: GOP pixels are packed by its masks; clients draw in a {}x{} back buffer",
+        screen.width,
+        screen.height
+    );
+    Some(Surface {
+        base: virt.cast::<u32>(),
+        width: screen.width,
+        height: screen.height,
+        stride: screen.width,
+        format: Format::NATIVE,
+    })
+}
+
+/// [`flush`] for a client's rectangle of [`surface`]: where that is a shadow of
+/// a GOP framebuffer, packs the rectangle onto it. Elsewhere it is `flush`.
+pub fn present(rect: Rect) -> Result<(), &'static str> {
+    {
+        let guard = DISPLAY.lock();
+        if let Some(Display {
+            surface: screen,
+            shadow: Some(shadow),
+            ..
+        }) = guard.as_ref()
+        {
+            let rect = rect.clamp(screen.width as u32, screen.height as u32);
+            pack_rows(*shadow, *screen, rect);
+            return Ok(());
+        }
+    }
+    flush(rect)
+}
+
+/// Copies `rect` of `from` (`0x00RRGGBB`) to `to`, packed in `to`'s format. The
+/// loops walk raw pointers: unoptimised iterators cost a call a pixel.
+fn pack_rows(from: Surface, to: Surface, rect: Rect) {
+    let format = to.format;
+    for y in rect.y as usize..(rect.y + rect.height) as usize {
+        let mut src = from
+            .base
+            .as_ptr()
+            .wrapping_add(y * from.stride + rect.x as usize);
+        let mut dst = to
+            .base
+            .as_ptr()
+            .wrapping_add(y * to.stride + rect.x as usize);
+        let end = src.wrapping_add(rect.width as usize);
+        while src < end {
+            // SAFETY: `rect` is clamped to both surfaces, which are as large as
+            // the screen and mapped; the framebuffer is device memory, written
+            // volatile.
+            unsafe { dst.write_volatile(format.pack(src.read())) };
+            (src, dst) = (src.wrapping_add(1), dst.wrapping_add(1));
+        }
+    }
 }
 
 pub fn kind() -> Option<Kind> {
