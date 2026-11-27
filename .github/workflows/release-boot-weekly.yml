@@ -1,0 +1,171 @@
+# `release-boot` on main, weekly (P6 G52, v0.1): the release pipeline's image
+# build and its boot, run every week on main so a break in the release path
+# shows within days, not on the day of a release candidate. It is release.yml's
+# `build` and `release-boot` jobs: build the release image, then boot it in QEMU
+# under KVM with qwen3-0.6b attached as the import disk, type `models import`
+# and pass on the import line (`cargo xtask release-boot`). With no signed
+# repository committed it builds the same image with `--test-root`, whose
+# `pkgrepo/` a throwaway root signs, and checks the two images' boot modules and
+# parts agree beneath it. The boot covers the first-start recovery install and
+# the restart as `release-boot` does.
+#
+# No real key (a test root, never a founder's) and no real model beyond the one
+# release-boot already imports: nothing here runs an LLM, so it does not queue
+# behind the actbench and fluency runs. Only read access to the repository; no
+# write token, no secret. Every action is pinned by commit SHA, as release.yml's.
+# Started by schedule (Mondays) or by hand.
+name: Release boot, weekly
+
+on:
+  schedule:
+    - cron: "17 4 * * 1"
+  pull_request:
+    paths:
+      - .github/workflows/release-boot-weekly.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # ci.yml's and release.yml's QEMU: bump with them.
+  QEMU_VERSION: "11.0.5"
+  QEMU_SHA256: 38a1a09f349660cb0e20b8fe5f224d6a53ec4235eb36f2e33a31e21bb6138147
+  VERSION: v0.1.0-rc.0
+
+defaults:
+  run:
+    shell: bash
+
+# One at a time; a newer push to the pull request cancels its older run, a
+# schedule or a dispatch is never cancelled.
+concurrency:
+  group: release-boot-weekly-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Build the release image
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Outputs go outside the checkout: an untracked file would mark the build
+      # -dirty and change the image.
+      - run: mkdir -p "$RUNNER_TEMP/out" && echo "OUT=$RUNNER_TEMP/out" >> "$GITHUB_ENV"
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo xtask release-image --out "$OUT/kernel-ai.img" | tee "$OUT/build.log"
+      - run: zstd -19 --single-thread -q --rm "$OUT/kernel-ai.img" -o "$OUT/kernel-ai.img.zst"
+      - name: The build left the tree clean
+        run: test -z "$(git status --porcelain)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: build-a
+          path: |
+            ${{ env.OUT }}/kernel-ai.img.zst
+            ${{ env.OUT }}/build.log
+
+  release-boot:
+    name: The release boots and imports qwen3-0.6b under its models role
+    needs: build
+    runs-on: ubuntu-24.04
+    # 90, and up to 20 more for a QEMU build (a cache miss).
+    timeout-minutes: 110
+    env:
+      MODEL_ID: qwen3-0.6b
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # QEMU as release.yml's `release-boot`: restored, or built here on a miss.
+      - id: qemu
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/qemu
+          key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
+      - name: Build QEMU ${{ env.QEMU_VERSION }} (the cache missed)
+        if: steps.qemu.outputs.cache-hit != 'true'
+        run: bash .github/actions/qemu/build.sh
+      - name: OVMF, QEMU's runtime libraries, and KVM for the runner user
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ovmf libpixman-1-0 libslirp0 libglib2.0-0t64 libfdt1
+          echo "$HOME/qemu/bin" >> "$GITHUB_PATH"
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: The QEMU is ${{ env.QEMU_VERSION }}
+        run: |
+          version=$("$HOME/qemu/bin/qemu-system-x86_64" --version | head -1)
+          echo "$version"
+          case "$version" in
+            "QEMU emulator version $QEMU_VERSION" | "QEMU emulator version $QEMU_VERSION "*) ;;
+            *) echo "~/qemu holds '$version', not QEMU $QEMU_VERSION"; exit 1 ;;
+          esac
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: rustup target add wasm32-unknown-unknown
+      - name: Read the pinned file from the catalog
+        id: pin
+        run: |
+          jq -e --arg id "$MODEL_ID" '.models[] | select(.id == $id)' xtask/models.json > "$RUNNER_TEMP/entry.json"
+          {
+            echo "file=$(jq -r .file "$RUNNER_TEMP/entry.json")"
+            echo "sha256=$(jq -r .sha256 "$RUNNER_TEMP/entry.json")"
+            echo "url=https://huggingface.co/$(jq -r .repo "$RUNNER_TEMP/entry.json")/resolve/$(jq -r .revision "$RUNNER_TEMP/entry.json")/$(jq -r .file "$RUNNER_TEMP/entry.json")"
+          } >> "$GITHUB_OUTPUT"
+      # Restored anywhere, saved from main only, as release.yml's.
+      - name: Reuse the model file from an earlier run
+        id: model-cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/kai-models
+          key: model-${{ steps.pin.outputs.sha256 }}
+      - name: Download the model and check its SHA-256
+        env:
+          FILE: ${{ steps.pin.outputs.file }}
+          SHA256: ${{ steps.pin.outputs.sha256 }}
+          URL: ${{ steps.pin.outputs.url }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/kai-models"
+          if [ ! -f "$RUNNER_TEMP/kai-models/$FILE" ]; then
+            curl -fL --retry 3 --max-time 1800 -o "$RUNNER_TEMP/kai-models/$FILE" "$URL"
+          fi
+          echo "$SHA256  $RUNNER_TEMP/kai-models/$FILE" | sha256sum -c -
+      - name: Keep the model for later runs, saved from main only
+        if: github.ref == 'refs/heads/main' && steps.model-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ runner.temp }}/kai-models
+          key: model-${{ steps.pin.outputs.sha256 }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: build-a
+          # Outside the checkout, as every output here: an untracked file marks
+          # the build -dirty, which the slot record, the kernel and NOTICES carry.
+          path: ${{ runner.temp }}/build-a
+      - name: Boot the release itself once its signed repository is committed
+        id: image
+        run: |
+          if [ -f release/pkgrepo/metadata/1.root.json ]; then
+            zstd -dq "$RUNNER_TEMP/build-a/kernel-ai.img.zst" -o "$RUNNER_TEMP/boot.img"
+            echo "boots the release image and its founder-signed models role" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "test_root=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "test_root=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: With none, the test-root build, which differs from build-a's only beneath pkgrepo/
+        if: steps.image.outputs.test_root == 'true'
+        run: |
+          test -z "$(git status --porcelain)"
+          cargo xtask release-image --test-root --out "$RUNNER_TEMP/boot.img" | tee "$RUNNER_TEMP/test-root.log"
+          same() { grep -E '^xtask: (module|part) ' "$1" | grep -v -E '^xtask: (module pkgrepo/|part boot/kai.bundle )'; }
+          same "$RUNNER_TEMP/build-a/build.log" > "$RUNNER_TEMP/release.parts"
+          same "$RUNNER_TEMP/test-root.log" > "$RUNNER_TEMP/test-root.parts"
+          test -s "$RUNNER_TEMP/release.parts"
+          diff "$RUNNER_TEMP/release.parts" "$RUNNER_TEMP/test-root.parts"
+          grep -E '^xtask: module pkgrepo/' "$RUNNER_TEMP/test-root.log"
+      - name: Boot it with qwen3-0.6b as the import disk; models import, allowed
+        env:
+          FILE: ${{ steps.pin.outputs.file }}
+        run: |
+          cargo xtask release-boot --image "$RUNNER_TEMP/boot.img" \
+            --model "$RUNNER_TEMP/kai-models/$FILE" --accel kvm --timeout 1200
