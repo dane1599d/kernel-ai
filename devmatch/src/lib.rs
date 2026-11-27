@@ -63,6 +63,8 @@ pub const TABLE: &[Row] = &[
         input: true,
         ..kernel(Key::Class(0x0c, 0x03, 0x30), "xhci")
     },
+    // QEMU's watchdog (ADR 0008 §5), `kernel/src/watchdog.rs`.
+    kernel(Key::Id(0x8086, 0x25ab), "i6300esb"),
 ];
 
 /// The identity of a function, as the match sees it.

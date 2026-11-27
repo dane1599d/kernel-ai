@@ -99,6 +99,11 @@ pub fn args(
         "stdio",
         "-device",
         "isa-debug-exit,iobase=0xf4,iosize=0x04",
+        // The hardware watchdog (ADR 0008 §5): the kernel arms it only on a
+        // trial slot's boot, and its reset is QEMU's default action. At slot
+        // 0x1e, which q35 leaves free, so no other device's address moves.
+        "-device",
+        "i6300esb,addr=0x1e",
         "-netdev",
         USER_NET,
         "-device",
@@ -265,16 +270,29 @@ const RESET_WAIT: Duration = Duration::from_secs(10);
 
 /// A reset case that ends QEMU with status 0 passes only on `guest-reset`:
 /// under `-no-reboot` a power-off ends it with status 0 as well (bug hunt 5
-/// H5-4).
-fn reset_verdict(reason: Option<&str>) -> Result<(), String> {
-    match reason {
-        Some(shutdown::GUEST_RESET) => Ok(()),
-        Some(other) => Err(format!(
-            "FAIL: QEMU stopped the guest for {other}, not a reset"
-        )),
-        None => Err(String::from(
+/// H5-4). And only on the reset it names: the hardware watchdog's for a
+/// `watchdog` case, never the watchdog's for any other, so a boot that hung
+/// where it should have reset does not pass on the watchdog's reset.
+fn reset_verdict(got: Option<&shutdown::Shutdown>, watchdog: bool) -> Result<(), String> {
+    let Some(got) = got else {
+        return Err(String::from(
             "FAIL: QEMU exited with status 0, but QMP reported no reset",
+        ));
+    };
+    if got.reason != shutdown::GUEST_RESET {
+        return Err(format!(
+            "FAIL: QEMU stopped the guest for {}, not a reset",
+            got.reason
+        ));
+    }
+    match (got.watchdog, watchdog) {
+        (true, false) => Err(String::from(
+            "FAIL: the hardware watchdog reset the guest, not the guest itself",
         )),
+        (false, true) => Err(String::from(
+            "FAIL: the guest reset itself; the hardware watchdog never fired",
+        )),
+        _ => Ok(()),
     }
 }
 
@@ -441,7 +459,7 @@ pub fn run_test(
             // A power-off case: the guest must have turned the machine off,
             // not reset it (both pause QEMU under -no-shutdown).
             if let Some(events) = shutdown.as_ref().filter(|_| powers_off) {
-                shutdown_reason = events.recv_timeout(POWER_OFF_WAIT).ok();
+                shutdown_reason = events.recv_timeout(POWER_OFF_WAIT).ok().map(|s| s.reason);
             }
             // Every expected line is in: nothing more is waited for.
             let _ = child.kill();
@@ -504,7 +522,8 @@ pub fn run_test(
     // Status 0 under -no-reboot is a reset or a power-off: only QMP's reason
     // tells them apart. QEMU sent the event before it exited.
     if let Some(events) = shutdown.as_ref().filter(|_| reset) {
-        reset_verdict(events.recv_timeout(RESET_WAIT).ok().as_deref())?;
+        let got = events.recv_timeout(RESET_WAIT).ok();
+        reset_verdict(got.as_ref(), run.case.watchdog)?;
     }
     if stopped {
         println!("xtask: every expected line seen; QEMU stopped");
@@ -548,11 +567,36 @@ mod tests {
     /// is no event at all.
     #[test]
     fn a_reset_passes_only_on_a_guest_reset() {
-        assert_eq!(reset_verdict(Some("guest-reset")), Ok(()));
-        let off = reset_verdict(Some("guest-shutdown")).unwrap_err();
+        let got = |reason: &str, watchdog| super::shutdown::Shutdown {
+            reason: reason.into(),
+            watchdog,
+        };
+        assert_eq!(
+            reset_verdict(Some(&got("guest-reset", false)), false),
+            Ok(())
+        );
+        let off = reset_verdict(Some(&got("guest-shutdown", false)), false).unwrap_err();
         assert!(off.contains("for guest-shutdown, not a reset"), "{off}");
-        let none = reset_verdict(None).unwrap_err();
+        let none = reset_verdict(None, false).unwrap_err();
         assert!(none.contains("QMP reported no reset"), "{none}");
+    }
+
+    /// A `watchdog` case passes only on the watchdog's reset, and any other
+    /// reset case fails on it.
+    #[test]
+    fn a_reset_passes_only_from_what_the_case_names() {
+        let got = |watchdog| super::shutdown::Shutdown {
+            reason: "guest-reset".into(),
+            watchdog,
+        };
+        assert_eq!(reset_verdict(Some(&got(true)), true), Ok(()));
+        let own = reset_verdict(Some(&got(false)), true).unwrap_err();
+        assert!(own.contains("the hardware watchdog never fired"), "{own}");
+        let barked = reset_verdict(Some(&got(true)), false).unwrap_err();
+        assert!(
+            barked.contains("the hardware watchdog reset the guest"),
+            "{barked}"
+        );
     }
 
     /// A power-off or reset case gets a QMP socket for its verdict, and may not

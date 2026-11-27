@@ -1,7 +1,8 @@
 //! PCIe configuration access through the ECAM windows from the MCFG table, the
 //! walk over every bus behind each window (the `pci` crate), and the binding of
 //! each function to its driver from `devmatch`'s table: the virtio network card,
-//! block devices and GPU, the NVMe controllers and the xHCI (USB 3) controllers.
+//! block devices and GPU, the NVMe controllers, the xHCI (USB 3) controllers
+//! and the i6300esb watchdog.
 
 use super::hal::{DEVICE, KernelHal};
 use super::split::{self, SplitTransport};
@@ -215,6 +216,24 @@ fn bind(
     at: DeviceFunction,
     ids: Ids,
 ) -> Option<Outcome> {
+    if driver == "i6300esb" {
+        let config = access.address(at.bus, at.device, at.function, 0);
+        let bound = memory_bar0(root, at).and_then(|(bar, bar_len)| {
+            let config = config.ok_or("its configuration space is not mapped")?;
+            crate::watchdog::bind(config, bar, bar_len)?;
+            Ok(bar)
+        });
+        return Some(match bound {
+            Ok(bar) => {
+                log!("pci: {driver} at {at}, BAR0 {bar:#x}: the watchdog, stopped");
+                Outcome::Running(None)
+            }
+            Err(message) => {
+                log!("pci: {driver} at {at}: {message}");
+                Outcome::Failed(error::BAR)
+            }
+        });
+    }
     if matches!(driver, "nvme" | "xhci") {
         return match memory_bar0(root, at) {
             Ok((bar, bar_len)) => {
