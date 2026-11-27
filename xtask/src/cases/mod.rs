@@ -21,6 +21,7 @@ mod online;
 mod panestates;
 mod pkg;
 pub mod release;
+mod rotate;
 mod storage;
 mod throughput;
 mod tour;
@@ -204,6 +205,26 @@ pub struct Https {
 pub struct UpdateDisk {
     /// One byte of the image is flipped after it was signed.
     pub tampered: bool,
+    /// The test root that signs its metadata.
+    pub signer: crate::image::update_disk::Signer,
+}
+
+impl UpdateDisk {
+    /// Signed by the run's test root, v1, which every slot trusts.
+    pub const ROOT1: Self = Self {
+        tampered: false,
+        signer: crate::image::update_disk::Signer::Root1,
+    };
+    /// [`Self::ROOT1`] with one byte of the image flipped after signing.
+    pub const TAMPERED: Self = Self {
+        tampered: true,
+        ..Self::ROOT1
+    };
+    /// Signed under the rotated root, v2, with the rotation `2.root.json`.
+    pub const ROOT2: Self = Self {
+        signer: crate::image::update_disk::Signer::Root2,
+        ..Self::ROOT1
+    };
 }
 
 /// Lines no case expects, from the founder's second walkthrough: a package
@@ -381,6 +402,7 @@ const LANES: &[&[TestCase]] = &[
     https::CASES,
     storage::CASES,
     updates::CASES,
+    rotate::CASES,
     pkg::CASES,
     netrows::CASES,
     online::CASES,
@@ -451,6 +473,7 @@ mod tests {
             https::CASES,
             storage::CASES,
             updates::CASES,
+            rotate::CASES,
             pkg::CASES,
             netrows::CASES,
             online::CASES,

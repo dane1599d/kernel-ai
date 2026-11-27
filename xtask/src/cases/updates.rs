@@ -12,14 +12,14 @@ use crate::disk::Fixture;
 
 /// A `kai-data` disk for `fs`, so `updated` has `/system/trust` and
 /// `/system/updates`; one per chained case, kept across its boots.
-const DATA: Data = Data {
+pub(super) const DATA: Data = Data {
     nvme: false,
     log: None,
     gpt: true,
 };
 
 /// A slot boot: ends in a reset, which QEMU reports as status 0 under `-no-reboot`.
-const fn boot(
+pub(super) const fn boot(
     name: &'static str,
     cmdline: &'static str,
     expect: &'static [&'static str],
@@ -235,7 +235,7 @@ const WD_COMMITS: TestCase = TestCase {
 };
 
 /// The first boot of a fresh slot disk: R installs and arms A.
-const INSTALL: &[&str] = &[
+pub(super) const INSTALL: &[&str] = &[
     "slots: booted recovery (record missing)",
     "slots: in R with no record: installed release 1 in kai-a and kai-b as trials",
     "slots: R arms kai-a (trial)",
@@ -310,7 +310,7 @@ const B_AGAIN: TestCase = TestCase {
 const B_FROM_DISK: TestCase = TestCase {
     then: Some(&B_AGAIN),
     data: Some(DATA),
-    update: Some(UpdateDisk { tampered: false }),
+    update: Some(UpdateDisk::ROOT1),
     ..boot(
         "update-disk (3: kai-b boots release 2)",
         "test=update updated=update panic=reset",
@@ -328,7 +328,7 @@ const B_FROM_DISK: TestCase = TestCase {
 const A_FROM_DISK: TestCase = TestCase {
     then: Some(&B_FROM_DISK),
     data: Some(DATA),
-    update: Some(UpdateDisk { tampered: false }),
+    update: Some(UpdateDisk::ROOT1),
     ..boot(
         "update-disk (2: updated writes kai-b from the disk)",
         "test=update updated=update panic=reset",
@@ -355,7 +355,7 @@ const A_AFTER_REFUSAL: TestCase = boot(
 /// `update-tampered` boot 2: the image on the disk is not the one signed.
 const A_REFUSES: TestCase = TestCase {
     then: Some(&A_AFTER_REFUSAL),
-    update: Some(UpdateDisk { tampered: true }),
+    update: Some(UpdateDisk::TAMPERED),
     ..boot(
         "update-tampered (2: updated refuses the image)",
         "test=update updated=update panic=reset",
@@ -530,7 +530,7 @@ const RB_B1: TestCase = rb(
 /// `update-rollback` boot 3: committed A takes release 2 from the update disk
 /// into B, with the snapshot and `pending` recorded first.
 const RB_UPDATE: TestCase = TestCase {
-    update: Some(UpdateDisk { tampered: false }),
+    update: Some(UpdateDisk::ROOT1),
     ..rb(
         "update-rollback (3: kai-a writes kai-b from the disk)",
         "test=update updated=update panic=reset",
@@ -565,7 +565,7 @@ const W_B: TestCase = TestCase {
 const W_STAGE: TestCase = TestCase {
     then: Some(&W_B),
     data: Some(DATA),
-    update: Some(UpdateDisk { tampered: false }),
+    update: Some(UpdateDisk::ROOT1),
     ..boot(
         "update-window (2: updated waits for the restart window)",
         "test=update updated=update updated.restart=window updated.window=now updated.heads_up_s=2 panic=reset",
