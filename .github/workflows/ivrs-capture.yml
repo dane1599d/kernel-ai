@@ -1,8 +1,9 @@
 # Spike for P6 row G61 (not for merge): QEMU's own IVRS tables, captured as
-# fixtures for acpitables' IVRS parser. Each variant boots OVMF's UEFI shell
-# under q35 with -device amd-iommu and runs `acpiview -s IVRS -d`, which
-# writes the table's bytes to the FAT drive, and `acpiview -s IVRS`, which
-# prints it parsed. Runs on pushes to spike/ivrs-capture only.
+# fixtures for acpitables' IVRS parser. Ubuntu's OVMF shell has no acpiview,
+# so each variant boots the runner's own Linux kernel under q35 with
+# -device amd-iommu and a busybox initramfs that prints
+# /sys/firmware/acpi/tables/IVRS to the serial port as base64. Runs on pushes
+# to spike/ivrs-capture only.
 name: ivrs capture
 
 on:
@@ -23,36 +24,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/qemu
-      - name: mtools
-        run: sudo apt-get install -y --no-install-recommends mtools dosfstools
+      - name: busybox and the runner's kernel
+        run: |
+          sudo apt-get install -y --no-install-recommends busybox-static cpio
+          sudo cp /boot/vmlinuz-$(uname -r) vmlinuz
+          sudo chmod 644 vmlinuz
+          mkdir -p root/bin
+          cp /bin/busybox root/bin/busybox
+          cat > root/init <<'INIT'
+          #!/bin/busybox sh
+          /bin/busybox mkdir -p /sys
+          /bin/busybox mount -t sysfs sysfs /sys
+          /bin/busybox ls -l /sys/firmware/acpi/tables
+          echo IVRS-BEGIN
+          /bin/busybox base64 /sys/firmware/acpi/tables/IVRS
+          echo IVRS-END
+          /bin/busybox poweroff -f
+          INIT
+          chmod 755 root/init
+          (cd root && find . | cpio -o -H newc) > initrd.cpio
       - name: Capture each variant
         shell: bash
         run: |
           set -u
-          code=/usr/share/OVMF/OVMF_CODE_4M.fd
-          ls -l /usr/share/OVMF/
           mkdir -p out
           capture() {
             name=$1; shift
-            rm -f disk.img vars.fd
-            cp /usr/share/OVMF/OVMF_VARS_4M.fd vars.fd
-            mkfs.fat -C disk.img 16384 >/dev/null
-            printf 'fs0:\r\nacpiview -s IVRS -d\r\nacpiview -s IVRS\r\nacpiview -l\r\nreset -s\r\n' > startup.nsh
-            mcopy -i disk.img startup.nsh ::/startup.nsh
-            timeout 300 qemu-system-x86_64 -nographic -no-reboot -m 512 \
-              -drive if=pflash,format=raw,readonly=on,file=$code \
-              -drive if=pflash,format=raw,file=vars.fd \
-              -drive file=disk.img,format=raw,if=none,id=d0 \
-              -device virtio-blk-pci,drive=d0,bootindex=1 \
-              -net none "$@" > "out/$name.log" 2>&1 || echo "qemu exit $? for $name"
-            mdir -i disk.img ::/ || true
-            for f in $(mdir -b -i disk.img ::/ 2>/dev/null | grep -i ivrs); do
-              base=$(basename "$f")
-              mcopy -i disk.img "$f" "out/$name-$base"
-            done
-            echo "== $name"; ls -l out | grep "$name" || true
-            for b in out/$name-*; do [ -f "$b" ] && xxd "$b"; done
-            tail -c 20000 "out/$name.log" | tr -d '\033' | tail -120
+            timeout 900 qemu-system-x86_64 -display none -no-reboot -m 512 \
+              -kernel vmlinuz -initrd initrd.cpio \
+              -append "console=ttyS0 rdinit=/init amd_iommu=off iommu=off panic=-1 quiet" \
+              -serial file:"out/$name.log" -net none "$@" || echo "qemu exit $? for $name"
+            tr -d '\r' < "out/$name.log" | sed -n '/^IVRS-BEGIN$/,/^IVRS-END$/p' \
+              | sed '1d;$d' | base64 -d > "out/$name.bin" || echo "no table for $name"
+            echo "== $name"; ls -l "out/$name.bin"; xxd "out/$name.bin"
+            tail -40 "out/$name.log"
           }
           capture q35 -machine q35 -device amd-iommu
           capture q35-intremap -machine q35,kernel-irqchip=split -device amd-iommu,intremap=on
