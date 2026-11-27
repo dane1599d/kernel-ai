@@ -4,6 +4,8 @@
 
 #[path = "../../testkit/hostile.rs"]
 mod hostile;
+#[path = "hostile/store.rs"]
+mod store;
 
 use kaipkg::bundle;
 use kaipkg::image::entry;
@@ -48,4 +50,57 @@ fn hostile_index_entries_never_panic_or_differ_from_the_header() {
     hostile::fuzz(INDEX.as_bytes(), 0x6b61_6970_6b67, 5_000, &mut check);
     hostile::truncations(INDEX.as_bytes(), |_, text| check(text));
     assert!(taken > 0, "the fuzz never kept a parseable entry");
+}
+
+/// A good input for each of the `kaipkg_store` body's readers, the reader's
+/// byte first.
+fn store_samples() -> Vec<Vec<u8>> {
+    let generation = "kai-gen 1\nparent 41\ntime 2026-11-02T10:31:00Z\nwhy actlog 4812\n\
+        pkg notes 2.1.0 9f42000000000000000000000000000000000000000000000000000000008b1d explicit grants 17 18\n\
+        pkg spell-en 1.2.3 1c0e0000000000000000000000000000000000000000000000000000000077aa dep\n";
+    let catalog = "kai-catalog 1\n\
+        installed\tnotes\t1.0.0\tapp\t74510\tMPL-2.0\t-\t-\tPlain-text notes the AI can read and write\n\
+        mirror\tbig\t1.2.0\tdata\t307300\tMIT OR Apache-2.0\tfiles,net:dns\t1.0.0\tA test package\n";
+    let mut app = Vec::from(&b"\0asm\x01\0\0\0"[..]);
+    livecore::artifact::append_custom_section(
+        &mut app,
+        kaipkg::local::APP_SECTION,
+        b"kai-app 1\nid notes\nabi 1.0\n",
+    );
+    let with = |which: u8, bytes: &[u8]| [&[which][..], bytes].concat();
+    vec![
+        with(store::GENERATION, generation.as_bytes()),
+        with(store::TIME, b"2026-11-02T10:31:00Z"),
+        with(store::CATALOG, catalog.as_bytes()),
+        with(store::STORE, generation.as_bytes()),
+        with(store::STORE, b"41\n"),
+        with(store::LOCAL_APP, &[&[5u8][..], b"notes", &app].concat()),
+    ]
+}
+
+/// The `kaipkg_store` fuzz body (P6 G41) on mutations and truncations of
+/// each record `pkg` reads from the person's own disk: each is refused or
+/// read, never a panic, and what is read writes back as the same text.
+#[test]
+fn the_store_body_refuses_or_reads_back_hostile_records() {
+    let samples = store_samples();
+    for sample in &samples {
+        store::kaipkg_store(sample);
+    }
+    // Each sample is one its reader takes, so the mutations start from inside.
+    let text = |s: &Vec<u8>| core::str::from_utf8(&s[1..]).unwrap().to_string();
+    assert!(kaipkg::generation::Generation::parse(&text(&samples[0])).is_ok());
+    assert!(kaipkg::generation::Time::parse(&text(&samples[1])).is_ok());
+    assert!(kaipkg::catalog::parse(&text(&samples[2])).is_ok());
+    assert!(kaipkg::local::is_app(&samples[5][7..], "notes").is_ok());
+    let cases = if cfg!(debug_assertions) {
+        3_000
+    } else {
+        30_000
+    };
+    for (seed, sample) in samples.iter().enumerate() {
+        hostile::fuzz(sample, 0x41_0000 + seed as u64, cases, store::kaipkg_store);
+        hostile::truncations(sample, |_, bytes| store::kaipkg_store(bytes));
+    }
+    store::kaipkg_store(&[]);
 }
