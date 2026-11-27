@@ -177,9 +177,10 @@ impl Table {
 }
 
 /// How many 4 KiB tables mapping `bytes` of guest RAM from guest physical 0
-/// in 2 MiB leaves takes: one PML4, one PDPT a 512 GiB, one PD a 1 GiB. The
-/// kernel sizes the VM's table pages with it at create, so mapping never
-/// allocates while the guest runs.
+/// in 2 MiB leaves takes: one PML4, one PDPT a 512 GiB, one PD a 1 GiB. That
+/// is the count only when every frame run is 2 MiB contiguous and aligned:
+/// the kernel sizes the VM's pool with [`Layout::tables`], the worst case, so
+/// `map` never runs out and nothing allocates while the guest runs.
 pub const fn tables_for(bytes: u64) -> u64 {
     let gib = bytes.div_ceil(Size::Page1G.bytes());
     let pdpts = gib.div_ceil(512);

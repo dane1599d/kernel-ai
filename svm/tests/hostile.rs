@@ -5,7 +5,10 @@
 mod common;
 
 use common::{Contiguous, GIB, MIB, Pool, Rng, Scattered, guest_ram};
-use svm::exit::{Action, Exit, ExitCode, Guest, Insn, Kill, Next, dispatch, intercepts, length};
+use svm::exit::{
+    Action, Exit, ExitCode, Guest, Insn, Kernel, Kill, MSR_ALLOWED, Next, dispatch, intercepts,
+    length, msr_allowed,
+};
 use svm::npt::{Access, Layout, Region, Tables, translate};
 use svm::{Event, Intercepts};
 
@@ -48,6 +51,10 @@ fn random_exits_never_panic_and_keep_the_run_loops_invariants() {
                 1 => 1 << 31 | rng.below(1 << 12),
                 _ => 0,
             },
+            rcx: match rng.below(3) {
+                0 => u64::from(MSR_ALLOWED[rng.below(MSR_ALLOWED.len() as u64) as usize].first),
+                _ => rng.next(),
+            },
         };
         let action = dispatch(&exit, &guest);
         // An unknown code is killed, and only an unknown code is.
@@ -64,6 +71,10 @@ fn random_exits_never_panic_and_keep_the_run_loops_invariants() {
                 assert_eq!(fault.cr2.is_some(), fault.event.vector == 14);
             }
             // RIP moves only to an address the CPU gave.
+            // An MSR reaches the kernel only when the list allows it.
+            Action::Kernel(Kernel::Msr { write }, _) if !msr_allowed(exit.rcx as u32, write) => {
+                panic!("{exit:?}: an MSR off the list reached the kernel");
+            }
             Action::Kernel(_, next) | Action::Vmm(_, next) => match next {
                 Next::To(rip) => assert!(Some(rip) == exit.nrip || rip == exit.info2),
                 Next::Decode(_) => assert_eq!(exit.nrip, None),

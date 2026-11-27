@@ -1,5 +1,8 @@
 //! What the kernel does with an exit (P6 row 3). Everything here is pure:
-//! the run loop reads an [`Exit`] out of the VMCB, asks [`dispatch`], and acts.
+//! the run loop reads an [`Exit`] out of the VMCB, with the guest's RCX it
+//! saved at #VMEXIT, asks [`dispatch`], and acts. `dispatch` is the one way
+//! to an action: an MSR exit is checked against the allow-list
+//! ([`MSR_ALLOWED`](super::MSR_ALLOWED)) there, from that RCX.
 
 use super::{ExitCode, Ioio, Npf};
 
@@ -16,11 +19,15 @@ pub struct Exit {
     /// EXITINTINFO (VMCB 0x088) with its error code in bits 63:32: the event
     /// the guest was delivering when it exited, if its valid bit is set.
     pub interrupted: u64,
+    /// The guest's RCX, which is not in the VMCB: the run loop saves it at
+    /// #VMEXIT. An MSR exit's MSR is its low half, ECX.
+    pub rcx: u64,
 }
 
 impl Exit {
-    /// The exit `control` holds; `nrips` is CPUID 0x8000_000A EDX bit 3.
-    pub const fn read(control: &crate::ControlArea, nrips: bool) -> Self {
+    /// The exit `control` holds; `nrips` is CPUID 0x8000_000A EDX bit 3, and
+    /// `rcx` the guest's RCX as the run loop saved it.
+    pub const fn read(control: &crate::ControlArea, nrips: bool, rcx: u64) -> Self {
         Self {
             code: ExitCode(control.exit_code),
             info1: control.exit_info_1,
@@ -30,6 +37,7 @@ impl Exit {
                 false => None,
             },
             interrupted: control.exit_int_info as u64 | (control.exit_int_info_error as u64) << 32,
+            rcx,
         }
     }
 }
@@ -83,7 +91,9 @@ pub enum Kernel {
     InterruptWindow,
     /// CPUID, from the table fixed at create.
     Cpuid,
-    /// RDMSR or WRMSR on the kernel's allow-list; any other MSR is #GP(0).
+    /// RDMSR or WRMSR of an MSR on the kernel's allow-list in that direction
+    /// ([`MSR_ALLOWED`](super::MSR_ALLOWED), from [`Exit::rcx`]); `dispatch`
+    /// gives any other MSR #GP(0), so this always names a listed one.
     Msr { write: bool },
     /// HLT: the vCPU sleeps until an interrupt for it.
     Hlt,
@@ -265,8 +275,11 @@ pub const fn intercept(code: ExitCode) -> Option<crate::Intercept> {
 /// #MC. #DB and #AC are reflected back, so a guest cannot hang the CPU in an
 /// endless chain of them (CVE-2015-8104, CVE-2015-5307). VINTR is added
 /// only while the kernel waits for an interrupt window. RDTSC is left to the
-/// CPU with the VMCB's TSC offset, which needs no exit; RDTSCP is taken, so
-/// the guest reads its own TSC_AUX, not the host's CPU number.
+/// CPU with the VMCB's TSC offset, which needs no exit. RDTSCP is taken on
+/// hardware, so the guest reads its own TSC_AUX, not the host's CPU number;
+/// QEMU's TCG never raises that intercept (its RDTSCP checks only RDTSC's),
+/// so the run loop must also load the guest's TSC_AUX before VMRUN and put
+/// the host's back after, which covers both.
 pub const fn intercepts() -> crate::Intercepts {
     use crate::Intercept;
     crate::Intercepts::required()
@@ -326,9 +339,18 @@ pub fn dispatch(exit: &Exit, guest: &Guest) -> Action {
         ExitCode::WBINVD => kernel(Kernel::Flush, Insn::Wbinvd),
         ExitCode::RDTSC => kernel(Kernel::Rdtsc { rdtscp: false }, Insn::Rdtsc),
         ExitCode::RDTSCP => kernel(Kernel::Rdtsc { rdtscp: true }, Insn::Rdtscp),
+        // RDMSR or WRMSR (EXITINFO1 0 or 1, APM 15.11): emulated when ECX is
+        // on the list in that direction, else #GP(0), as a CPU gives for an
+        // MSR it does not have.
         ExitCode::MSR => match exit.info1 {
-            0 => kernel(Kernel::Msr { write: false }, Insn::Rdmsr),
-            1 => kernel(Kernel::Msr { write: true }, Insn::Wrmsr),
+            0 | 1 => {
+                let write = exit.info1 == 1;
+                let insn = if write { Insn::Wrmsr } else { Insn::Rdmsr };
+                match super::msr_allowed(exit.rcx as u32, write) {
+                    true => kernel(Kernel::Msr { write }, insn),
+                    false => fault(code, 13, Some(0), None),
+                }
+            }
             _ => Action::Kill(Kill::BadInfo(code)),
         },
         ExitCode::IOIO => ioio(exit),
@@ -367,6 +389,12 @@ fn delivering(code: ExitCode, event: crate::Event) -> Action {
         ExitCode::INVALID | ExitCode::BUSY => Action::Kill(Kill::Refused),
         ExitCode::INTR | ExitCode::NMI | ExitCode::SMI | ExitCode::INIT => match event.kind {
             crate::EventType::Software => Action::Kill(Kill::Delivery(code)),
+            // #BP and #OF come from INT3 and INTO, with RIP on the
+            // instruction: injected again, the handler would return to it
+            // (or, with no nRIP for this exit, to a stale one).
+            crate::EventType::Exception if matches!(event.vector, 3 | 4) => {
+                Action::Kill(Kill::Delivery(code))
+            }
             // An exception is checked as an injected one is, so VMRUN never
             // refuses what goes back.
             crate::EventType::Exception => {
@@ -375,6 +403,9 @@ fn delivering(code: ExitCode, event: crate::Event) -> Action {
                     Err(_) => Action::Kill(Kill::BadInfo(code)),
                 }
             }
+            // An interrupt or NMI pushes no error code; the CPU never says
+            // one does.
+            _ if event.error_code.is_some() => Action::Kill(Kill::BadInfo(code)),
             _ => Action::Redeliver(event),
         },
         _ => Action::Kill(Kill::Delivery(code)),
