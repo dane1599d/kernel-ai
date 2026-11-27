@@ -70,11 +70,14 @@ fn random_exits_never_panic_and_keep_the_run_loops_invariants() {
                 assert_eq!(Event::decode(field), Ok(Some(fault.event)));
                 assert_eq!(fault.cr2.is_some(), fault.event.vector == 14);
             }
-            // RIP moves only to an address the CPU gave.
-            // An MSR reaches the kernel only when the list allows it.
-            Action::Kernel(Kernel::Msr { write }, _) if !msr_allowed(exit.rcx as u32, write) => {
-                panic!("{exit:?}: an MSR off the list reached the kernel");
+            // An MSR reaches the kernel only when the list allows it, and
+            // names the MSR ECX gave.
+            Action::Kernel(Kernel::Msr { msr, write }, _)
+                if msr != exit.rcx as u32 || !msr_allowed(msr, write) =>
+            {
+                panic!("{exit:?}: an MSR off the list, or not ECX's, reached the kernel");
             }
+            // RIP moves only to an address the CPU gave.
             Action::Kernel(_, next) | Action::Vmm(_, next) => match next {
                 Next::To(rip) => assert!(Some(rip) == exit.nrip || rip == exit.info2),
                 Next::Decode(_) => assert_eq!(exit.nrip, None),
@@ -84,6 +87,14 @@ fn random_exits_never_panic_and_keep_the_run_loops_invariants() {
             Action::Redeliver(event) => {
                 assert_eq!(Event::decode(event.encode()), Ok(Some(event)));
                 assert_ne!(event.kind, svm::EventType::Software);
+                // Never #BP or #OF, which only INT3 and INTO raise, and never
+                // an interrupt or NMI with an error code.
+                match event.kind {
+                    svm::EventType::Exception => {
+                        assert!(!matches!(event.vector, 3 | 4), "{event:?}")
+                    }
+                    _ => assert_eq!(event.error_code, None, "{event:?}"),
+                }
             }
             Action::Kill(_) => {}
         }

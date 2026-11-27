@@ -59,7 +59,7 @@ pub fn disk(volume: &[u8], image_id: &str) -> Vec<u8> {
 pub fn laid_out(sectors: u64, disk_guid: &[u8; 16], parts: &[diskmap::Spec<'_>]) -> Vec<u8> {
     let mut disk = vec![0u8; (sectors * SECTOR as u64) as usize];
     let layout = diskmap::layout(sectors, diskmap::Guid(*disk_guid), parts)
-        .expect("xtask lays out only disks that fit");
+        .expect("xtask lays out only disks that fit, with unique GUIDs");
     for (lba, bytes) in layout {
         let at = (lba * SECTOR as u64) as usize;
         disk[at..at + bytes.len()].copy_from_slice(&bytes);
