@@ -196,12 +196,15 @@ fn a_dot_entry_is_never_found_by_a_long_name() {
     assert_eq!(logged.writes(), 0);
 }
 
-/// A bad mark, in either copy, is never reclaimed and never counted free.
+/// A bad or reserved mark, in either copy, is never reclaimed and never
+/// counted free.
 #[test]
 fn bad_clusters_stay_marked() {
     const BAD: u32 = 0x0FFF_FFF7;
     let mut disk = esp();
-    let (one, both, leak) = (CLUSTERS - 2, CLUSTERS - 1, CLUSTERS);
+    const RESERVED_MARK: u32 = 0x0FFF_FFF3;
+    let (reserved, one, both, leak) = (CLUSTERS - 3, CLUSTERS - 2, CLUSTERS - 1, CLUSTERS);
+    disk.patch(fat_at(1, reserved), &RESERVED_MARK.to_le_bytes());
     disk.patch(fat_at(0, one), &BAD.to_le_bytes());
     disk.patch(fat_at(0, both), &BAD.to_le_bytes());
     disk.patch(fat_at(1, both), &BAD.to_le_bytes());
@@ -209,7 +212,7 @@ fn bad_clusters_stay_marked() {
     let usage = Usage {
         named: named(OLD),
         leaked: 1,
-        bad: 2,
+        bad: 3,
     };
     assert_eq!(check(&mut disk), Ok(usage));
     let room = disk.size;
@@ -219,8 +222,19 @@ fn bad_clusters_stay_marked() {
     assert_eq!(disk.u32_at(fat_at(1, one)), 0);
     assert_eq!(disk.u32_at(fat_at(0, both)), BAD);
     assert_eq!(disk.u32_at(fat_at(1, both)), BAD);
+    assert_eq!(disk.u32_at(fat_at(1, reserved)), RESERVED_MARK);
     assert_eq!(disk.u32_at(fat_at(1, leak)), 0);
-    assert_eq!(disk.u32_at(SECTOR as u64 + 488), CLUSTERS - named(OLD) - 2);
+    assert_eq!(disk.u32_at(SECTOR as u64 + 488), CLUSTERS - named(OLD) - 3);
+    // A replace counts free only what both copies mark free.
+    let room = disk.size;
+    Volume::open(&mut disk, 0, room)
+        .unwrap()
+        .replace("A.TXT", &pattern(5000, 9))
+        .unwrap();
+    assert_eq!(
+        disk.u32_at(SECTOR as u64 + 488),
+        CLUSTERS - named(OLD) - 3 - 4
+    );
 }
 
 #[test]
@@ -260,7 +274,6 @@ fn a_reclaim_after_any_cut_frees_every_leak() {
         .replace("BIG.BIN", &new)
         .unwrap();
     let mut leaks = 0;
-    let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     for k in 0..=logged.writes() {
         let cut = cut_at(&base, &logged.log, k);
         let mut disk = cut.clone();
@@ -284,21 +297,22 @@ fn a_reclaim_after_any_cut_frees_every_leak() {
             .reclaim()
             .unwrap();
         assert_eq!(freed, usage.leaked);
-        // Cut at every write, and keep random subsets of each flush's writes
-        // on top of the earlier flushes; every file reads the same through
-        // both copies, and a second reclaim finishes.
+        // Cut at every write, and keep every subset of each flush's writes on
+        // top of the earlier flushes; every file reads the same through both
+        // copies, and a second reclaim finishes.
         let mut cuts: Vec<Mem> = (0..=reclaiming.writes())
             .map(|j| cut_at(&cut, &reclaiming.log, j))
             .collect();
         let epochs = reclaiming.epochs();
         for (i, epoch) in epochs.iter().enumerate() {
-            for _ in 0..4 {
+            assert!(epoch.len() <= 10, "{} writes in one flush", epoch.len());
+            for keep in 0..1u32 << epoch.len() {
                 let mut disk = cut.clone();
                 for (lba, s) in epochs[..i].iter().flatten() {
                     disk.sectors.insert(*lba, s.clone());
                 }
-                for (lba, s) in epoch {
-                    if rng.next().is_multiple_of(2) {
+                for (n, (lba, s)) in epoch.iter().enumerate() {
+                    if keep & (1 << n) != 0 {
                         disk.sectors.insert(*lba, s.clone());
                     }
                 }

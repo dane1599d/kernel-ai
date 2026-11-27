@@ -9,7 +9,9 @@ use crate::{Disk, Error, SECTOR, u32_at};
 
 /// The low 28 bits of an entry. The top 4 are reserved and kept as they are.
 const MASK: u32 = 0x0FFF_FFFF;
-pub(crate) const BAD: u32 = 0x0FFF_FFF7;
+const BAD: u32 = 0x0FFF_FFF7;
+/// Marks no chain may hold and no reclaim frees: the reserved values, and bad.
+pub(crate) const KEPT: core::ops::RangeInclusive<u32> = 0x0FFF_FFF0..=BAD;
 /// The end-of-chain mark espfat writes. Readers take 0x0FFF_FFF8 and above.
 pub(crate) const END: u32 = 0x0FFF_FFFF;
 /// FAT's limit on a directory: 65,536 entries of 32 bytes.
@@ -99,7 +101,7 @@ impl<D: Disk> Volume<D> {
     }
 
     /// The first `need` clusters that every FAT copy in use marks free, and how
-    /// many clusters the first copy marks free in all.
+    /// many clusters every copy marks free in all.
     pub(crate) fn free_clusters(&mut self, need: u32) -> Result<(Vec<u32>, u32), Error> {
         let g = self.geometry;
         let entries = g.last_cluster() + 1;
@@ -109,7 +111,7 @@ impl<D: Disk> Volume<D> {
         let mut both = [true; PER_SECTOR as usize];
         for index in 0..entries.div_ceil(PER_SECTOR) {
             both.fill(true);
-            for (n, fat) in g.copies().enumerate() {
+            for fat in g.copies() {
                 let (lba, _) = g.fat_lba(fat, index * PER_SECTOR);
                 self.disk.read(lba, &mut copy)?;
                 for (slot, is_free) in both.iter_mut().enumerate() {
@@ -118,14 +120,11 @@ impl<D: Disk> Volume<D> {
                         *is_free = false;
                         continue;
                     }
-                    let empty = u32_at(&copy, slot * 4) & MASK == 0;
-                    if n == 0 && empty {
-                        free += 1;
-                    }
-                    *is_free &= empty;
+                    *is_free &= u32_at(&copy, slot * 4) & MASK == 0;
                 }
             }
             for (slot, is_free) in both.iter().enumerate() {
+                free += u32::from(*is_free);
                 if *is_free && (found.len() as u32) < need {
                     found.push(index * PER_SECTOR + slot as u32);
                 }
