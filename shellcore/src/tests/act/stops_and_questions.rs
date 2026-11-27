@@ -43,6 +43,20 @@ fn a_stop_asks_once_with_rules_and_an_always_allow_waives_the_next() {
     assert_eq!(*host.revoked.borrow(), [5]);
 }
 
+/// bug-hunt-6 H6-17: a rule's `made=` is the wall clock, not the boot clock.
+#[test]
+fn a_saved_rule_is_stamped_with_the_wall_clock() {
+    let (host, mut shell) = with_calls(vec![call(STOP_BUILD3)]);
+    host.wall_clock.set(Some(1_794_637_800));
+    host.clock.set(312_000_000_000);
+    host.procs.borrow_mut().push(String::from("build-3"));
+    shell.eval("stop build-3");
+    let once = host.mint(1, "process_stop(\"build-3\")");
+    shell.eval(&format!("answer 1 always-target once={once} rule=5"));
+    let disk = host.rules_disk.borrow().clone().unwrap();
+    assert!(disk.contains("made=2026-11-14T06:30:00Z"), "{disk}");
+}
+
 #[test]
 fn a_rule_survives_a_restart_as_a_record_and_asks_until_allowed_again() {
     let (host, mut shell) = with_calls(vec![call(STOP_BUILD3), call(STOP_BUILD3)]);

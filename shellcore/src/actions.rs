@@ -791,7 +791,7 @@ impl Shell {
             self.revoke_unkept(granted.rule);
             return Err(String::from(": no rule can cover it"));
         };
-        let made = (pending.id, self.host.now_ns());
+        let made = (pending.id, self.host.wall_ns());
         match self.rules.add(offer, always, granted.rule, made) {
             Ok(rule) => {
                 self.host
