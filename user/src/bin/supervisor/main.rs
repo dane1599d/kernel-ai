@@ -42,6 +42,8 @@ use supervise::{Decision, Proof, Record, Request, ServiceSpec, Start};
 use user::sys::Event;
 use user::{println, sys};
 
+mod pkg;
+
 user::entry!(main);
 
 struct Service {
@@ -253,10 +255,10 @@ fn handle(services: &mut [Service], text: &str, caller: u64) -> String {
         };
     }
     if let Some(run) = supervise::Run::parse(text) {
-        return run_package(services, run, caller);
+        return pkg::run_package(services, run, caller);
     }
     if let Some(withdraw) = supervise::Run::parse_withdraw(text) {
-        return withdraw_package(services, withdraw, caller);
+        return pkg::withdraw_package(services, withdraw, caller);
     }
     if let Some((name, on)) = supervise::keep::parse(text) {
         return keep(services, &records, name, on, caller);
@@ -624,99 +626,6 @@ fn running_services() -> Vec<(u64, String)> {
             Some((pid.parse().ok()?, String::from(name)))
         })
         .collect()
-}
-
-/// `run <name> version=<label>` from `caller`: a `start=pkg` app on the package
-/// version the store holder added, and only from that holder
-/// (`supervise::check_run`). A running app keeps its version: swapping one is
-/// comphost's, under probation.
-fn run_package(services: &mut [Service], run: supervise::Run, caller: u64) -> String {
-    let held: Vec<(&ServiceSpec, Option<u64>)> =
-        services.iter().map(|s| (&s.spec, s.pid)).collect();
-    let index = match supervise::check_run(run, &held, caller) {
-        Ok(index) => index,
-        Err(why) => {
-            println!("{:?} from pid {caller} refused: {why}", run.encode());
-            return String::from(why);
-        }
-    };
-    let service = &mut services[index];
-    let name = service.spec.name.clone();
-    if service.pid.is_some() {
-        return match service.record.version.as_deref() == Some(run.version) {
-            true => String::from("ok"),
-            false => String::from(supervise::RUNS_ANOTHER),
-        };
-    }
-    service.record.version = Some(String::from(run.version));
-    service.record.stopped = false;
-    service.record.gave_up = false;
-    service.start_at_ms = Some(now_ms());
-    println!("{name} starts on package version {} for pkg", run.version);
-    save(services);
-    String::from("ok")
-}
-
-/// `withdraw <name> version=<label>` from `caller`: the store holder took that
-/// package version back out (an undo), so the `start=pkg` app ends if it runs
-/// it and waits for `pkg` to name a version again, its end counted as no crash
-/// (`withdrawn`). Only from that holder (`supervise::check_run`); an app on
-/// another version keeps running. Until the app's exit is seen its pid stays
-/// set, so a `run` arriving in that gap is RUNS_ANOTHER, which `pkg` may retry.
-fn withdraw_package(services: &mut [Service], withdraw: supervise::Run, caller: u64) -> String {
-    let held: Vec<(&ServiceSpec, Option<u64>)> =
-        services.iter().map(|s| (&s.spec, s.pid)).collect();
-    let index = match supervise::check_run(withdraw, &held, caller) {
-        Ok(index) => index,
-        Err(why) => {
-            println!(
-                "{:?} from pid {caller} refused: {why}",
-                withdraw.encode_withdraw()
-            );
-            return String::from(why);
-        }
-    };
-    let service = &mut services[index];
-    if service.record.version.as_deref() != Some(withdraw.version) {
-        return String::from("ok");
-    }
-    let name = service.spec.name.clone();
-    // Saved cleared before the app is ended: a supervisor that dies in
-    // between must not restart the withdrawn version. A failed save puts the
-    // version back and leaves the app running; a failed kill puts it back and
-    // saves it again.
-    let pid = service.pid;
-    service.withdrawn = pid.is_some();
-    let withdrawn = supervise::withdraw_saving_first(
-        &mut *services,
-        |services| services[index].record.version.take(),
-        |services, version| services[index].record.version = version,
-        try_save,
-        |services| match services[index].pid {
-            Some(pid) => sys::kill(pid).map(drop),
-            None => Ok(()),
-        },
-    );
-    let service = &mut services[index];
-    match withdrawn {
-        Ok(()) => {}
-        Err(supervise::WithdrawError::NotSaved(error)) => {
-            service.withdrawn = false;
-            println!("{name} keeps running: cannot save it withdrawn: {error:?}");
-            return format!("err cannot save it: {error:?}");
-        }
-        Err(supervise::WithdrawError::NotEnded(error)) => {
-            service.withdrawn = false;
-            println!("cannot end {name} (pid {}): {error:?}", pid.unwrap_or(0));
-            return format!("err cannot end it: {error:?}");
-        }
-    }
-    service.start_at_ms = None;
-    println!(
-        "{name} ends: pkg took package version {} back out",
-        withdraw.version
-    );
-    String::from("ok")
 }
 
 /// Starts `service`; the kernel's refusal, for a caller that answers for it.
