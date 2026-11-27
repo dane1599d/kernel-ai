@@ -108,7 +108,7 @@ use engine::Line;
 pub use guard::placeholder_target;
 pub use host::{
     Consent, FsChange, FsRead, FsRefused, FsUndone, Host, MAX_REFUSED_RULES, NO_FILES, NO_NET,
-    Proof, refused_rules_name,
+    Proof, SetAside, refused_rules_name,
 };
 pub use ledger::LogFailed;
 pub use panel::PanelResult;

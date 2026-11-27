@@ -323,10 +323,20 @@ impl Host for FakeHost {
             return Err(String::from("the disk did not answer"));
         }
         let mut aside = self.rules_aside.borrow_mut();
-        let name = crate::refused_rules_name(|name| aside.iter().any(|(n, _)| n == name))
-            .ok_or_else(|| String::from("every refused name is kept already"))?;
-        aside.push((name.clone(), text.into()));
-        Ok(name)
+        let held = |name: &str| {
+            Ok(aside
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, kept)| kept.clone()))
+        };
+        match crate::refused_rules_name(text, held) {
+            Some(crate::SetAside::Kept(name)) => Ok(name),
+            Some(crate::SetAside::Free(name)) => {
+                aside.push((name.clone(), text.into()));
+                Ok(name)
+            }
+            None => Err(String::from("every refused name is kept already")),
+        }
     }
 
     fn net_grants_read(&self) -> Result<Option<String>, String> {

@@ -224,24 +224,73 @@ fn a_second_refused_rules_file_keeps_the_first() {
     );
 }
 
-/// The names a refused rules file may take, first free first; none once
-/// all [`crate::MAX_REFUSED_RULES`] are taken.
+/// The shell's own name check: a copy with the same text is reused wherever
+/// it is; else the first free name, a name that could not be read counting as
+/// taken; none once every name holds another text.
 #[test]
-fn a_refused_rules_file_takes_the_first_free_name() {
+fn a_refused_rules_file_takes_its_own_copy_or_the_first_free_name() {
+    use crate::SetAside::{Free, Kept};
+    let name = |s: &str| String::from(s);
+    let none = |_: &str| Ok(None);
     assert_eq!(
-        crate::refused_rules_name(|_| false).as_deref(),
-        Some("rules.refused")
+        crate::refused_rules_name("a", none),
+        Some(Free(name("rules.refused")))
     );
-    let taken = ["rules.refused", "rules.refused.2"];
+    // Its own copy at .3 wins over the free .2.
+    let held = |n: &str| {
+        Ok(match n {
+            "rules.refused" => Some(name("b")),
+            "rules.refused.3" => Some(name("a")),
+            _ => None,
+        })
+    };
     assert_eq!(
-        crate::refused_rules_name(|n| taken.contains(&n)).as_deref(),
-        Some("rules.refused.3")
+        crate::refused_rules_name("a", held),
+        Some(Kept(name("rules.refused.3")))
     );
     assert_eq!(
-        crate::refused_rules_name(|n| n != "rules.refused.9").as_deref(),
-        Some("rules.refused.9")
+        crate::refused_rules_name("c", held),
+        Some(Free(name("rules.refused.2")))
     );
-    assert_eq!(crate::refused_rules_name(|_| true), None);
+    // A name that could not be read is taken.
+    let unread = |n: &str| match n {
+        "rules.refused" => Err(name("the disk did not answer")),
+        _ => Ok(None),
+    };
+    assert_eq!(
+        crate::refused_rules_name("a", unread),
+        Some(Free(name("rules.refused.2")))
+    );
+    let full = |n: &str| Ok(Some(alloc::format!("other {n}")));
+    assert_eq!(crate::refused_rules_name("a", full), None);
+}
+
+/// #1595's review: the same refused file, booted again, was kept again under
+/// a new name each start, so after nine boots every name was taken and rules
+/// stopped saving. It keeps its one copy, and rules still save.
+#[test]
+fn the_same_refused_rules_file_booted_again_keeps_one_copy_and_rules_save() {
+    let bad = "kai-grants 1\nrule 1 action=set_policy target=a target=b from=prompt:3 made=2026-11-02T10:20:00Z\n";
+    let host = FakeHost::new();
+    host.rules_aside_ok.set(true);
+    *host.rules_disk.borrow_mut() = Some(String::from(bad));
+    for _ in 0..=crate::MAX_REFUSED_RULES {
+        let _shell = shell(&host);
+    }
+    assert_eq!(
+        *host.rules_aside.borrow(),
+        [(String::from("rules.refused"), String::from(bad))]
+    );
+    host.calls.borrow_mut().push_back(call(STOP_BUILD3));
+    host.procs.borrow_mut().push(String::from("build-3"));
+    let mut shell = shell(&host);
+    shell.eval("stop build-3");
+    let once = host.mint(1, "process_stop(\"build-3\")");
+    let added = shell.eval(&alloc::format!("answer 1 always-kind once={once}"));
+    assert!(
+        added.text.starts_with("Rule #1 added; `rules` lists it."),
+        "{added:?}"
+    );
 }
 
 /// #1344's review: an "Always allow" whose rule was not saved said "added" as if
