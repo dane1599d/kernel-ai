@@ -218,3 +218,40 @@ fn random_bytes_never_panic() {
         }
     }
 }
+
+#[test]
+fn unique_guids_must_be_unique() {
+    // A partition with the disk's GUID, with another's, zero, or a type's.
+    let mut twin = specs();
+    twin[1].guid = twin[0].guid;
+    assert_eq!(layout(SECTORS, g(9), &twin), Err(Error::BadLayout));
+    let mut disks = specs();
+    disks[0].guid = g(9);
+    assert_eq!(layout(SECTORS, g(9), &disks), Err(Error::BadLayout));
+    for bad in [Guid::default(), KAI_DATA_TYPE, ESP_TYPE] {
+        let mut parts = specs();
+        parts[1].guid = bad;
+        assert_eq!(layout(SECTORS, g(9), &parts), Err(Error::BadLayout));
+        assert_eq!(layout(SECTORS, bad, &specs()), Err(Error::BadLayout));
+    }
+    assert!(layout(SECTORS, g(9), &specs()).is_ok());
+}
+
+#[test]
+fn the_type_guids_are_the_ones_shipped() {
+    // Fixed for good: an install's partitions are found by them. These are
+    // the bytes main had when per-image GUIDs came (G35), as the GUIDs'
+    // text forms in the doc comments.
+    let shipped: [&str; 6] = [
+        "28732ac11ff8d211ba4b00a0c93ec93b",
+        "b65d4aed458a434ba62c43439c248fac",
+        "cfe9e76cef038847a9427709c27665c2",
+        "8c26c2b9a517af4fbccb93b2fb9b8346",
+        "80fc0e56f3cf8745b5637ba5c7c187ca",
+        "cfce907b49862e45a7d443f38fadd561",
+    ];
+    for (kind, hex) in TYPES.iter().zip(shipped) {
+        let text: std::string::String = kind.0.iter().map(|b| std::format!("{b:02x}")).collect();
+        assert_eq!(text, hex);
+    }
+}

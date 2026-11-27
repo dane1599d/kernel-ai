@@ -205,7 +205,7 @@ pub fn decide_net(line: &str, plan: &[Call], rows: &[Action], net: &Grounding) -
     // Every cue counts here, a telling clause's too: a line that names an
     // action is never vague, so "tell me how to remove ideas, it's so slow"
     // takes no vague reading (#883 review).
-    let named_any = rows.iter().any(|row| cued_in(&words, row, true).is_some());
+    let named_any = rows.iter().any(|row| read_every_cue(&words, row).is_some());
     let decisions: Vec<Decision> = consent_grant::at_most_one(
         plan.iter()
             .map(|call| decide_one(&words, &hosts, english, call, rows))
@@ -384,7 +384,17 @@ fn value_of<'a>(call: &Call<'a>, name: &str) -> Option<Value<'a>> {
 /// move"), `None` not named. A question's or a tell clause's cue counts. For a
 /// goal's scope (G2), which takes the person's words, never a model's.
 pub fn named_in(line: &str, row: &Action) -> Option<bool> {
-    cued_in(&words(line), row, true)
+    read_every_cue(&words(line), row)
+}
+
+/// [`cued_in`] counting a telling clause's cue and a cue inside a name too:
+/// whether the line names `row` at all, or says not to (`named_any`,
+/// [`named_in`]). A quoted or joined span still names it, so `it's so slow,
+/// "don't delete ideas"` is no vague want and a goal's `"never move
+/// anything"` is still refused (#1467 review): only whether a call was asked
+/// for skips a name's cues.
+fn read_every_cue(words: &[Word], row: &Action) -> Option<bool> {
+    cued_in(words, row, true, false)
 }
 
 /// Whether a cue of `row` starts a word of the line: `Some(false)` if some do and
@@ -392,7 +402,7 @@ pub fn named_in(line: &str, row: &Action) -> Option<bool> {
 /// cue wins over the others, so "print the policy, but don't switch to round robin"
 /// does not ask for a switch.
 fn cued(words: &[Word], row: &Action) -> Option<bool> {
-    cued_in(words, row, false)
+    cued_in(words, row, false, true)
 }
 
 /// [`cued`], with `telling_counts` saying whether a cue in a clause that asks to
@@ -400,8 +410,8 @@ fn cued(words: &[Word], row: &Action) -> Option<bool> {
 /// call was asked for it does not (#721, ADR 0002): "tell me how to remove
 /// ideas" asks for no removal. For whether the line names an action at all it
 /// does, so a complaint beside it ("it's so slow, how do I remove note 2") is no
-/// vague want.
-fn cued_in(words: &[Word], row: &Action, telling_counts: bool) -> Option<bool> {
+/// vague want. With `skip_names`, a cue inside a name is not counted.
+fn cued_in(words: &[Word], row: &Action, telling_counts: bool, skip_names: bool) -> Option<bool> {
     let telling = |clause: usize| {
         words
             .iter()
@@ -411,6 +421,7 @@ fn cued_in(words: &[Word], row: &Action, telling_counts: bool) -> Option<bool> {
     let mut found = None;
     for cue in row.cues {
         let off_counts = !row.cues.iter().any(|c| c.contains("off"));
+        let cue_len = self::words(cue).len();
         for at in matches(words, cue, true) {
             // A question asks to be told: "is round robin on" asks for no switch.
             if !telling_counts && (words[at].question || telling(words[at].clause)) {
@@ -436,10 +447,67 @@ fn cued_in(words: &[Word], row: &Action, telling_counts: bool) -> Option<bool> {
             if negated || off {
                 return Some(true);
             }
+            // A cue inside a longer name is part of the name, not a verb: "open
+            // my to-delete folder" asks for no trash, "rename round-robin.md"
+            // for no switch (bug-hunt-6 H6-3). A name that is the cue whole
+            // ("switch to round-robin") still is. Only after the negation and
+            // off checks: a negated cue in a name ("it's marked "do not
+            // delete"", "my not-to-delete folder") still says not to (#1467's
+            // round 20).
+            if skip_names && inside_a_name(words, at, cue_len, row) {
+                continue;
+            }
             found = Some(false);
         }
     }
     found
+}
+
+/// Whether the `len` words at `at` sit inside one token with more words than
+/// them: part of a name joined by `-`, `.`, `/` or `_`, or quoted ("to
+/// delete"). A token is a name only when one of its words is not `row`'s own
+/// (a word of its cues, of an argument's alias or of an enum value):
+/// "round-robin", "light-mode", "delete/trash" and "re-open" ask for the row,
+/// "to-delete.txt" names a file. A token that is `row`'s own name
+/// ("fs_create" in a C line) names the row, not a thing.
+fn inside_a_name(words: &[Word], at: usize, len: usize, row: &Action) -> bool {
+    let token = words[at].token;
+    let span = &words[at..at + len];
+    let whole: Vec<&str> = words
+        .iter()
+        .filter(|w| w.token == token)
+        .map(|w| w.text.as_str())
+        .collect();
+    let own_name = self::words(row.name)
+        .iter()
+        .map(|w| w.text.as_str())
+        .eq(whole.iter().copied());
+    span.iter().all(|w| w.token == token)
+        && whole.len() > len
+        && !own_name
+        && !whole.iter().all(|word| own_word(row, word))
+}
+
+/// Whether `word` is one of `row`'s own: a word of one of its cues (or one
+/// starting with a one-word cue stem, "polic" in "policy"), of an argument's
+/// alias, or of an enum value it takes. "re" too, which only says again
+/// ("re-open", "re-start").
+fn own_word(row: &Action, word: &str) -> bool {
+    let in_phrase = |phrase: &str| self::words(phrase).iter().any(|w| w.text == word);
+    word == "re"
+        || row
+            .cues
+            .iter()
+            .any(|cue| in_phrase(cue) || (!cue.contains([' ', '-']) && word.starts_with(cue)))
+        || row.args.iter().any(|arg| {
+            arg.aliases
+                .iter()
+                .any(|(said, value)| in_phrase(said) || in_phrase(value))
+                || match arg.ty {
+                    ArgType::Enum(values) => values.iter().any(|v| in_phrase(v)),
+                    _ => false,
+                }
+        })
 }
 
 /// Whether a negation before word `at` in its clause turns it off: "don't",
@@ -542,10 +610,12 @@ fn negation_at_for(words: &[Word], i: usize, row: Option<&Action>) -> bool {
 /// was a mistake"). "stop everything" and "Stop. Bring up the terminal" stop
 /// none, but "stop anything from switching" and "stop everything that
 /// switches" do. For a `row` that asks anyway (it derives above Run), whose
-/// own cue "stop" is, "stop running" is the row's verb, which changes only its
-/// card's wording: "stop running the miner" asks to stop the miner. Any other
-/// -ing word negates: "stop shutting down build-3" kills nothing, so no
-/// standing rule may run it (#1460 review).
+/// own cue "stop" is, "stop running" in one clause is the row's verb: "stop
+/// running the miner" asks for the stop, so the call asks as a change with no
+/// undo, which a standing rule for the row may run, not as one the model
+/// added. "Stop! Running the miner is fine" stops nothing. Any other -ing word
+/// negates: "stop shutting down build-3" kills nothing, so no standing rule
+/// may run it (#1460 review).
 fn stops_an_action(words: &[Word], i: usize, row: Option<&Action>) -> bool {
     let clause = words[i].clause;
     let alone = words.iter().filter(|w| w.clause == clause).all(|w| {
@@ -571,7 +641,7 @@ fn stops_an_action(words: &[Word], i: usize, row: Option<&Action>) -> bool {
     }
     match row {
         Some(row) if derive(row) != Tier::Run && is_own_cue(row, &words[i].text) => {
-            next.text != "running"
+            !(next.text == "running" && next.clause == clause)
         }
         _ => true,
     }
@@ -749,7 +819,10 @@ fn points_back(words: &[Word], row: &Action, clause: usize) -> bool {
     for cue in row.cues {
         let cue_len = self::words(cue).len();
         for at in matches(words, cue, true) {
-            if words[at].clause == clause && !negated_for(words, at, at, Some(row)) {
+            if words[at].clause == clause
+                && !inside_a_name(words, at, cue_len, row)
+                && !negated_for(words, at, at, Some(row))
+            {
                 cue_at = Some(cue_at.map_or(at, |c: usize| c.min(at)));
                 covered.extend(at..at + cue_len);
             }
@@ -997,7 +1070,14 @@ struct Word {
     sentence: usize,
     /// Whether that sentence ends with `?`, whatever its clauses.
     sentence_asks: bool,
+    /// Which token of the line it is in: words joined by one `-`, `.`, `/` or
+    /// `_` ("to-delete", "round-robin.md") share one, as a name's words do,
+    /// and so do all the words of a quoted span ("to delete" in quotes).
+    token: usize,
 }
+
+/// Marks that open or close a quoted span: straight and curly double quotes.
+const QUOTES: [char; 3] = ['"', '\u{201C}', '\u{201D}'];
 
 /// The line's words: letters, digits and apostrophes, lower case. Everything else
 /// separates, so "round-robin", "round robin" and "Round Robin." read alike.
@@ -1016,6 +1096,8 @@ fn words(text: &str) -> Vec<Word> {
     let is_word = |c: char| c.is_alphanumeric() || c == '\'';
     let mut clause = 0;
     let mut sentence = 0;
+    let mut token = 0;
+    let mut quoted = false;
     let mut asked_sentences: Vec<usize> = Vec::new();
     let mut out: Vec<Word> = Vec::new();
     let mut asked = Vec::new();
@@ -1036,6 +1118,7 @@ fn words(text: &str) -> Vec<Word> {
                 question: false,
                 sentence,
                 sentence_asks: false,
+                token,
             });
         }
         if rest[..gap].contains('?') {
@@ -1058,6 +1141,15 @@ fn words(text: &str) -> Vec<Word> {
         {
             sentence += 1;
         }
+        // A quoted span ("to delete") is one token, as a joined name is.
+        let quotes = rest[..gap].matches(QUOTES).count();
+        let opens = quotes % 2 == 1 && !quoted && rest[gap..].contains(QUOTES);
+        let closes = quotes % 2 == 1 && quoted;
+        let joined = had_word && gap < rest.len() && matches!(&rest[..gap], "-" | "." | "/" | "_");
+        if !(joined || (quoted && !closes)) {
+            token += 1;
+        }
+        quoted = (quoted && !closes) || opens;
         rest = &rest[gap..];
     }
     for c in 0..=clause {
@@ -1458,7 +1550,7 @@ mod tests {
             assert_eq!(cued(&words(line), &change), None, "{line}");
             // It still names the action, so the line is never read as vague
             // (#883): `named_any` counts a telling clause's cue.
-            assert_eq!(cued_in(&words(line), &change, true), Some(false), "{line}");
+            assert_eq!(read_every_cue(&words(line), &change), Some(false), "{line}");
         }
         // The same words in another clause, or after the cue, or with no telling
         // word, are still an order.
@@ -1481,7 +1573,7 @@ mod tests {
             "explain: how do I switch to round robin? it's slow",
         ] {
             assert_eq!(cued(&words(line), &change), None, "{line}");
-            assert_eq!(cued_in(&words(line), &change, true), Some(false), "{line}");
+            assert_eq!(read_every_cue(&words(line), &change), Some(false), "{line}");
         }
     }
 

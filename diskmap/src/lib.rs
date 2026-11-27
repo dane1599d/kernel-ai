@@ -294,15 +294,35 @@ pub fn last_usable(sectors: u64) -> u64 {
     sectors - 2 - ENTRY_SECTORS
 }
 
+/// Every partition type GUID this crate names. They are fixed for good: the
+/// kernel and the firmware find partitions by them. The disk's own GUID and
+/// each partition's are unique per image (ADR 0008 §1), and never one of these.
+pub const TYPES: [Guid; 6] = [
+    ESP_TYPE,
+    KAI_DATA_TYPE,
+    KAI_CACHE_TYPE,
+    KAI_R_TYPE,
+    KAI_A_TYPE,
+    KAI_B_TYPE,
+];
+
 /// The sectors a GPT of `parts` on a disk of `sectors` takes, as (LBA, bytes):
 /// the protective MBR, the primary header and array, the backup array and header.
-/// Nothing in between is touched.
+/// Nothing in between is touched. Refused when it does not fit, or when a
+/// unique GUID is not one: the disk's or a partition's GUID that is zero, a
+/// type GUID, or the same as the disk's or another partition's. Two disks or
+/// partitions with one GUID are what makes firmware and the kernel pick the
+/// wrong one.
 pub fn layout(
     sectors: u64,
     disk_guid: Guid,
     parts: &[Spec<'_>],
 ) -> Result<Vec<(u64, Vec<u8>)>, Error> {
     if sectors < 2 * (1 + ENTRY_SECTORS) + 2 || parts.len() > ENTRIES as usize {
+        return Err(Error::BadLayout);
+    }
+    let not_unique = |g: Guid| g == Guid::default() || TYPES.contains(&g);
+    if not_unique(disk_guid) {
         return Err(Error::BadLayout);
     }
     let last = last_usable(sectors);
@@ -320,6 +340,9 @@ pub fn layout(
             || part.last > last
             || overlaps
             || part.kind == Guid::default()
+            || not_unique(part.guid)
+            || part.guid == disk_guid
+            || parts[..i].iter().any(|p| p.guid == part.guid)
             || part.name.encode_utf16().count() > NAME_UNITS
         {
             return Err(Error::BadLayout);
