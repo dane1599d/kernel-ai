@@ -1,0 +1,69 @@
+# Spike for P6 row G61 (not for merge): QEMU's own IVRS tables, captured as
+# fixtures for acpitables' IVRS parser. Each variant boots OVMF's UEFI shell
+# under q35 with -device amd-iommu and runs `acpiview -s IVRS -d`, which
+# writes the table's bytes to the FAT drive, and `acpiview -s IVRS`, which
+# prints it parsed. Runs on pushes to spike/ivrs-capture only.
+name: ivrs capture
+
+on:
+  push:
+    branches: [spike/ivrs-capture]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ivrs-capture
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/qemu
+      - name: mtools
+        run: sudo apt-get install -y --no-install-recommends mtools dosfstools
+      - name: Capture each variant
+        shell: bash
+        run: |
+          set -u
+          code=/usr/share/OVMF/OVMF_CODE_4M.fd
+          ls -l /usr/share/OVMF/
+          mkdir -p out
+          capture() {
+            name=$1; shift
+            rm -f disk.img vars.fd
+            cp /usr/share/OVMF/OVMF_VARS_4M.fd vars.fd
+            mkfs.fat -C disk.img 16384 >/dev/null
+            printf 'fs0:\r\nacpiview -s IVRS -d\r\nacpiview -s IVRS\r\nacpiview -l\r\nreset -s\r\n' > startup.nsh
+            mcopy -i disk.img startup.nsh ::/startup.nsh
+            timeout 300 qemu-system-x86_64 -nographic -no-reboot -m 512 \
+              -drive if=pflash,format=raw,readonly=on,file=$code \
+              -drive if=pflash,format=raw,file=vars.fd \
+              -drive file=disk.img,format=raw,if=none,id=d0 \
+              -device virtio-blk-pci,drive=d0,bootindex=1 \
+              -net none "$@" > "out/$name.log" 2>&1 || echo "qemu exit $? for $name"
+            mdir -i disk.img ::/ || true
+            for f in $(mdir -b -i disk.img ::/ 2>/dev/null | grep -i ivrs); do
+              base=$(basename "$f")
+              mcopy -i disk.img "$f" "out/$name-$base"
+            done
+            echo "== $name"; ls -l out | grep "$name" || true
+            for b in out/$name-*; do [ -f "$b" ] && xxd "$b"; done
+            tail -c 20000 "out/$name.log" | tr -d '\033' | tail -120
+          }
+          capture q35 -machine q35 -device amd-iommu
+          capture q35-intremap -machine q35,kernel-irqchip=split -device amd-iommu,intremap=on
+          capture q35-devices -machine q35 -device amd-iommu \
+            -device pcie-root-port,id=rp1,bus=pcie.0,chassis=1 \
+            -device virtio-net-pci,bus=rp1,netdev=n0 -netdev user,id=n0 \
+            -device qemu-xhci -device pci-bridge,id=br1,bus=pcie.0,chassis_nr=2 \
+            -device virtio-rng-pci,bus=br1
+          capture q35-xtsup -machine q35,kernel-irqchip=split -device amd-iommu,intremap=on,xtsup=on
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ivrs
+          path: out
+          retention-days: 30
