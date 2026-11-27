@@ -82,12 +82,16 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// The layout for a screen of `width` by `height` pixels.
-    pub fn new(width: usize, height: usize) -> Self {
+    /// The layout for a screen of `width` by `height` pixels and `size_mm`
+    /// millimetres, when that is known: the largest font that leaves the columns
+    /// and, with a size, is not taller on the glass than `gfxcore::scale` allows.
+    pub fn new(width: usize, height: usize, size_mm: Option<(u32, u32)>) -> Self {
         SIZES
             .iter()
             .map(|&size| Self::with_font(Font::new(size), width, height))
-            .find(|layout| layout.cols >= MIN_COLS)
+            .find(|layout| {
+                layout.cols >= MIN_COLS && gfxcore::scale::suits(layout.font.height, width, size_mm)
+            })
             .unwrap_or_else(|| Self::with_font(SMALL, width, height))
     }
 

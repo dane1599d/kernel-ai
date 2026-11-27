@@ -305,7 +305,8 @@ fn decide_one(
     if !english {
         return Decision::new(Tier::Ask, Why::NotEnglish);
     }
-    let asked = matches!(cued(words, row), Some(false)) && arguments_in_line(words, row, call);
+    let asked =
+        matches!(cued(words, row, Some(call)), Some(false)) && arguments_in_line(words, row, call);
     match (asked, derive(row)) {
         (true, Tier::Run) => Decision::new(Tier::Run, Why::Asked),
         (true, tier) => Decision::new(tier, Why::NoUndo),
@@ -394,15 +395,16 @@ pub fn named_in(line: &str, row: &Action) -> Option<bool> {
 /// anything"` is still refused (#1467 review): only whether a call was asked
 /// for skips a name's cues.
 fn read_every_cue(words: &[Word], row: &Action) -> Option<bool> {
-    cued_in(words, row, true, false)
+    cued_in(words, row, true, false, None)
 }
 
 /// Whether a cue of `row` starts a word of the line: `Some(false)` if some do and
 /// none is negated, `Some(true)` if any is negated, `None` if none does. A negated
 /// cue wins over the others, so "print the policy, but don't switch to round robin"
-/// does not ask for a switch.
-fn cued(words: &[Word], row: &Action) -> Option<bool> {
-    cued_in(words, row, false, true)
+/// does not ask for a switch. Given `call`, a cue inside its target as the
+/// line says it does not count either.
+fn cued(words: &[Word], row: &Action, call: Option<&Call>) -> Option<bool> {
+    cued_in(words, row, false, true, call)
 }
 
 /// [`cued`], with `telling_counts` saying whether a cue in a clause that asks to
@@ -410,8 +412,15 @@ fn cued(words: &[Word], row: &Action) -> Option<bool> {
 /// call was asked for it does not (#721, ADR 0002): "tell me how to remove
 /// ideas" asks for no removal. For whether the line names an action at all it
 /// does, so a complaint beside it ("it's so slow, how do I remove note 2") is no
-/// vague want. With `skip_names`, a cue inside a name is not counted.
-fn cued_in(words: &[Word], row: &Action, telling_counts: bool, skip_names: bool) -> Option<bool> {
+/// vague want. With `skip_names`, a cue inside a name is not counted, nor,
+/// given `call`, one inside the call's own target as the line says it.
+fn cued_in(
+    words: &[Word],
+    row: &Action,
+    telling_counts: bool,
+    skip_names: bool,
+    call: Option<&Call>,
+) -> Option<bool> {
     let telling = |clause: usize| {
         words
             .iter()
@@ -457,6 +466,14 @@ fn cued_in(words: &[Word], row: &Action, telling_counts: bool, skip_names: bool)
             if skip_names && inside_a_name(words, at, cue_len, row) {
                 continue;
             }
+            // So is one inside the call's own target, even a name made only
+            // of the row's words: "open my trash-delete folder" asks for no
+            // trash of it (#1467's round 21).
+            if skip_names
+                && call.is_some_and(|call| inside_argument(words, at, cue, cue_len, row, call))
+            {
+                continue;
+            }
             found = Some(false);
         }
     }
@@ -486,6 +503,46 @@ fn inside_a_name(words: &[Word], at: usize, len: usize, row: &Action) -> bool {
         && whole.len() > len
         && !own_name
         && !whole.iter().all(|word| own_word(row, word))
+}
+
+/// Whether the `len` words of `cue` at `at` lie inside a match of one of
+/// `call`'s `from_request` targets, the thing it acts on, as written or by
+/// its place under home: "trash-delete" in "open my trash-delete folder" for
+/// fs_trash on `/home/user/trash-delete`, "trash" in "open my trash folder"
+/// on `/home/user/trash`. A cue said apart from it still counts ("trash
+/// trash-delete"). Not an option or an enum's value ("light" in "switch to
+/// light-mode" is how it sets), nor a cue that is a word of the target's
+/// aliases.
+fn inside_argument(
+    words: &[Word],
+    at: usize,
+    cue: &str,
+    len: usize,
+    row: &Action,
+    call: &Call,
+) -> bool {
+    row.args
+        .iter()
+        .filter(|arg| {
+            arg.from_request && arg.role == Role::Target && !matches!(arg.ty, ArgType::Enum(_))
+        })
+        .filter(|arg| {
+            !arg.aliases.iter().any(|(said, _)| {
+                let said = self::words(said);
+                self::words(cue)
+                    .iter()
+                    .all(|c| said.iter().any(|s| s.text == c.text))
+            })
+        })
+        .filter_map(|arg| value_of(call, arg.name))
+        .any(|value| {
+            let text = value.text.strip_prefix(HOME).unwrap_or(value.text);
+            let value_len = self::words(text).len();
+            value_len >= len
+                && matches(words, text, false)
+                    .into_iter()
+                    .any(|start| start <= at && at + len <= start + value_len)
+        })
 }
 
 /// Whether `word` is one of `row`'s own: a word of one of its cues (or one
@@ -1547,7 +1604,7 @@ mod tests {
             "can you explain how to switch the policy",
             "describe how to switch the scheduler, please",
         ] {
-            assert_eq!(cued(&words(line), &change), None, "{line}");
+            assert_eq!(cued(&words(line), &change, None), None, "{line}");
             // It still names the action, so the line is never read as vague
             // (#883): `named_any` counts a telling clause's cue.
             assert_eq!(read_every_cue(&words(line), &change), Some(false), "{line}");
@@ -1559,7 +1616,7 @@ mod tests {
             "tell me what it is, then switch the policy",
             "switch to round robin",
         ] {
-            assert_eq!(cued(&words(line), &change), Some(false), "{line}");
+            assert_eq!(cued(&words(line), &change, None), Some(false), "{line}");
         }
     }
 
@@ -1572,7 +1629,7 @@ mod tests {
             "tell me, how do I switch to round robin, it's laggy",
             "explain: how do I switch to round robin? it's slow",
         ] {
-            assert_eq!(cued(&words(line), &change), None, "{line}");
+            assert_eq!(cued(&words(line), &change, None), None, "{line}");
             assert_eq!(read_every_cue(&words(line), &change), Some(false), "{line}");
         }
     }
@@ -1586,18 +1643,24 @@ mod tests {
     fn cues_start_words_and_negation_reaches_its_clause() {
         let set = crate::SET_POLICY;
         assert_eq!(
-            cued(&words("Switch the scheduler to round robin."), &set),
+            cued(&words("Switch the scheduler to round robin."), &set, None),
             Some(false)
         );
-        assert_eq!(cued(&words("policy please"), &set), Some(false));
-        assert_eq!(cued(&words("don't touch the policy"), &set), Some(true));
-        assert_eq!(cued(&words("no, not the scheduler"), &set), Some(true));
+        assert_eq!(cued(&words("policy please"), &set, None), Some(false));
         assert_eq!(
-            cued(&words("not now; later, switch the policy"), &set),
+            cued(&words("don't touch the policy"), &set, None),
+            Some(true)
+        );
+        assert_eq!(
+            cued(&words("no, not the scheduler"), &set, None),
+            Some(true)
+        );
+        assert_eq!(
+            cued(&words("not now; later, switch the policy"), &set, None),
             Some(false)
         );
-        assert_eq!(cued(&words("apolicy"), &set), None);
-        assert_eq!(cued(&words("how many cpus"), &set), None);
+        assert_eq!(cued(&words("apolicy"), &set, None), None);
+        assert_eq!(cued(&words("how many cpus"), &set, None), None);
     }
 
     #[test]

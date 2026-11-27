@@ -7,7 +7,9 @@
 //! shows must, after which `desktop` gets the screen back. Then Ctrl+Alt+F12
 //! gives the console the screen before an ask, and again while it waits: the
 //! screen must stay on the console until the answer; and twice just before an
-//! ask, whose answer must then hand the screen back. Last, `desktop` is killed
+//! ask, whose answer must then hand the screen back. Then `desktop` is killed
+//! while an ask waits: the new one's claim is refused, and the answer must
+//! tell it to claim again. Last, `desktop` is killed
 //! with the lease on: the new `desktop` claims the screen with no lease, and
 //! keys reach its queue.
 
@@ -177,6 +179,48 @@ fn handed_back_then_asked() -> Result<(), &'static str> {
     Ok(())
 }
 
+/// `desktop` ends while an ask waits, and the new one's claim is refused: the
+/// answer must tell it to claim again (#1513's review: `on_exit` had cleared
+/// the holder, so `give_back` had nobody to hand the screen back to).
+fn restarted_during_ask() -> Result<(), &'static str> {
+    let Some(first) = showing() else {
+        return Err("desk-ask: desktop does not show");
+    };
+    ANSWER.store(0, Ordering::Release);
+    threads::spawn("desk-ask", asker, 0)?;
+    wait("the console to take the screen for the ask", || {
+        terminal::awaiting_answer() && showing().is_none() && !console::suspended()
+    })?;
+    if process::kill(first, kabi::ExitReason::Killed).is_err() {
+        return Err("desk-ask: cannot kill desktop");
+    }
+    wait("a new desktop to start", || {
+        process::named("desktop")
+            .iter()
+            .any(|&(pid, _)| pid != first)
+    })?;
+    // Its claim is refused while the ask waits, and it waits for a Screen
+    // event; only then does the answer come.
+    wait(
+        "the new desktop's claim to be refused",
+        claim::refused_claim,
+    )?;
+    if showing().is_some() || ANSWER.load(Ordering::Acquire) != 0 {
+        return Err("desk-ask: a new desktop got the screen while an ask waited");
+    }
+    // The menu drops keys typed before it settles.
+    wait("the console's menu to take keys", terminal::menu_takes_keys)?;
+    log!("desk-ask: ready for keys");
+    wait("the answer typed on the console", || {
+        ANSWER.load(Ordering::Acquire) != 0
+    })?;
+    wait("the new desktop to get the screen after the answer", || {
+        showing().is_some_and(|pid| pid != first)
+    })?;
+    log!("desk-ask: a desktop restarted during an ask got the screen after its answer");
+    Ok(())
+}
+
 pub fn check() -> Result<(), &'static str> {
     // desktop asks the kernel once for the focus deskdemo's windows get; the
     // refusal ends any lease, so the case takes its own lease only after.
@@ -186,6 +230,7 @@ pub fn check() -> Result<(), &'static str> {
     round(false)?;
     console_first()?;
     handed_back_then_asked()?;
+    restarted_during_ask()?;
     // desktop dies holding the lease: the new one starts with none.
     let Some(first) = showing() else {
         return Err("desk-ask: desktop does not show");

@@ -590,6 +590,7 @@ fn a_withdrawn_version_is_saved_cleared_before_the_app_is_ended() {
         version: Option<String>,
         log: RefCell<Vec<String>>,
         kill_fails: bool,
+        saves_fail: bool,
     }
     fn clear(cx: &mut Cx) -> Option<String> {
         cx.version.take()
@@ -597,8 +598,9 @@ fn a_withdrawn_version_is_saved_cleared_before_the_app_is_ended() {
     fn restore(cx: &mut Cx, v: Option<String>) {
         cx.version = v;
     }
-    fn save(cx: &Cx) {
+    fn save(cx: &Cx) -> Result<(), u8> {
         cx.log.borrow_mut().push(format!("save {:?}", cx.version));
+        if cx.saves_fail { Err(9) } else { Ok(()) }
     }
     fn kill(cx: &Cx) -> Result<(), u8> {
         cx.log
@@ -606,14 +608,15 @@ fn a_withdrawn_version_is_saved_cleared_before_the_app_is_ended() {
             .push(format!("kill (saved version seen: {:?})", cx.version));
         if cx.kill_fails { Err(7) } else { Ok(()) }
     }
-    let mk = |kill_fails| Cx {
+    let mk = |kill_fails, saves_fail| Cx {
         version: Some(String::from("1.0")),
         log: RefCell::new(Vec::new()),
         kill_fails,
+        saves_fail,
     };
 
     // Saved cleared first, then ended: a death between them restarts nothing.
-    let mut cx = mk(false);
+    let mut cx = mk(false, false);
     assert_eq!(
         withdraw_saving_first(&mut cx, clear, restore, save, kill),
         Ok(())
@@ -625,10 +628,10 @@ fn a_withdrawn_version_is_saved_cleared_before_the_app_is_ended() {
     assert_eq!(cx.version, None);
 
     // A kill that fails puts the version back and saves it again.
-    let mut cx = mk(true);
+    let mut cx = mk(true, false);
     assert_eq!(
         withdraw_saving_first(&mut cx, clear, restore, save, kill),
-        Err(7)
+        Err(WithdrawError::NotEnded(7))
     );
     assert_eq!(
         *cx.log.borrow(),
@@ -637,6 +640,31 @@ fn a_withdrawn_version_is_saved_cleared_before_the_app_is_ended() {
             "kill (saved version seen: None)",
             "save Some(\"1.0\")"
         ]
+    );
+    assert_eq!(cx.version.as_deref(), Some("1.0"));
+
+    // A save that fails puts the version back and ends nothing: ending the
+    // app with the old state still saved could restart the withdrawn version.
+    let mut cx = mk(false, true);
+    assert_eq!(
+        withdraw_saving_first(&mut cx, clear, restore, save, kill),
+        Err(WithdrawError::NotSaved(9))
+    );
+    assert_eq!(*cx.log.borrow(), ["save None"]);
+    assert_eq!(cx.version.as_deref(), Some("1.0"));
+
+    // A kill that fails and a second save that fails too: the kill's error
+    // is the answer, and the version is still put back in memory.
+    let mut cx = mk(true, false);
+    let first = core::cell::Cell::new(true);
+    let save_once = |cx: &Cx| {
+        let ok = first.replace(false);
+        save(cx)?;
+        if ok { Ok(()) } else { Err(9) }
+    };
+    assert_eq!(
+        withdraw_saving_first(&mut cx, clear, restore, save_once, kill),
+        Err(WithdrawError::NotEnded(7))
     );
     assert_eq!(cx.version.as_deref(), Some("1.0"));
 }

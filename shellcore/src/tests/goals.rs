@@ -628,6 +628,48 @@ fn a_cue_inside_a_folder_name_adds_no_row() {
     }
 }
 
+/// A dropped name leaves its punctuation (#1467's round 21): "todo.txt," still
+/// ends the "don't" clause, so the move after it is asked for.
+#[test]
+fn a_dropped_name_keeps_its_clause_break() {
+    let scope = crate::goalscope::scope(
+        "sort notes/q3: don't touch todo.txt, move the rest into notes/old",
+        |_| Ok(()),
+    );
+    assert!(
+        scope
+            .as_ref()
+            .is_ok_and(|scope| scope.rows.iter().any(|r| r == "fs_move")),
+        "{scope:?}"
+    );
+}
+
+/// A negation joined to the cue is no name (#1467's round 21): "dont-delete
+/// the finals" still says not to, unless a determiner or a possessive makes
+/// it a folder's name.
+#[test]
+fn a_negation_joined_to_the_cue_still_refuses_a_goal() {
+    for line in [
+        "trash the drafts in notes/q3, dont-delete the finals",
+        "sort notes/q3, never-move the finals",
+        "sort notes/q3 and do-not-move anything",
+    ] {
+        let scope = crate::goalscope::scope(line, |_| Ok(()));
+        assert!(scope.is_err(), "{line}: {scope:?}");
+    }
+    for line in [
+        "sort the files in my do-not-delete folder",
+        "sort the files in Bob's dont-delete folder",
+    ] {
+        let scope = crate::goalscope::scope(line, |_| Ok(()));
+        assert_eq!(
+            scope.map(|scope| scope.rows),
+            Ok(alloc::vec!["fs_list".to_string()]),
+            "{line}"
+        );
+    }
+}
+
 /// A quoted negation still refuses the goal (#1467 review): its cue is read
 /// even inside the quotes.
 #[test]

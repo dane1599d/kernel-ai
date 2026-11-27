@@ -277,7 +277,14 @@ impl Shell {
                     (true, _) => Reply::ok(format!("ran #{id}: {}", told.line)),
                     // Allowed, then failed: the goals agent reads it as a failed
                     // step (billed, with its entry), not as the person's no.
-                    (false, true) => Reply::err(format!("failed #{id}: {}", told.line)),
+                    (false, true) => {
+                        // Billed as run and failed: not "it did not run".
+                        let why = match told.line == crate::panel::FAILED {
+                            true => String::from("it failed: `show` in the terminal says why"),
+                            false => told.line,
+                        };
+                        Reply::err(format!("failed #{id}: {why}"))
+                    }
                     (false, false) => Reply::err(format!("not run #{id}: {}", told.line)),
                 }
             }

@@ -494,6 +494,9 @@ impl Goal {
             (State::Waiting, Some(Ask { proposal: None, .. })) => {
                 self.waiting = None;
                 self.state = State::Active;
+                // The question's own plan is over: its "next" was said before
+                // the answer, and is not the planner's now.
+                self.next.clear();
                 Ok(())
             }
             (State::Waiting, Some(_)) => Err(Refusal::NotAQuestion),

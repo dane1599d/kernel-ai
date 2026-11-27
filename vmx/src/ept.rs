@@ -129,8 +129,12 @@ pub enum BadEntry {
     Reserved(u64),
     /// Bit 7 on a PML4E, which has no large form.
     LargeAtTop(u64),
-    /// An EPT pointer's walk length is not 4 or 5 levels.
+    /// An EPT pointer's walk length is not 4 or 5 levels: the raw pointer
+    /// from [`Eptp::decode`], or the level count [`Eptp::encode`] was given.
     WalkLength(u64),
+    /// An EPT pointer asks for what the CPU's IA32_VMX_EPT_VPID_CAP lacks
+    /// (A.10): its walk length or memory type, A/D flags or shadow-stack bit.
+    Unsupported(u64),
 }
 
 /// What a valid entry is.
@@ -303,6 +307,23 @@ pub struct Eptp {
 }
 
 const EPTP_AD: u64 = 1 << 6;
+const EPTP_SHADOW_STACK: u64 = 1 << 7;
+
+/// IA32_VMX_EPT_VPID_CAP's bits (A.10) that say what an EPT pointer may use.
+pub mod cap {
+    /// A 4-level walk.
+    pub const WALK_4: u64 = 1 << 6;
+    /// A 5-level walk.
+    pub const WALK_5: u64 = 1 << 7;
+    /// The uncacheable memory type for the walks.
+    pub const UNCACHEABLE: u64 = 1 << 8;
+    /// The write-back memory type for the walks.
+    pub const WRITE_BACK: u64 = 1 << 14;
+    /// Accessed and dirty flags.
+    pub const ACCESSED_DIRTY: u64 = 1 << 21;
+    /// Supervisor shadow-stack rights (EPT pointer bit 7).
+    pub const SHADOW_STACK: u64 = 1 << 23;
+}
 
 impl Eptp {
     /// A 4-level EPT pointer at `root`, walked write-back, without A/D flags.
@@ -318,31 +339,62 @@ impl Eptp {
         })
     }
 
-    pub const fn encode(self) -> u64 {
-        self.root
+    /// The pointer's value for the VMCS. Err for a walk length VM entry
+    /// refuses (anything but 4 or 5, which `levels` 0 would also underflow),
+    /// or a memory type an EPT pointer cannot have (only UC and WB).
+    pub const fn encode(self) -> Result<u64, BadEntry> {
+        if self.levels != 4 && self.levels != 5 {
+            return Err(BadEntry::WalkLength(self.levels as u64));
+        }
+        match self.memory {
+            MemoryType::Uncacheable | MemoryType::WriteBack => {}
+            other => return Err(BadEntry::MemoryType(other as u8)),
+        }
+        Ok(self.root
             | ((self.accessed_dirty as u64) * EPTP_AD)
             | ((self.levels as u64 - 1) & 0b111) << 3
-            | self.memory as u64
+            | self.memory as u64)
     }
 
     /// Reads an EPT pointer the kernel did not build (a nested guest's, or
-    /// the VMCS's own), with the checks VM entry makes (26.2.1.1). Bit 7 is
-    /// accepted but not kept: the kernel does not use it.
-    pub const fn decode(raw: u64) -> Result<Self, BadEntry> {
+    /// the VMCS's own), with the checks VM entry makes (26.2.1.1): `raw`'s
+    /// address bits 51:`max_physical_bits` are clear, and `cap`, the CPU's
+    /// IA32_VMX_EPT_VPID_CAP ([`cap`]), offers its memory type, walk length
+    /// and A/D flags. Bit 7 is accepted, if `cap` has it, but not kept: the
+    /// kernel does not use it.
+    pub const fn decode(raw: u64, max_physical_bits: u8, cap: u64) -> Result<Self, BadEntry> {
         // Bits 11:8 and 63:52 are reserved.
         if raw & !(ADDRESS | 0xFF) != 0 {
             return Err(BadEntry::Reserved(raw));
         }
-        let memory = match raw & 0b111 {
-            0 => MemoryType::Uncacheable,
-            6 => MemoryType::WriteBack,
+        // The address beyond what the CPU's physical addresses hold.
+        let beyond = match max_physical_bits {
+            0..=51 => ADDRESS & !((1u64 << max_physical_bits) - 1),
+            _ => 0,
+        };
+        if raw & beyond != 0 {
+            return Err(BadEntry::Reserved(raw));
+        }
+        let (memory, memory_cap) = match raw & 0b111 {
+            0 => (MemoryType::Uncacheable, self::cap::UNCACHEABLE),
+            6 => (MemoryType::WriteBack, self::cap::WRITE_BACK),
             t => return Err(BadEntry::MemoryType(t as u8)),
         };
-        let levels = match (raw >> 3) & 0b111 {
-            3 => 4,
-            4 => 5,
+        let (levels, walk_cap) = match (raw >> 3) & 0b111 {
+            3 => (4, self::cap::WALK_4),
+            4 => (5, self::cap::WALK_5),
             _ => return Err(BadEntry::WalkLength(raw)),
         };
+        let mut needs = memory_cap | walk_cap;
+        if raw & EPTP_AD != 0 {
+            needs |= self::cap::ACCESSED_DIRTY;
+        }
+        if raw & EPTP_SHADOW_STACK != 0 {
+            needs |= self::cap::SHADOW_STACK;
+        }
+        if cap & needs != needs {
+            return Err(BadEntry::Unsupported(raw));
+        }
         Ok(Self {
             root: raw & ADDRESS,
             levels,

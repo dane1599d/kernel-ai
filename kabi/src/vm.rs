@@ -6,10 +6,11 @@
 //! - **The call.** `VM` takes its operation in RDI ([`op`]) and a pointer to one
 //!   record in RSI, its length in RDX. Every record starts with an 8-byte
 //!   header: [`VERSION`] (u16), the operation (u16), and a u32 that is zero.
-//!   The operation is in both places, so [`decode_for`] takes RDI's and refuses
-//!   a header that names another. Each operation's record has one exact
-//!   length; [`decode`] refuses a record
-//!   that is short, over-long, of another version or operation, has a reserved
+//!   The operation is in both places, so the kernel decodes a `VM` call only
+//!   with [`decode_for`], which takes RDI's whole and refuses a header that
+//!   names another; [`decode`] alone is for a record with no register beside
+//!   it. Each operation's record has one exact length; [`decode`] refuses a
+//!   record that is short, over-long, of another version or operation, has a reserved
 //!   byte set or a field out of range, with a [`Refused`], never a panic.
 //! - **The exits.** One standard 64-byte [`crate::ring::Request`] per exit
 //!   ([`ExitEntry`]); `vmm` answers with the standard 16-byte
@@ -107,8 +108,8 @@ const CR4_NEEDED: u64 = 1 << 5;
 /// EFER: SCE, LME, LMA and NXE.
 pub const EFER_ALLOWED: u64 = 1 | (1 << 8) | (1 << 10) | (1 << 11);
 const EFER_NEEDED: u64 = (1 << 8) | (1 << 10);
-/// RFLAGS bits that exist: everything up to ID (bit 21) but the reserved 3, 5
-/// and 15. Bit 1 reads as 1.
+/// RFLAGS bits that may be set: everything up to ID (bit 21) but the reserved
+/// 3, 5 and 15, and VM (bit 17), which is left out. Bit 1 reads as 1.
 const RFLAGS_DEFINED: u64 = ((1 << 22) - 1) & !((1 << 3) | (1 << 5) | (1 << 15) | RFLAGS_VM);
 /// RFLAGS.VM (virtual-8086 mode): Intel VM entry refuses it in long mode.
 const RFLAGS_VM: u64 = 1 << 17;
@@ -298,10 +299,13 @@ const fn canonical(address: u64) -> bool {
     top == 0 || top == (1 << 17) - 1
 }
 
-/// The record in `bytes` for the call whose RDI said `op`: [`decode`], but a
-/// header whose operation is not `op` is refused with [`Refused::Op`], so the
-/// two copies of the operation cannot disagree.
-pub fn decode_for(op: u16, bytes: &[u8]) -> Result<Call, Refused> {
+/// The record in `bytes` for the call whose RDI is `rdi`: the one the kernel
+/// uses. [`decode`], but RDI is taken whole: anything above `u16::MAX`, or a
+/// header whose operation is not RDI's, is refused with [`Refused::Op`], so
+/// the two copies of the operation cannot disagree and no high bit of RDI is
+/// dropped (`0x1_0003` is not `run`).
+pub fn decode_for(rdi: u64, bytes: &[u8]) -> Result<Call, Refused> {
+    let op = u16::try_from(rdi).map_err(|_| Refused::Op)?;
     let call = decode(bytes)?;
     if get16(bytes, 2) != op {
         return Err(Refused::Op);
@@ -310,6 +314,7 @@ pub fn decode_for(op: u16, bytes: &[u8]) -> Result<Call, Refused> {
 }
 
 /// The record in `bytes`, if it is one v1 record whose every field is in range.
+/// The kernel decodes a `VM` call with [`decode_for`], never this alone.
 pub fn decode(bytes: &[u8]) -> Result<Call, Refused> {
     if bytes.len() < HEADER_BYTES {
         return Err(Refused::Length);

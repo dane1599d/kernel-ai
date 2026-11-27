@@ -19,49 +19,86 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-/// How many of a goal's latest steps the planner's line tells.
+/// How many of a goal's latest steps the planner's line tells as not done, and
+/// how many of its ran rows it names.
 const LINE_STEPS: usize = 4;
+/// What llm keeps of the line a planner is given (`llmproto::act::LINE_MAX_BYTES`):
+/// the line is built to fit, so its end, `next:`, is never the part cut.
+const LINE_BUDGET: usize = 512;
+/// What the line keeps of the goal's text at the least, and of its `next`.
+const GOAL_MIN: usize = 60;
+const NEXT_MAX: usize = 100;
+/// A row name as the line tells it: its own words and no more.
+const ROW_MAX: usize = 24;
 
 /// The line a planner is given for `goal`: its text, the latest steps that ran
-/// ok, the latest ones that did not (failed, refused by the person, held,
-/// waiting), each with why, and what it plans next when it said. Only a step
-/// that ran is "done": a goal whose write failed or was refused is not told it
-/// was written, so it is not closed as met (H6-28).
+/// ok (with how many ran before them), the latest ones that did not (failed,
+/// refused by the person, held, waiting) and what it plans next when it said.
+/// Only a step that ran is "done": a goal whose write failed or was refused is
+/// not told it was written, so it is not closed as met (H6-28).
+///
+/// The line tells fixed words and row names only: a failed step's note can
+/// carry a server's or an app's text, which does not go into a model's prompt.
+/// It fits [`LINE_BUDGET`]: the goal's text gives way first, then the oldest
+/// not-done steps.
 pub fn plan_line(goal: &Goal) -> String {
-    let mut done: Vec<String> = Vec::new();
+    let row = |step: &crate::StepLog| -> String {
+        step.proposal
+            .row
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '*'))
+            .take(ROW_MAX)
+            .collect()
+    };
+    // Every step that ran counts, however far back; the newest are named.
+    let ran: Vec<String> = goal
+        .log
+        .iter()
+        .rev()
+        .filter(|step| step.status == StepStatus::Ran)
+        .map(row)
+        .collect();
+    let done = match ran.len() {
+        0 => String::from("nothing yet"),
+        n if n <= LINE_STEPS => ran.join(", "),
+        n => format!(
+            "{} (and {} earlier)",
+            ran[..LINE_STEPS].join(", "),
+            n - LINE_STEPS
+        ),
+    };
     let mut not: Vec<String> = Vec::new();
     for step in goal.log.iter().rev().take(LINE_STEPS) {
-        let row = step.proposal.row.as_str();
-        let why = |what: &str| match crate::valid::clean(&step.note)
-            .chars()
-            .take(80)
-            .collect::<String>()
-        {
-            note if note.is_empty() => format!("{row} {what}"),
-            note => format!("{row} {what}: {note}"),
+        let what = match step.status {
+            StepStatus::Ran => continue,
+            StepStatus::Failed => "failed",
+            StepStatus::Denied => "refused by the person",
+            StepStatus::Held => "held back",
+            StepStatus::Asked => "waits on the person",
+            StepStatus::Running => "is running",
         };
-        match step.status {
-            StepStatus::Ran => done.push(row.to_string()),
-            StepStatus::Failed => not.push(why("failed")),
-            StepStatus::Denied => not.push(why("refused by the person")),
-            StepStatus::Held => not.push(why("held back")),
-            StepStatus::Asked => not.push(why("waits on the person")),
-            StepStatus::Running => not.push(why("is running")),
+        not.push(format!("{} {what}", row(step)));
+    }
+    let next: String = goal.next.chars().take(NEXT_MAX).collect();
+    let tail = |not: &[String]| {
+        let mut tail = format!("\ndone: {done}");
+        if !not.is_empty() {
+            tail.push_str(&format!("\nnot done: {}", not.join("; ")));
         }
-    }
-    let done = match done.is_empty() {
-        true => String::from("nothing yet"),
-        false => done.join(", "),
+        // What the goal said it plans next, when it said: never a guess.
+        if !next.is_empty() {
+            tail.push_str(&format!("\nnext: {next}"));
+        }
+        tail
     };
-    let mut line = format!("goal: {}\ndone: {done}", goal.text);
-    if !not.is_empty() {
-        line.push_str(&format!("\nnot done: {}", not.join("; ")));
+    let mut tail_text = tail(&not);
+    while "goal: ".len() + GOAL_MIN + tail_text.len() > LINE_BUDGET && not.len() > 1 {
+        not.pop();
+        tail_text = tail(&not);
     }
-    // What the goal said it plans next, when it said: never a guess.
-    if !goal.next.is_empty() {
-        line.push_str(&format!("\nnext: {}", goal.next));
-    }
-    line
+    let room = LINE_BUDGET.saturating_sub("goal: ".len() + tail_text.len());
+    let text: String = goal.text.chars().take(room).collect();
+    format!("goal: {text}{tail_text}")
 }
 
 /// llm, on the agent's route.

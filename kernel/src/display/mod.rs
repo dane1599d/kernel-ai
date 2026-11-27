@@ -19,6 +19,7 @@ use alloc::boxed::Box;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, Ordering};
 use gfxcore::Rect;
+use gfxcore::pixel::Format;
 use gpu::Gpu;
 use limine::framebuffer::Framebuffer;
 use spin::Mutex;
@@ -30,6 +31,9 @@ pub struct Surface {
     pub width: usize,
     pub height: usize,
     pub stride: usize,
+    /// How a pixel is packed: virtio-gpu's back buffer is always `0x00RRGGBB`;
+    /// a GOP framebuffer's is what its masks say.
+    pub format: Format,
 }
 
 // SAFETY: a surface is plain memory that outlives the kernel's use of it; who
@@ -63,6 +67,37 @@ static DISPLAY: Mutex<Option<Display>> = Mutex::new(None);
 /// A flush found the display busy: the next one sends the whole screen.
 static BEHIND: AtomicBool = AtomicBool::new(false);
 
+/// The pixel format Limine reports for `fb`: its red, green and blue sizes and
+/// shifts. Masks that make no pixel (none reported, or overlapping) leave the
+/// usual `0x00RRGGBB`.
+fn format_of(fb: &Framebuffer) -> Format {
+    Format::from_masks(
+        (fb.red_mask_size, fb.red_mask_shift),
+        (fb.green_mask_size, fb.green_mask_shift),
+        (fb.blue_mask_size, fb.blue_mask_shift),
+    )
+    .unwrap_or(Format::NATIVE)
+}
+
+/// The EDID block Limine passes with `fb`: empty when the firmware gave none.
+///
+/// `Framebuffer::edid` builds its slice from a null pointer in that case, which
+/// a debug build refuses, so the two fields are read from the protocol's layout
+/// instead: `edid_size` then `edid`, after the 48 bytes of mode.
+pub fn edid_of(fb: &Framebuffer) -> &[u8] {
+    const SIZE_AT: usize = 6;
+    const _: () = assert!(size_of::<Framebuffer>() == (SIZE_AT + 2) * 8);
+    let words = core::ptr::from_ref(fb).cast::<u64>();
+    // SAFETY: `Framebuffer` is `repr(C)`, 64 bytes long (checked above), and
+    // its `edid_size` and `edid` are the 7th and 8th words, as Limine fills them.
+    let (size, edid) = unsafe { (words.add(SIZE_AT).read(), words.add(SIZE_AT + 1).read()) };
+    match (size, edid) {
+        (0, _) | (_, 0) => &[],
+        // SAFETY: Limine's EDID is `size` bytes at `edid`, kept for the kernel's life.
+        (size, edid) => unsafe { core::slice::from_raw_parts(edid as *const u8, size as usize) },
+    }
+}
+
 /// Takes over a 32-bpp GOP framebuffer. Allocates nothing.
 pub fn init_gop(fb: &Framebuffer) -> Option<Surface> {
     let base = NonNull::new(fb.address().cast::<u32>())?;
@@ -74,6 +109,7 @@ pub fn init_gop(fb: &Framebuffer) -> Option<Surface> {
         width: fb.width as usize,
         height: fb.height as usize,
         stride: (fb.pitch / 4) as usize,
+        format: format_of(fb),
     };
     *DISPLAY.lock() = Some(Display {
         surface,
@@ -116,6 +152,7 @@ pub fn init_gpu(
         width: mode.0 as usize,
         height: mode.1 as usize,
         stride: mode.0 as usize,
+        format: Format::NATIVE,
     };
     gpu.flush(Rect::screen(mode.0, mode.1))?;
     // A virtio-gpu screen is a window on a host: its EDID's size is made up
