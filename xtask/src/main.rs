@@ -558,10 +558,11 @@ fn execute(options: &Options) -> Result<(), String> {
                     &target_dir,
                     &cmdline,
                     &record,
-                    case.keeps_slot_b,
+                    case.keeps_slot_b || (case.boot_data && !fresh),
                     qemu::BootDisk {
                         nvme: case.boot_nvme,
                         four_k: case.four_k,
+                        data: case.boot_data,
                     },
                 )?;
             }

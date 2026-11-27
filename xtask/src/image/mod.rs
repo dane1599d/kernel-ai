@@ -8,6 +8,7 @@ pub mod gpt;
 #[cfg(test)]
 mod install_tests;
 pub mod modules;
+pub mod slot_data;
 pub mod slots;
 pub mod update_disk;
 pub mod update_online;

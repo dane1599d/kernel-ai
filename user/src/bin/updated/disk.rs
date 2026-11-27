@@ -18,7 +18,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use bootslot::Nv;
 use kabi::handle::Handle;
-use kabi::update::{DISK, MAX_IO, SECTOR};
+use kabi::update::{BLOCK, DISK, MAX_IO, SECTOR};
 use kaituf::Error as TufError;
 use kaituf::meta::Root;
 use kaituf::updater::{Cache, Remote, Updater};
@@ -330,10 +330,11 @@ fn stream(handle: Handle, offset: u64, length: u64, to: u64) -> Result<Vec<u8>, 
     let mut done = 0;
     while done < length {
         let want = (length - done).min(MAX_IO);
-        let chunk = &mut buf[..want.next_multiple_of(SECTOR) as usize];
-        sys::slot_read(handle, DISK, (offset + done) / SECTOR, chunk)
+        let read = &mut buf[..want.next_multiple_of(SECTOR) as usize];
+        sys::slot_read(handle, DISK, (offset + done) / SECTOR, read)
             .map_err(|e| format!("reading the update disk: {e:?}"))?;
-        // A last partial sector is written whole, zero past the image's end.
+        // A last partial block is written whole, zero past the image's end.
+        let chunk = &mut buf[..want.next_multiple_of(BLOCK) as usize];
         chunk[want as usize..].fill(0);
         sys::slot_write(handle, to, done / SECTOR, chunk)
             .map_err(|e| format!("SLOT_WRITE: {e:?}"))?;

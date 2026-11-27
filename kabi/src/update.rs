@@ -25,6 +25,10 @@ pub const SYSTEM: u64 = 1;
 
 /// Bytes in a sector: every offset and length the SLOT_* calls take is in them.
 pub const SECTOR: u64 = 512;
+/// The largest block a boot disk may have (G58): a disk of 4 KiB blocks takes
+/// only whole ones, so `updated` pads every SLOT_WRITE to whole `BLOCK`s,
+/// zeros past an image's end, and starts each on one.
+pub const BLOCK: u64 = 4096;
 /// The most one SLOT_READ or SLOT_WRITE moves.
 pub const MAX_IO: u64 = 128 * 1024;
 /// `KaiBootState`'s size (`bootslot::BYTES`).
