@@ -3,7 +3,7 @@
 
 use crate::kernel::Kernel;
 use crate::plans::{Tag, Tape, Write, plans, r_plans};
-use bootslot::{MAX_FAILURES, Nv, Reason, Record, Slot, SlotState, TRIES, fault, may_boot};
+use bootslot::{MAX_FAILURES, Nv, Reason, Record, Slot, SlotState, TRIES, commit, fault, may_boot};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -139,6 +139,21 @@ pub fn apply(state: &mut State, write: Write, slot: Slot, path: &[Step]) {
         Write::Record(record, tag) => (record, tag),
     };
     if let Some(old) = state.record.as_ref().map(unkey) {
+        // Rule 9: a commit changes only what the commit does to the record
+        // the firmware holds, so a BOOTREC_SET that landed before it stays
+        // (SETTING, held across the commit's read and set).
+        if let Tag::Commit(by) = tag {
+            let mut expected = Nv {
+                record: old,
+                one_shot: None,
+            };
+            commit(&mut expected, by, old.slot(by).release_seq);
+            assert_eq!(
+                key(&record),
+                key(&expected.record),
+                "{path:?}: {by:?}'s commit undid a change in {slot:?}: {old:?} to {record:?}"
+            );
+        }
         let raised =
             record.min_release_seq != old.min_release_seq || record.min_epoch != old.min_epoch;
         assert!(

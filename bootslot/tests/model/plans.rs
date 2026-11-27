@@ -4,9 +4,10 @@
 
 use crate::kernel::Kernel;
 use crate::walk::{committed, fallback};
+use bootslot::glue::SetFailed;
 use bootslot::{
-    InR, Nv, Record, Refused, Slot, Told, UpFailed, commit, install, r_boots, recovery,
-    restart_into, rollback, stage_begin, stage_end, up,
+    InR, Nv, Record, Refused, Slot, Told, install, r_boots, recovery, restart_into, rollback,
+    stage_begin, stage_end, up,
 };
 use std::cell::{Cell, RefCell};
 
@@ -79,38 +80,46 @@ impl Up {
         tag: Tag,
         fails: bool,
     ) -> Result<bool, Refused> {
-        (self.k.may_set)(
-            Some(&self.fw),
-            &next.record,
-            next.one_shot,
-            Some(self.slot),
-            self.lost,
-        )?;
         let old = self.told;
         let told = Cell::new(old);
         let stored = Cell::new(false);
-        let _ = (self.k.set_writes)(
-            &mut |t| {
-                let now = match t {
-                    Told::New => (next.record, tag),
-                    Told::Old => old,
-                };
-                told.set(now);
-                tape.push(Write::Told(now.0, now.1));
-            },
+        let fw = self.fw;
+        let set_writes = self.k.set_writes;
+        let set = (self.k.bootrec_set)(
+            self.k.may_set,
+            &mut || Ok(Some(fw)),
+            self.lost,
+            Some(self.slot),
+            &next.record,
+            next.one_shot,
             &mut || {
-                if fails {
-                    return Err(());
-                }
-                tape.push(Write::Record(next.record, tag));
-                stored.set(true);
-                Ok(())
-            },
-            &mut || {
-                tape.push(Write::OneShot(next.one_shot));
-                Ok(())
+                set_writes(
+                    &mut |t| {
+                        let now = match t {
+                            Told::New => (next.record, tag),
+                            Told::Old => old,
+                        };
+                        told.set(now);
+                        tape.push(Write::Told(now.0, now.1));
+                    },
+                    &mut || {
+                        if fails {
+                            return Err(());
+                        }
+                        tape.push(Write::Record(next.record, tag));
+                        stored.set(true);
+                        Ok(())
+                    },
+                    &mut || {
+                        tape.push(Write::OneShot(next.one_shot));
+                        Ok(())
+                    },
+                )
             },
         );
+        if let Err(SetFailed::Refused(refused)) = set {
+            return Err(refused);
+        }
         self.told = told.get();
         if stored.get() {
             self.fw = next.record;
@@ -133,16 +142,50 @@ impl Up {
     /// Probation's commit, from the record the firmware holds now, read and
     /// set under SETTING (`slots::commit`).
     fn commit(&mut self, tape: &Tape) {
+        self.commit_racing(tape, None);
+    }
+
+    /// [`Up::commit`], with `updated`'s BOOTREC_SET of `racing` (from the
+    /// record the firmware holds when it runs) trying to land just after the
+    /// commit reads the record: while SETTING is held it waits until the
+    /// commit's set is done.
+    fn commit_racing(&mut self, tape: &Tape, racing: Option<fn(&mut Nv, Slot)>) {
         if committed(&self.fw, self.slot) {
             return;
         }
-        let mut nv = Nv {
-            record: self.fw,
-            one_shot: Some(self.slot),
+        let epoch = self.fw.slot(self.slot).release_seq;
+        let me = RefCell::new(*self);
+        let held = Cell::new(false);
+        let waiting = Cell::new(racing);
+        let race = |up: &mut Up| {
+            if let Some(change) = waiting.take() {
+                let mut nv = Nv {
+                    record: up.fw,
+                    one_shot: None,
+                };
+                change(&mut nv, up.slot);
+                up.user_set(tape, nv, Tag::Other, false);
+            }
         };
-        let epoch = nv.record.slot(self.slot).release_seq;
-        commit(&mut nv, self.slot, epoch);
-        let _ = self.bootrec_set(tape, nv, Tag::Commit(self.slot), false);
+        let _ = (self.k.commit_step)(
+            &mut || held.set(true),
+            &mut || {
+                let read = me.borrow().fw;
+                if !held.get() {
+                    race(&mut me.borrow_mut());
+                }
+                Some(read)
+            },
+            self.slot,
+            epoch,
+            &mut |nv| {
+                let mut up = me.borrow_mut();
+                let tag = Tag::Commit(up.slot);
+                up.bootrec_set(tape, nv, tag, false).map(drop).map_err(drop)
+            },
+        );
+        *self = me.into_inner();
+        race(self);
     }
 }
 
@@ -235,6 +278,17 @@ fn tails(up: Up) -> Vec<Vec<Write>> {
     };
     if trial {
         run(&|up, tape| up.commit(tape));
+        // `updated`'s set racing probation's commit for SETTING (#1567's
+        // review): a recovery request, and a rollback.
+        run(&|up, tape| up.commit_racing(tape, Some(|nv, _| recovery(nv))));
+        run(&|up, tape| {
+            up.commit_racing(
+                tape,
+                Some(|nv, slot| {
+                    rollback(nv, slot);
+                }),
+            )
+        });
     }
     let commits: &[bool] = if trial { &[false, true] } else { &[false] };
     for &commits in commits {
@@ -323,7 +377,9 @@ pub fn plans(k: &Kernel, slot: Slot, record: Record) -> Vec<Vec<Write>> {
         let tape = Tape::default();
         let told = Cell::new((record, Tag::Other));
         let stored = Cell::new(!changed);
-        let written = (k.up_writes)(
+        let lost = Cell::new(false);
+        let written = (k.up_step)(
+            k.up_writes,
             &mut || {
                 told.set((upped.record, tag));
                 tape.push(Write::Told(upped.record, tag));
@@ -349,7 +405,9 @@ pub fn plans(k: &Kernel, slot: Slot, record: Record) -> Vec<Vec<Write>> {
                 tape.push(Write::OneShot(upped.one_shot));
                 Ok(())
             },
+            &mut || lost.set(true),
         );
+        let _ = written;
         let base = tape.take();
         let fw = if stored.get() { upped.record } else { record };
         let up = Up {
@@ -357,7 +415,7 @@ pub fn plans(k: &Kernel, slot: Slot, record: Record) -> Vec<Vec<Write>> {
             slot,
             fw,
             told: told.get(),
-            lost: matches!(written, Err(UpFailed::Record(()))),
+            lost: lost.get(),
         };
         for tail in tails(up) {
             let mut plan = base.clone();

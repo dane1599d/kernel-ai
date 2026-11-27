@@ -41,6 +41,16 @@
 //!    otherwise a store that refuses every record would boot the trial for
 //!    ever.
 //!
+//! And after each commit's write:
+//!
+//! 9. the record is the commit of the record the firmware held, so a
+//!    BOOTREC_SET that landed before it is kept (probation holds SETTING
+//!    from its read to its set, and `updated`'s set racing it waits).
+//!
+//! The kernel's glue around these steps ([`bootslot::glue`]: what
+//! BOOTREC_SET hands `may_set`, what *up* keeps when its record is lost, and
+//! the commit's SETTING) is driven too, through the same functions.
+//!
 //! `tests/mutations.rs` runs the same walk with each of the kernel's fixes
 //! undone and sees it fail.
 
