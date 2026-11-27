@@ -106,23 +106,44 @@ impl Event {
     }
 
     /// A hardware exception, with the error code it delivers if any.
-    /// Checked as VM entry would ([`Event::check`]).
+    /// Checked as VM entry would ([`Event::check`]) for a guest in protected
+    /// mode; [`Event::exception_in`] says which.
     pub const fn exception(vector: u8, error_code: Option<u32>) -> Result<Self, Refusal> {
+        Self::exception_in(vector, error_code, true)
+    }
+
+    /// [`Event::exception`] for a guest whose CR0.PE is `protected`: with it
+    /// clear (real mode, which unrestricted guest allows), no error code is
+    /// delivered, and VM entry refuses one.
+    pub const fn exception_in(
+        vector: u8,
+        error_code: Option<u32>,
+        protected: bool,
+    ) -> Result<Self, Refusal> {
         let event = Self {
             vector,
             kind: EventType::HardwareException,
             error_code,
             length: 0,
         };
-        match event.check() {
+        match event.check_in(protected) {
             Ok(()) => Ok(event),
             Err(e) => Err(e),
         }
     }
 
     /// The checks VM entry makes of the injection field (26.2.1.3), so a
-    /// bad event is refused here rather than failing the entry.
+    /// bad event is refused here rather than failing the entry, for a guest
+    /// in protected mode (CR0.PE set): see [`Event::check_in`].
     pub const fn check(&self) -> Result<(), Refusal> {
+        self.check_in(true)
+    }
+
+    /// [`Event::check`] for a guest whose CR0.PE is `protected`. A hardware
+    /// exception that normally delivers an error code must have one, except
+    /// that with unrestricted guest and CR0.PE clear it must not (26.2.1.3):
+    /// an injected #GP into a real-mode guest has no error code.
+    pub const fn check_in(&self, protected: bool) -> Result<(), Refusal> {
         let v = self.vector;
         match self.kind {
             EventType::Nmi if v != 2 => return Err(Refusal::Vector(v)),
@@ -130,7 +151,8 @@ impl Event {
             EventType::Other if v != 0 => return Err(Refusal::Vector(v)),
             _ => {}
         }
-        let wants_code = matches!(self.kind, EventType::HardwareException) && delivers_code(v);
+        let wants_code =
+            protected && matches!(self.kind, EventType::HardwareException) && delivers_code(v);
         if wants_code != self.error_code.is_some() {
             return Err(Refusal::ErrorCode(v));
         }
