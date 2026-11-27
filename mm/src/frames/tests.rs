@@ -1,4 +1,5 @@
 use super::*;
+use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -228,4 +229,98 @@ fn a_run_below_a_limit_ends_at_or_below_it() {
     // A limit past the bitmap is the bitmap's end.
     assert_eq!(bitmap.allocate_contiguous_below(u64::MAX, 4, 4), Some(104));
     assert_eq!(bitmap.free_count(), 300 - 90 - 10 - 1 - 4);
+}
+
+/// The first aligned free run of `count` frames that ends at or below `limit`,
+/// frame by frame.
+fn naive_below(bitmap: &FrameBitmap, limit: u64, count: u64, align: u64) -> Option<u64> {
+    let end = bitmap.total().min(limit);
+    let mut start = 0;
+    while start + count <= end {
+        match (start..start + count).find(|&frame| !bitmap.is_free(frame)) {
+            Some(used) => start = (used + 1).next_multiple_of(align),
+            None => return Some(start),
+        }
+    }
+    None
+}
+
+/// G60: a bounded request never takes a frame at or above its limit, takes
+/// only free frames, and is refused exactly when no aligned run fits below
+/// the limit, with nothing taken. Bitmaps at random densities, with limits
+/// below, inside and past them, and with frames above the limit left free so
+/// a search that ignored the limit would find them.
+#[test]
+fn a_bounded_run_never_reaches_its_limit_and_fails_cleanly() {
+    let mut state = 0x60;
+    for round in 0..3_000 {
+        let frames = 1 + splitmix(&mut state) % 900;
+        let mut storage = vec![0; FrameBitmap::words_for(frames)];
+        let mut bitmap = FrameBitmap::new(&mut storage, frames);
+        bitmap.release_range(0, frames);
+        let density = splitmix(&mut state) % 100;
+        let mut frame = 0;
+        while frame < frames {
+            let run = 1 + splitmix(&mut state) % 9;
+            if splitmix(&mut state) % 100 < density {
+                bitmap.reserve_range(frame, run);
+            }
+            frame += run;
+        }
+        for _ in 0..8 {
+            let limit = match splitmix(&mut state) % 4 {
+                0 => 0,
+                1 => splitmix(&mut state) % (frames + 1),
+                2 => frames + splitmix(&mut state) % 64,
+                _ => u64::MAX,
+            };
+            let count = 1 + splitmix(&mut state) % 70;
+            let align = [1, 2, 3, 8, 64, 512][(splitmix(&mut state) % 6) as usize];
+            let free = bitmap.free_count();
+            let expected = naive_below(&bitmap, limit, count, align);
+            let got = bitmap.allocate_contiguous_below(limit, count, align);
+            let what =
+                format!("round {round}: {count} frames aligned {align} below {limit} of {frames}");
+            assert_eq!(got, expected, "{what}");
+            match got {
+                Some(first) => {
+                    assert!(first + count <= limit && first + count <= frames, "{what}");
+                    assert!(first.is_multiple_of(align), "{what}");
+                    assert!((first..first + count).all(|f| !bitmap.is_free(f)), "{what}");
+                    assert_eq!(bitmap.free_count(), free - count, "{what}");
+                }
+                None => assert_eq!(bitmap.free_count(), free, "{what}: a refusal took frames"),
+            }
+        }
+    }
+}
+
+/// Asked until it is refused, a bounded request takes every frame below its
+/// limit and none above it, then keeps failing; a freed frame below the
+/// limit is found again.
+#[test]
+fn a_bounded_request_runs_out_below_its_limit_and_no_further() {
+    let mut storage = vec![0; FrameBitmap::words_for(1000)];
+    let mut bitmap = FrameBitmap::new(&mut storage, 1000);
+    bitmap.release_range(1, 999);
+    bitmap.reserve_range(300, 5);
+    let limit = 640;
+    let mut got = Vec::new();
+    while let Some(frame) = bitmap.allocate_contiguous_below(limit, 1, 1) {
+        assert!(frame < limit);
+        got.push(frame);
+        assert!(got.len() < 1000, "the search never ends");
+    }
+    assert_eq!(got.len(), 640 - 1 - 5);
+    assert!((1..limit).all(|f| !bitmap.is_free(f)));
+    assert!((limit..1000).all(|f| bitmap.is_free(f)));
+    assert_eq!(bitmap.free_count(), 1000 - limit);
+    for _ in 0..3 {
+        assert_eq!(bitmap.allocate_contiguous_below(limit, 1, 1), None);
+    }
+    assert_eq!(bitmap.free_count(), 1000 - limit);
+    assert_eq!(bitmap.free(17), Ok(()));
+    assert_eq!(bitmap.allocate_contiguous_below(limit, 1, 1), Some(17));
+    // Unbounded, the same bitmap still serves from above the limit.
+    assert_eq!(bitmap.allocate_contiguous(1, 1), Some(limit));
 }
