@@ -155,7 +155,10 @@ pub enum Node {
 
 fn name11(name: &str) -> [u8; 11] {
     let mut out = [b' '; 11];
-    let (base, ext) = name.split_once('.').unwrap_or((name, ""));
+    let (base, ext) = match name {
+        "." | ".." => (name, ""),
+        _ => name.split_once('.').unwrap_or((name, "")),
+    };
     out[..base.len()].copy_from_slice(base.as_bytes());
     out[8..8 + ext.len()].copy_from_slice(ext.as_bytes());
     out
