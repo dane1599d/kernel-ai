@@ -129,7 +129,7 @@ impl Found {
     }
 
     /// Whether this is a directory's "." or ".." entry.
-    pub(crate) fn is_dot(e: &[u8]) -> bool {
+    fn is_dot(e: &[u8]) -> bool {
         &e[..11] == b".          " || &e[..11] == b"..         "
     }
 }
@@ -137,7 +137,9 @@ impl Found {
 impl<D: Disk> Volume<D> {
     /// Calls `each` with every file and directory entry in the directory that
     /// starts at `first`, read through FAT copy `copy`, with the long name that
-    /// belongs to it, until `each` returns something.
+    /// belongs to it, until `each` returns something. "." and ".." are never
+    /// given to `each`, whatever long name comes before them, so a lookup and
+    /// the whole-volume walk skip the same entries.
     pub(crate) fn scan<T>(
         &mut self,
         copy: u32,
@@ -157,6 +159,7 @@ impl<D: Disk> Volume<D> {
                         (0xE5, _) => long.active = false,
                         (_, attr) if attr & 0x3F == ATTR_LFN => long.take(e),
                         (_, attr) if attr & ATTR_VOLUME != 0 => long.active = false,
+                        _ if Found::is_dot(e) => long.active = false,
                         _ => {
                             let got = each(e, long.name(e), Found::at(e, lba, at));
                             long.active = false;
