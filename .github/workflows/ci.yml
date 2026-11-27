@@ -175,7 +175,7 @@ jobs:
         run: cargo clippy -p kernel --target x86_64-unknown-none --features spikes -- -D warnings
       - name: Clippy for the engine crates on the soft-float kernel target
         if: steps.scope.outputs.code == 'true'
-        run: cargo clippy -p gguf -p cpufeat -p quant -p bpe -p infer -p svm -p vmx --target x86_64-unknown-none -- -D warnings
+        run: cargo clippy -p gguf -p cpufeat -p quant -p bpe -p infer -p svm -p vmx -p installer --target x86_64-unknown-none -- -D warnings
       - name: Clippy for espfat on the device target (no_std, row G43)
         if: steps.scope.outputs.code == 'true'
         run: cargo clippy -p espfat --target x86_64-unknown-none -- -D warnings
