@@ -38,6 +38,9 @@ use user::{println, sys};
 
 /// Slowest frames a missed figure logs.
 const SLOWEST: usize = 8;
+/// Frames to a log line: a line with all [`SLOWEST`] of four-digit frames ran
+/// past 150 bytes at 1440 frames, which the log does not keep whole.
+const PER_LINE: usize = 4;
 /// Cold text pages: each starts from an empty atlas, as S05-1's did.
 const COLD_PAGES: usize = 10;
 /// Times the reference work runs; its median is the runner's speed.
@@ -414,13 +417,16 @@ fn line(name: &str, samples: &[u64], budget: u64, pick: Pick) -> String {
         ));
         // Where the slow frames fell tells a steady cost (a run of them) from
         // a stall (a few, far apart): the CI log keeps it for the next miss.
-        println!("desk-perf: {name}: {}", slowest(samples));
+        for line in slowest(samples) {
+            println!("desk-perf: {name}: {line}");
+        }
     }
     text
 }
 
-/// The [`SLOWEST`] longest of `samples`, as `frame number ms`, in frame order.
-fn slowest(samples: &[u64]) -> String {
+/// The [`SLOWEST`] longest of `samples`, as `#frame ms`, in frame order, at most
+/// [`PER_LINE`] to a line: `the 8 slowest frames (1/2): #3 14.52, ...`.
+fn slowest(samples: &[u64]) -> Vec<String> {
     let mut order: Vec<usize> = (0..samples.len()).collect();
     order.sort_unstable_by_key(|&at| core::cmp::Reverse(samples[at]));
     order.truncate(SLOWEST);
@@ -429,7 +435,15 @@ fn slowest(samples: &[u64]) -> String {
         .iter()
         .map(|&at| format!("#{at} {}", ms(samples[at])))
         .collect();
-    format!("the {} slowest frames: {}", frames.len(), frames.join(", "))
+    let parts = frames.len().div_ceil(PER_LINE);
+    frames
+        .chunks(PER_LINE)
+        .enumerate()
+        .map(|(at, line)| {
+            let head = format!("the {} slowest frames ({}/{parts})", frames.len(), at + 1);
+            format!("{head}: {}", line.join(", "))
+        })
+        .collect()
 }
 
 fn ms(ns: u64) -> String {
