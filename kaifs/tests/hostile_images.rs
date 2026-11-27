@@ -13,11 +13,13 @@ mod hostile;
 mod map;
 
 use hostile::XorShift;
-use kaifs::check::{Cache, check};
+use kaifs::check::{Cache, Leaves, check, summarise};
 use kaifs::format::{BlockPtr, KIND_NODE};
 use kaifs::fs::{HOME, SYSTEM};
+use kaifs::items::K_INODE;
 use kaifs::ns_check::check_namespace;
 use kaifs::repair::repair;
+use kaifs::repair_fs::{mount_to_repair, repair_fs};
 use kaifs::tree::{Child, Key, Node};
 use kaifs::vol::SnapKind;
 use kaifs::{BLOCK, Block, CsumKind, FileType, Fs, MemDisk, ROOT};
@@ -299,6 +301,37 @@ fn check_of(disk: MemDisk) -> Result<kaifs::check::Report, String> {
     check(&mut fs, &mut Cache::default())
 }
 
+/// Repairs `disk`, which `check` refuses, made from `base` by a lie about a
+/// birth: after, it checks, home's snapshots read as in `base`, and a write
+/// over the shared file commits and checks again.
+fn repairs(disk: MemDisk, base: &MemDisk) {
+    let snaps = |report: &kaifs::check::Report| {
+        let home = &report.volumes[&HOME].snaps;
+        home.iter()
+            .map(|(id, t)| (*id, t.digest))
+            .collect::<Vec<_>>()
+    };
+    let want = snaps(&check_of(base.clone()).unwrap());
+    let (mut fs, _) = mount_to_repair(disk).unwrap();
+    let lines = repair_fs(&mut fs).unwrap();
+    assert!(!lines.is_empty());
+    let mut fs = Fs::mount(fs.into_dev()).unwrap();
+    for round in 0..2 {
+        let mut cache = Cache::default();
+        let report = check(&mut fs, &mut cache)
+            .unwrap_or_else(|e| panic!("round {round}: {e} after {lines:#?}"));
+        check_namespace(&mut fs, &mut cache).unwrap();
+        assert_eq!(snaps(&report), want, "after {lines:#?}");
+        fs.set_volume(HOME).unwrap();
+        let dir = fs.lookup(ROOT, "d").unwrap().unwrap().ino;
+        for name in ["big", "file-001", "file-199"] {
+            let f = fs.lookup(dir, name).unwrap().unwrap().ino;
+            fs.write_file(f, &[9; 5000]).unwrap();
+        }
+        fs.commit().unwrap();
+    }
+}
+
 /// A writer frees a replaced block only when its pointer's birth is after the
 /// newest snapshot, so `check` must refuse a pointer from the future: a tree's
 /// root born after the tree's generation, a child or a record born after the
@@ -322,11 +355,12 @@ fn a_pointer_born_after_its_tree_or_its_holder_is_refused() {
             ..ptr
         },
     );
-    let refused = check_of(disk).unwrap_err();
+    let refused = check_of(disk.clone()).unwrap_err();
     assert!(
         refused.contains("a tree root newer than its tree"),
         "{refused}"
     );
+    repairs(disk, &base);
     // Holders written after the snapshot, so the snapshot does not read them.
     let parent = |node: u64| map.blocks[&node].1.birth;
     let after = |h: &Holder| match h {
@@ -350,8 +384,9 @@ fn a_pointer_born_after_its_tree_or_its_holder_is_refused() {
         let birth = parent(node) + 1;
         map.clone()
             .point(&mut disk, holder, BlockPtr { birth, ..ptr });
-        let refused = check_of(disk).unwrap_err();
+        let refused = check_of(disk.clone()).unwrap_err();
         assert!(refused.contains(want), "{want}: {refused}");
+        repairs(disk, &base);
     }
 }
 
@@ -380,6 +415,98 @@ fn a_block_two_trees_reach_with_two_births_is_refused() {
     let birth = map.blocks[&node].1.birth;
     map.clone()
         .point(&mut disk, holder, BlockPtr { birth, ..ptr });
-    let refused = check_of(disk).unwrap_err();
+    let refused = check_of(disk.clone()).unwrap_err();
     assert!(refused.contains("reached with two births"), "{refused}");
+    repairs(disk, &base);
+}
+
+/// A live node's pointer from after the snapshot over a leaf the snapshot
+/// shares, its birth past every transaction: a writer that skipped `check`
+/// must not free the leaf on that word. Every file written over, so the leaf
+/// (it holds an inode) is replaced, three commits, and the snapshot still
+/// reads.
+#[test]
+fn a_writer_frees_no_block_on_a_birth_past_its_transaction() {
+    let (base, snapshot) = changed_after_a_snapshot();
+    let map = Map::of(&mut base.clone());
+    let mut probe = Fs::mount(base.clone()).unwrap();
+    probe.set_volume(HOME).unwrap();
+    let dir = probe.lookup(ROOT, "d").unwrap().unwrap().ino;
+    let file = probe.lookup(dir, "file-100").unwrap().unwrap().ino;
+    let holds_an_inode = |addr: u64| match Node::decode(&block(&base, addr)) {
+        Ok(Node::Leaf(items)) => items
+            .iter()
+            .any(|(k, _)| k.kind == K_INODE && k.oid == file),
+        _ => false,
+    };
+    let (holder, ptr, _) = *map
+        .blocks
+        .values()
+        .find(|(h, p, w)| match h {
+            Holder::Child { node, .. } => {
+                *w == What::Node
+                    && p.birth <= snapshot
+                    && map.blocks[node].1.birth > snapshot
+                    && holds_an_inode(p.addr)
+            }
+            _ => false,
+        })
+        .expect("a live node after the snapshot over a leaf before it");
+    let mut disk = base.clone();
+    map.clone().point(
+        &mut disk,
+        holder,
+        BlockPtr {
+            birth: 1 << 60,
+            ..ptr
+        },
+    );
+    let snaps = |report: kaifs::check::Report| report.volumes[&HOME].snaps.clone();
+    let want = snaps(check_of(base).unwrap());
+    let mut fs = Fs::mount(disk).unwrap();
+    fs.set_volume(HOME).unwrap();
+    for round in 0..3u8 {
+        for n in 0..200u32 {
+            let f = fs
+                .lookup(dir, &format!("file-{n:03}"))
+                .unwrap()
+                .unwrap()
+                .ino;
+            fs.write_file(f, &[round; 300]).unwrap();
+        }
+        fs.commit().unwrap();
+    }
+    let report = check(&mut fs, &mut Cache::default()).unwrap();
+    assert_eq!(snaps(report), want);
+}
+
+/// The memo is keyed by a node's address and checksum, not by its holder's
+/// birth: a second pointer to a node summarised already, born before the
+/// node's children, is refused all the same.
+#[test]
+fn the_memo_holds_every_pointer_to_a_node_to_its_own_birth() {
+    let (base, _) = changed_after_a_snapshot();
+    let mut fs = Fs::mount(base).unwrap();
+    let root = fs.live_root_of(HOME).unwrap();
+    let mut cache = Cache::default();
+    summarise(&mut fs.io, &root, Leaves::Values, &mut cache).unwrap();
+    let older = BlockPtr { birth: 1, ..root };
+    let refused = summarise(&mut fs.io, &older, Leaves::Values, &mut cache).unwrap_err();
+    assert!(refused.contains("a child newer than it"), "{refused}");
+}
+
+/// A volume table whose root is newer than its commit: repair writes the
+/// table again.
+#[test]
+fn a_volume_table_newer_than_its_commit_is_written_again() {
+    let (base, _) = changed_after_a_snapshot();
+    let map = Map::of(&mut base.clone());
+    let mut disk = base.clone();
+    let ptr = map.sb.volumes;
+    let birth = map.sb.generation + 1;
+    map.clone()
+        .point(&mut disk, Holder::Volumes, BlockPtr { birth, ..ptr });
+    let refused = check_of(disk.clone()).unwrap_err();
+    assert!(refused.contains("the volume table is newer"), "{refused}");
+    repairs(disk, &base);
 }
