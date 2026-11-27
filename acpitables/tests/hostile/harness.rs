@@ -79,7 +79,50 @@ pub fn acpi_tables(data: &[u8]) {
         fix(&mut fixed[..20], 8);
         fix(&mut fixed[..36], 32);
         check(&fixed);
+        // And again with the root table's checksum, and each table it lists,
+        // fixed over the length its own header claims, so mutations reach the
+        // MADT, HPET, MCFG and FADT readers and not only the checksum checks.
+        refix_tables(&mut fixed);
+        check(&fixed);
     }
+}
+
+/// Fixes the checksum (byte 9) of the table at physical `phys` if the length
+/// its header claims lies wholly inside `mem`; gives that length.
+fn fix_table(mem: &mut [u8], phys: u64) -> Option<usize> {
+    let at = usize::try_from(phys.checked_sub(BASE)?).ok()?;
+    let len = u32::from_le_bytes(mem.get(at + 4..at + 8)?.try_into().ok()?) as usize;
+    let end = at.checked_add(len)?;
+    if len < 36 || end > mem.len() {
+        return None;
+    }
+    fix(&mut mem[at..end], 9);
+    Some(len)
+}
+
+/// [`fix_table`] on the root the RSDP names and on every table it lists.
+pub fn refix_tables(mem: &mut [u8]) {
+    let wide = mem[15] >= 2;
+    let root = if wide {
+        u64::from_le_bytes(mem[24..32].try_into().unwrap())
+    } else {
+        u64::from(u32::from_le_bytes(mem[16..20].try_into().unwrap()))
+    };
+    let Some(len) = fix_table(mem, root) else {
+        return;
+    };
+    let at = (root - BASE) as usize;
+    let width = if wide { 8 } else { 4 };
+    // The listed tables' addresses, read before any is changed: a table may
+    // overlap the root, and the root's own checksum is fixed last.
+    let listed: Vec<u64> = mem[at + 36..at + len]
+        .chunks_exact(width)
+        .map(|c| c.iter().rev().fold(0u64, |v, &b| v << 8 | u64::from(b)))
+        .collect();
+    for phys in listed {
+        fix_table(mem, phys);
+    }
+    fix_table(mem, root);
 }
 
 /// Sets `bytes[at]` so `bytes` sums to zero.

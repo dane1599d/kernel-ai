@@ -181,3 +181,65 @@ fn rewritten_crcs_still_refuse_a_misleading_table() {
     harness::recrc(&mut disk);
     assert_eq!(disk, base);
 }
+
+/// The backup array's first four entries, where the backup header says it is.
+fn backup_entries(disk: &[u8]) -> std::ops::Range<usize> {
+    let lba = u64::from_le_bytes(disk[BACKUP + 72..BACKUP + 80].try_into().unwrap()) as usize;
+    lba * SECTOR..lba * SECTOR + 4 * 128
+}
+
+/// With the primary header spoiled (its signature, which no CRC rewrite
+/// mends), only the backup's array can be read, so every mutation of it
+/// reaches the entry checks or is refused.
+fn backup_only(disk: &mut [u8]) {
+    disk[PRIMARY] ^= 0xFF;
+}
+
+#[test]
+fn the_backup_array_is_the_sample_s_and_a_damaged_one_is_refused() {
+    let mut disk = sample();
+    let entries = backup_entries(&disk);
+    assert_ne!(entries.start, 2 * SECTOR, "the backup has its own array");
+    assert_eq!(disk[entries.clone()], disk[ENTRIES], "the same entries");
+    backup_only(&mut disk);
+    let table = harness::check(&disk).expect("the backup reads");
+    assert!(table.from_backup && table.partitions.len() == 4);
+    // One flipped bit in the backup array, its CRC left: refused, and the
+    // primary is spoiled too, so nothing reads.
+    disk[entries.start + 40] ^= 1;
+    assert!(harness::check(&disk).is_none());
+    // Rewritten, the entry now ends a sector early and is the table's.
+    assert!(harness::recrc(&mut disk));
+    let table = harness::check(&disk).expect("a rewritten backup reads");
+    assert!(table.from_backup);
+}
+
+#[test]
+fn mutated_backup_arrays_never_mislead() {
+    let disk = sample();
+    let entries = backup_entries(&disk);
+    // Every field of the A and B slots' entries.
+    for entry in 1..3 {
+        for f in ENTRY_FIELDS {
+            let at = entries.start + entry * 128 + f;
+            sweep_fields(&disk, at..at + 1, |_, mutated| {
+                let mut spoiled = mutated.to_vec();
+                backup_only(&mut spoiled);
+                harness::gpt_read(&spoiled);
+            });
+        }
+    }
+    // Random bytes over the first four entries, then over the backup header.
+    for (i, range) in [entries.clone(), BACKUP..BACKUP + SECTOR]
+        .into_iter()
+        .enumerate()
+    {
+        fuzz(&disk[range.clone()], 0x6b00 + i as u64, 400, |part| {
+            let mut whole = disk.clone();
+            let n = part.len().min(range.len());
+            whole[range.start..range.start + n].copy_from_slice(&part[..n]);
+            backup_only(&mut whole);
+            harness::gpt_read(&whole);
+        });
+    }
+}
