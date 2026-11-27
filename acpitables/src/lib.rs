@@ -1,6 +1,7 @@
 //! Minimal ACPI reader: walks RSDP, then XSDT or RSDT, and extracts what the kernel
 //! needs from the MADT (local APIC, I/O APICs, ISA interrupt overrides, CPUs) and the
 //! HPET table, and from the FADT the reset register and the 8042 flag ([`fadt`]).
+//! [`ivrs`] reads an AMD IOMMU's IVRS table on its own, for `amdvi`.
 //! No AML. Host-tested against synthetic tables. [`hpet_counter`]
 //! reads the HPET's main counter so a device that splits the read never tears it.
 
@@ -10,6 +11,7 @@ extern crate alloc;
 
 pub mod fadt;
 pub mod hpet_counter;
+pub mod ivrs;
 
 use alloc::vec::Vec;
 
@@ -122,7 +124,7 @@ impl Platform {
     }
 }
 
-const SDT_HEADER_LEN: usize = 36;
+pub(crate) const SDT_HEADER_LEN: usize = 36;
 
 /// The longest table read. The MADT of a machine with a thousand CPUs is under
 /// 20 KiB; a table's length is a u32, so firmware could otherwise claim 4 GiB.
