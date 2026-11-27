@@ -45,10 +45,19 @@ impl<D: Disk> Volume<D> {
     }
 
     /// The clusters of a file of `size` bytes that starts at `first`, read
-    /// through the FAT copy the volume reads. The chain must be exactly as long
-    /// as the size needs, and an empty file has no chain.
-    pub(crate) fn file_chain(&mut self, first: u32, size: u32) -> Result<Vec<u32>, Error> {
+    /// through FAT copy `copy`. The chain must be exactly as long as the size
+    /// needs, and an empty file has no chain. A size the volume cannot hold is
+    /// refused before any link is read.
+    pub(crate) fn file_chain(
+        &mut self,
+        copy: u32,
+        first: u32,
+        size: u32,
+    ) -> Result<Vec<u32>, Error> {
         let need = size.div_ceil(self.geometry.cluster_bytes());
+        if need > self.geometry.clusters {
+            return Err(Error::Corrupt("a file is larger than the volume"));
+        }
         if need == 0 {
             return match first {
                 0 => Ok(Vec::new()),
@@ -59,7 +68,7 @@ impl<D: Disk> Volume<D> {
         let mut at = self.first(first)?;
         loop {
             chain.push(at);
-            match self.link(self.read_fat, at)? {
+            match self.link(copy, at)? {
                 Link::Next(next) if chain.len() < need as usize => at = next,
                 Link::Next(_) => return Err(Error::Corrupt("a chain is longer than its file")),
                 Link::End if chain.len() == need as usize => return Ok(chain),
@@ -69,9 +78,10 @@ impl<D: Disk> Volume<D> {
         }
     }
 
-    /// The clusters of the directory that starts at `first`. Following at most
-    /// FAT's largest directory also ends a chain that loops.
-    pub(crate) fn dir_chain(&mut self, first: u32) -> Result<Vec<u32>, Error> {
+    /// The clusters of the directory that starts at `first`, through FAT copy
+    /// `copy`. Following at most FAT's largest directory also ends a chain that
+    /// loops.
+    pub(crate) fn dir_chain(&mut self, copy: u32, first: u32) -> Result<Vec<u32>, Error> {
         let most = MAX_DIR_BYTES.div_ceil(self.geometry.cluster_bytes()) as usize;
         let mut chain = Vec::new();
         let mut at = self.first(first)?;
@@ -80,7 +90,7 @@ impl<D: Disk> Volume<D> {
                 return Err(Error::Corrupt("a directory is larger than FAT allows"));
             }
             chain.push(at);
-            match self.link(self.read_fat, at)? {
+            match self.link(copy, at)? {
                 Link::Next(next) => at = next,
                 Link::End => return Ok(chain),
                 Link::Free => return Err(Error::Corrupt("a chain reaches a free cluster")),
