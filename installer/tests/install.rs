@@ -390,6 +390,34 @@ fn no_table(disk: &Mem) -> bool {
         .all(|(lba, s)| !decides(*lba, s.len()) || s.iter().all(|x| *x == [0; S]))
 }
 
+/// A disk whose sector `at` fails to read.
+struct Failing {
+    disk: Mem,
+    at: u64,
+}
+
+impl installer::Disk for Failing {
+    fn sectors(&self) -> u64 {
+        self.disk.sectors
+    }
+
+    fn read(&mut self, lba: u64, out: &mut [u8]) -> Result<(), installer::IoError> {
+        let n = (out.len() / S) as u64;
+        if (lba..lba + n).contains(&self.at) {
+            return Err(installer::IoError);
+        }
+        installer::Disk::read(&mut self.disk, lba, out)
+    }
+
+    fn write(&mut self, lba: u64, data: &[u8]) -> Result<(), installer::IoError> {
+        installer::Disk::write(&mut self.disk, lba, data)
+    }
+
+    fn flush(&mut self) -> Result<(), installer::IoError> {
+        installer::Disk::flush(&mut self.disk)
+    }
+}
+
 /// A source whose sector `at` changes at its `change_at`th read.
 struct Flaky<'a> {
     disk: &'a mut Mem,
@@ -486,8 +514,9 @@ fn a_copy_that_does_not_read_back_writes_no_table() {
         let mut disk = Mem::new(disk_sectors());
         let got = apply(&base, &mut source, &mut disk);
         assert!(matches!(got, Err(Error::Verify(_))), "{why}: {got:?}");
+        // The copies landed, so it is not blank, but no GPT reads.
         assert!(
-            matches!(current(&mut disk.cut()), Current::Blank),
+            !matches!(current(&mut disk.cut()), Current::Gpt(_)),
             "{why}: a table"
         );
         assert!(no_table(&disk), "{why}: a table write");
@@ -557,9 +586,54 @@ fn the_current_contents_say_blank_gpt_or_what_else() {
     // A whole-disk FAT32 volume, no MBR.
     let mut floppy = holding(&[(0, fat)]);
     assert_eq!(found(&mut floppy), Found::Fat);
-    // Bytes only in the backup GPT area.
-    let mut tail_only = holding(&[(disk_sectors() - 1, [0x11; S])]);
-    assert_eq!(found(&mut tail_only), Found::Unknown);
+    // Bytes only in the last sector, the last of the primary array (LBA 33)
+    // or the first of the backup array (sectors - 33).
+    let n = disk_sectors();
+    for lba in [
+        n - 1,
+        diskmap::FIRST_USABLE - 1,
+        n - 1 - diskmap::ENTRY_SECTORS,
+    ] {
+        let mut one = holding(&[(lba, [0x11; S])]);
+        assert_eq!(found(&mut one), Found::Unknown, "bytes at {lba}");
+    }
+    // Volumes whose magic is past the GPT areas, or at offset 3.
+    let btrfs = with_bytes(zero, 64, b"_BHRfS_M");
+    let iso = with_bytes(zero, 1, b"CD001");
+    let ntfs = with_bytes(with_bytes(signed, 3, b"NTFS    "), 446 + 4, &[0x6E]);
+    let exfat = with_bytes(with_bytes(signed, 3, b"EXFAT   "), 446 + 4, &[0x61]);
+    for (want, lba, sector) in [
+        (Found::Btrfs, 128, btrfs),
+        (Found::Iso9660, 64, iso),
+        (Found::Ntfs, 0, ntfs),
+        (Found::ExFat, 0, exfat),
+    ] {
+        assert_eq!(found(&mut holding(&[(lba, sector)])), want);
+    }
+    // A zeroed table with its partitions left in place: not blank.
+    let mut zapped = disk.cut();
+    for lba in (0..diskmap::FIRST_USABLE).chain(n - 1 - diskmap::ENTRY_SECTORS..n) {
+        zapped.put(lba, zero);
+    }
+    assert_eq!(found(&mut zapped), Found::Unknown);
+    // Bytes just past what is read: blank, as the row says.
+    let past = holding(&[
+        (installer::HEAD, [0x11; S]),
+        (n - installer::TAIL - 1, [0x11; S]),
+    ]);
+    assert_eq!(current(&mut past.clone()), Current::Blank);
+
+    // A disk that fails to read, in its GPT or past it: refused outright.
+    for at in [1, 100] {
+        let mut failing = Failing {
+            disk: Mem::new(n),
+            at,
+        };
+        let got = current(&mut failing);
+        assert_eq!(got, Current::ReadFails, "a read at {at}");
+        let refused = plan(target("z"), running.source(), &got);
+        assert_eq!(refused, Err(Error::TargetUnreadable));
+    }
 
     // Planned over one LUKS disk: applied to a blank disk, to an ext4 disk,
     // or to another LUKS disk of the same size, refused and unwritten.

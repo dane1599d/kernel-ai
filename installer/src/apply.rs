@@ -103,8 +103,9 @@ fn release_seq(disk: &mut dyn Disk, lba: u64, most: u64) -> Result<u32, Error> {
 }
 
 /// Writes `plan` to `target`, copying from `source`, the running disk.
-/// Before any write, the target must still hold the table the plan was made
-/// over, and every volume to copy is checked, so a refusal writes nothing.
+/// Before any write, the target must still hold what the plan was made over
+/// ([`Plan::wipes`]), and every volume to copy is checked, so a refusal writes
+/// nothing.
 pub fn apply(plan: &Plan, source: &mut dyn Disk, target: &mut dyn Disk) -> Result<(), Error> {
     if target.sectors() != plan.sectors || current(target) != plan.wipes {
         return Err(Error::Target);

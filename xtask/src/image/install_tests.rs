@@ -128,8 +128,9 @@ fn an_install_from_a_release_disk_reads_back_and_checks() {
     let mut source = open(&from);
     let table = installer::current(&mut source).gpt().unwrap();
     let b = table.find(diskmap::KAI_B_TYPE).unwrap().first;
-    // A release disk's slot never hashes to the signed slot.img (its boot
-    // sector holds the partition's start), so the device hashes it itself.
+    // A release disk's kai-b never hashes to the signed slot.img: its boot
+    // sector holds the partition's start and kai-b's own volume id. So the
+    // device hashes it itself.
     let committed = installer::Committed {
         kind: diskmap::KAI_B_TYPE,
         sha256: volume_sha256(&mut source, b),
