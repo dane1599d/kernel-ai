@@ -3,7 +3,7 @@
 use crate::cases::TestCase;
 use crate::disk::{BASE_MEMORY_MIB, ModelDisk};
 use crate::options::Sizing;
-use crate::{Accel, Firmware};
+use crate::{Accel, Firmware, image};
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::path::Path;
@@ -160,22 +160,24 @@ pub fn boot_from_image(args: &mut [String], esp: &Path, target_dir: &Path) -> Re
 
 /// The slot cases: builds the R/A/B disk of `esp` (ADR 0008) as
 /// `target/slots.img` and boots from it in place of the directory ESP. With
-/// `keep_b`, slot B keeps what the last boot left in it (a resumed download).
+/// `keep`, the disk keeps what the last boot left: `kai-data` if `boot.data`,
+/// else slot B (a resumed download).
 pub fn boot_from_slots(
     args: &mut Vec<String>,
     esp: &Path,
     target_dir: &Path,
     cmdline: &str,
     record: &str,
-    keep_b: bool,
+    keep: bool,
     boot: BootDisk,
 ) -> Result<(), String> {
     let out = target_dir.join(SLOTS_IMAGE);
     let sector = if boot.four_k { 4096 } else { 512 };
-    let bytes = match keep_b {
+    let bytes = match keep {
+        _ if boot.data => image::slot_data::build(esp, &out, cmdline, record, sector, !keep)?,
         true if boot.four_k => return Err("a 4Kn slot disk does not keep slot B".into()),
-        true => crate::image::slots::build_keeping_b(esp, &out, cmdline, record)?,
-        false => crate::image::slots::build(esp, &out, cmdline, record, sector)?,
+        true => image::slots::build_keeping_b(esp, &out, cmdline, record)?,
+        false => image::slots::build(esp, &out, cmdline, record, sector)?,
     };
     let on = if boot.nvme { "NVMe" } else { "virtio-blk" };
     println!(
@@ -190,6 +192,8 @@ pub fn boot_from_slots(
 pub struct BootDisk {
     pub nvme: bool,
     pub four_k: bool,
+    /// `kai-data` as partition 5 (G58 part C), not a disk of its own.
+    pub data: bool,
 }
 
 impl BootDisk {
@@ -210,10 +214,8 @@ pub fn boot_from_disk(args: &mut Vec<String>, name: &str) -> Result<(), String> 
 
 /// [`boot_from_disk`] on the device `boot` names.
 pub fn boot_from_disk_on(args: &mut Vec<String>, name: &str, boot: BootDisk) -> Result<(), String> {
-    let at = args
-        .iter()
-        .position(|arg| arg == ESP_DRIVE)
-        .ok_or("no directory ESP drive to replace")?;
+    let at = args.iter().position(|arg| arg == ESP_DRIVE);
+    let at = at.ok_or("no directory ESP drive to replace")?;
     args[at] = format!("if=none,id=slots,format=raw,file={name}");
     args.splice(at + 1..at + 1, ["-device".to_string(), boot.device()]);
     Ok(())

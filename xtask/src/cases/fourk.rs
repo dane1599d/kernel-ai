@@ -2,9 +2,11 @@
 //! NVMe and on virtio-blk with `logical_block_size=4096`. `kai-data` on kaifs
 //! takes files through `fs` on boot 1 and reads them back on boot 2, and the
 //! model is read whole from its own disk on both boots. The boot disk keeps
-//! 512-byte sectors here; parts B and C move it.
+//! 512-byte sectors there; part B moves the slots to 4 KiB, and part C puts
+//! the whole system there: `kai-data` on the boot disk, and `updated`
+//! writing a slot of it.
 
-use super::{TestCase, case};
+use super::{TestCase, UpdateDisk, case};
 use crate::blklog::Data;
 use crate::disk::Fixture;
 
@@ -115,7 +117,162 @@ const SLOT_A_NVME: TestCase = slot(
     A_COMMITS,
 );
 
+/// Part C: the whole system on disks of 4 KiB blocks. The boot disk holds
+/// the slots and `kai-data` as partition 5, and the model is on a disk of
+/// its own; NVMe for both when `nvme`. R installs, A commits, then a boot
+/// writes files through `fs` and the next reads them back. `test=files` runs
+/// no slot lever (`kernel/src/main.rs`), so those two boots print no `slots:`
+/// line, and what they show is the boot disk's `kai-data` kept across boots.
+const fn os(
+    name: &'static str,
+    cmdline: &'static str,
+    nvme: bool,
+    expect: &'static [&'static str],
+) -> TestCase {
+    TestCase {
+        boot_data: true,
+        disk: Some(Fixture::Gguf),
+        nvme,
+        resets: false,
+        ..slot(name, cmdline, nvme, expect)
+    }
+}
+
+const WROTE: &str =
+    "filecheck: boot 1 wrote notes/plan.txt and a 20 KiB file through its Dir handle";
+const READ_BACK: &str = "filecheck: boot 2 read back what boot 1 wrote, byte for byte";
+
+const OS_4: TestCase = os(
+    "os-4k (4: the files read back)",
+    "test=files reread",
+    false,
+    &[MODEL, READ_BACK],
+);
+const OS_3: TestCase = TestCase {
+    then: Some(&OS_4),
+    ..os(
+        "os-4k (3: files written)",
+        "test=files",
+        false,
+        &[
+            "block: kai-data is blk disk \"kai-boot\"",
+            MODEL,
+            "fs: up; kai-data has ",
+            WROTE,
+        ],
+    )
+};
+const OS_2: TestCase = TestCase {
+    then: Some(&OS_3),
+    resets: true,
+    ..os("os-4k (2: kai-a commits)", SLOT_A.cmdline, false, A_COMMITS)
+};
+const OS_NVME_4: TestCase = os(
+    "os-4k-nvme (4: the files read back)",
+    "test=files reread",
+    true,
+    &[MODEL, READ_BACK],
+);
+const OS_NVME_3: TestCase = TestCase {
+    then: Some(&OS_NVME_4),
+    ..os(
+        "os-4k-nvme (3: files written)",
+        "test=files",
+        true,
+        &[
+            // The NVMe serial is padded to 20 bytes; the prefix is the point.
+            "block: kai-data is nvme disk \"kai-boot",
+            MODEL,
+            "fs: up; kai-data has ",
+            WROTE,
+        ],
+    )
+};
+const OS_NVME_2: TestCase = TestCase {
+    then: Some(&OS_NVME_3),
+    resets: true,
+    ..os(
+        "os-4k-nvme (2: kai-a commits)",
+        SLOT_A.cmdline,
+        true,
+        A_COMMITS,
+    )
+};
+
+/// Part C: `updated` writes slot B of a 4Kn boot disk, from the update disk
+/// (`updated=update`, with a 4 KiB `kai-data` disk for `/system/trust`) or
+/// as a copy of the running slot (`test=update`). Each write is padded to
+/// whole 4 KiB blocks (`kabi::update::BLOCK`), and B then boots.
+const B_UP: &[&str] = &[
+    "slots: booted kai-b (record read)",
+    "slots: up in kai-b (trial, 2 tries left)",
+    "slots: next boot kai-b",
+];
+const UPDATE_3: TestCase = TestCase {
+    data: Some(VIRTIO),
+    ..slot(
+        "update-4k (3: kai-b boots release 2)",
+        "test=slot panic=reset",
+        false,
+        B_UP,
+    )
+};
+const UPDATE_2: TestCase = TestCase {
+    then: Some(&UPDATE_3),
+    data: Some(VIRTIO),
+    update: Some(UpdateDisk::ROOT1),
+    ..slot(
+        "update-4k (2: updated writes kai-b from the disk)",
+        "test=update updated=update panic=reset",
+        false,
+        &[
+            "updated: the update disk's repository verifies: slot.img is release 2, ",
+            "updated: wrote release 2 into B and checked its sha256",
+            "update: restarting into kai-b",
+        ],
+    )
+};
+const STAGE_3: TestCase = slot(
+    "stage-4k-nvme (3: kai-b boots its trial)",
+    "test=slot panic=reset",
+    true,
+    B_UP,
+);
+const STAGE_2: TestCase = TestCase {
+    then: Some(&STAGE_3),
+    import: Some(Fixture::Gguf),
+    ..slot(
+        "stage-4k-nvme (2: updated copies kai-a into kai-b)",
+        "test=update panic=reset",
+        true,
+        &[
+            "updated: SLOT_WRITE refuses the active slot, and R from a trial slot",
+            "updated: staged B as release 2: ",
+            "update: restarting into kai-b",
+        ],
+    )
+};
+
 pub(super) const CASES: &[TestCase] = &[
+    TestCase {
+        then: Some(&OS_2),
+        resets: true,
+        ..os("os-4k", "test=slot panic=reset", false, INSTALL)
+    },
+    TestCase {
+        then: Some(&OS_NVME_2),
+        resets: true,
+        ..os("os-4k-nvme", "test=slot panic=reset", true, INSTALL)
+    },
+    TestCase {
+        then: Some(&UPDATE_2),
+        data: Some(VIRTIO),
+        ..slot("update-4k", "test=slot panic=reset", false, INSTALL)
+    },
+    TestCase {
+        then: Some(&STAGE_2),
+        ..slot("stage-4k-nvme", "test=slot panic=reset", true, INSTALL)
+    },
     TestCase {
         then: Some(&SLOT_A),
         ..slot("slot-4k", "test=slot panic=reset", false, INSTALL)
@@ -248,7 +405,11 @@ mod tests {
                 "-drive".to_string(),
                 "format=raw,file=fat:rw:esp".to_string(),
             ];
-            let boot = crate::qemu::BootDisk { nvme, four_k };
+            let boot = crate::qemu::BootDisk {
+                nvme,
+                four_k,
+                data: false,
+            };
             crate::qemu::boot_from_disk_on(&mut args, "slots.img", boot).unwrap();
             args[3].clone()
         };
@@ -263,13 +424,16 @@ mod tests {
                 crate::disk::BLOCKS_4K
             )
         );
-        // Every B case boots a 4Kn slot disk.
+        // Every slot case boots a 4Kn slot disk on each of its boots, and a C
+        // case's `kai-data` is the boot disk's on each, never a disk of its own.
         for case in CASES.iter().filter(|c| c.slots) {
-            assert!(
-                case.four_k && case.then.is_some_and(|t| t.four_k),
-                "{}",
-                case.name
-            );
+            let mut boot = Some(case);
+            while let Some(b) = boot {
+                assert!(b.slots && b.four_k, "{}", b.name);
+                assert_eq!(b.boot_data, case.boot_data, "{}", b.name);
+                assert!(!b.boot_data || b.data.is_none(), "{}", b.name);
+                boot = b.then;
+            }
         }
     }
 }

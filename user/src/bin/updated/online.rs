@@ -33,7 +33,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use bootslot::{Nv, Record, Slot};
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP};
-use kabi::update::{MAX_IO, SECTOR};
+use kabi::update::{BLOCK, MAX_IO, SECTOR};
 use kainet::chunks::{CHUNK, MAX_LIST};
 use kainet::download::Report;
 use kainet::http::{Keep, TlsConnect, Url};
@@ -106,15 +106,15 @@ struct Slots<'a> {
 
 impl SlotIo for Slots<'_> {
     fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), &'static str> {
-        if !offset.is_multiple_of(SECTOR) {
-            return Err("a slot write starts on a sector");
+        if !offset.is_multiple_of(BLOCK) {
+            return Err("a slot write starts on a block");
         }
         let mut done = 0;
         while done < bytes.len() {
             let began = sys::time_ns();
             let n = (bytes.len() - done).min(MAX_IO as usize);
-            let padded = n.next_multiple_of(SECTOR as usize);
-            // A last partial sector is written whole, zero past the image's end.
+            let padded = n.next_multiple_of(BLOCK as usize);
+            // A last partial block is written whole, zero past the image's end.
             self.buf[..n].copy_from_slice(&bytes[done..done + n]);
             self.buf[n..padded].fill(0);
             let sector = (offset + done as u64) / SECTOR;

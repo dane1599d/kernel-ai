@@ -56,7 +56,7 @@ use alloc::vec;
 use bootslot::{Nv, Record, Slot};
 use kabi::Error;
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, MAX_TRANSFER, RecvInfo};
-use kabi::update::{DISK, IMPORT, MAX_IO, NONE, SECTOR, WRITABLE};
+use kabi::update::{BLOCK, DISK, IMPORT, MAX_IO, NONE, SECTOR, WRITABLE};
 use modelchan::asker::Asker;
 use user::{println, sys};
 
@@ -582,8 +582,9 @@ fn image_sectors(handle: Handle, slot: u64) -> Result<u64, String> {
 }
 
 /// Copies `sectors` sectors of slot `from` into slot `to`, flushes, and reads
-/// them back.
+/// them back, in whole blocks ([`BLOCK`]): past the volume is the partition's.
 fn copy(handle: Handle, from: u64, to: u64, sectors: u64) -> Result<(), String> {
+    let sectors = sectors.next_multiple_of(BLOCK / SECTOR);
     let step = MAX_IO / SECTOR;
     let mut buf = vec![0u8; MAX_IO as usize];
     let mut back = vec![0u8; MAX_IO as usize];

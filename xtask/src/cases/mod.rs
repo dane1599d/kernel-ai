@@ -98,6 +98,9 @@ pub struct TestCase {
     /// With `slots`: the boot disk on NVMe, not virtio-blk (G58). With
     /// `four_k`, the boot disk too has 4 KiB blocks.
     pub boot_nvme: bool,
+    /// With `slots`: `kai-data` is partition 5 of the boot disk (G58 part C),
+    /// formatted on the chain's first boot and kept on the later ones.
+    pub boot_data: bool,
     /// Boot from the GPT disk image (`image/`) built from the ESP, not from QEMU's
     /// directory ESP.
     pub image: bool,
@@ -327,6 +330,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         nvme: false,
         four_k: false,
         boot_nvme: false,
+        boot_data: false,
         image: false,
         dns: false,
         echo: false,
