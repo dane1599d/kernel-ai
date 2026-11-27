@@ -653,6 +653,10 @@ fn a_negation_joined_to_the_cue_still_refuses_a_goal() {
         "trash the drafts in notes/q3, dont-delete the finals",
         "sort notes/q3, never-move the finals",
         "sort notes/q3 and do-not-move anything",
+        // A folder's path between a determiner and the word is no name's
+        // lead (#1556's review).
+        "trash the drafts in my notes/q3, dont-delete the finals",
+        "trash the drafts in my notes/q3 dont-delete the finals",
     ] {
         let scope = crate::goalscope::scope(line, |_| Ok(()));
         assert!(scope.is_err(), "{line}: {scope:?}");

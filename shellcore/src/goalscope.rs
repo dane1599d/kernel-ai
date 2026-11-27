@@ -41,12 +41,7 @@ pub(crate) fn scope(
     listed: impl Fn(&str) -> Result<(), String>,
 ) -> Result<goalcore::Scope, String> {
     // A folder's path is where the goal works, not what it does: its words
-    // ("notes/q3") name no action.
-    let words: Vec<&str> = line
-        .split_whitespace()
-        .filter(|w| !w.contains('/'))
-        .collect();
-    let words = words.join(" ");
+    // ("notes/q3") name no action: `outside_names` drops it.
     let mut rows: Vec<String> = Vec::new();
     for row in agentabi::ROWS.iter().filter(|row| considered(row)) {
         // Named by a whole cue ("go" is not in "good"); negated as consent
@@ -54,7 +49,7 @@ pub(crate) fn scope(
         // A joined name ("do-not-delete") is the name's words, not the
         // row's: its cue names no row and its "not" negates none, as consent
         // reads it (bug-hunt-6 H6-3).
-        let row_words = outside_names(&words, row);
+        let row_words = outside_names(line, row);
         let plain_words = plain(&row_words);
         let Some(cue) = row.cues.iter().find(|cue| names(&plain_words, cue)) else {
             continue;
@@ -160,7 +155,9 @@ const NAME_LEADS: &[&str] = &[
 /// A word of negation and the row's own cues stays too, unless a determiner
 /// before it makes it a name: "dont-delete the finals" says not to, "my
 /// do-not-delete folder" is a folder. A word that goes leaves its punctuation,
-/// so "todo.txt," still ends its clause (#1467's round 21).
+/// so "todo.txt," still ends its clause (#1467's round 21). A folder's path
+/// ("notes/q3") goes the same way, and is no determiner: "my notes/q3,
+/// dont-delete the finals" still says not to (#1556's review).
 fn outside_names(words: &str, row: &Action) -> String {
     let own = |part: &str| {
         part == "re"
@@ -174,6 +171,16 @@ fn outside_names(words: &str, row: &Action) -> String {
     let mut kept: Vec<&str> = Vec::new();
     let mut before = String::new();
     for raw in words.split_whitespace() {
+        // A path goes whole, leaving only the clause or sentence mark after it.
+        if raw.contains('/') {
+            let ends = raw.trim_end_matches(|c: char| ",;:!?.)\"'".contains(c));
+            let mark = &raw[ends.len()..];
+            if !mark.is_empty() {
+                kept.push(mark);
+            }
+            before = raw.to_ascii_lowercase();
+            continue;
+        }
         let word = raw.trim_matches(|c: char| !c.is_ascii_alphanumeric());
         let plain = plain(word);
         let parts: Vec<&str> = plain.split(' ').filter(|p| !p.is_empty()).collect();

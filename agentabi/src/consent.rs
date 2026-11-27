@@ -510,9 +510,10 @@ fn inside_a_name(words: &[Word], at: usize, len: usize, row: &Action) -> bool {
 /// its place under home: "trash-delete" in "open my trash-delete folder" for
 /// fs_trash on `/home/user/trash-delete`, "trash" in "open my trash folder"
 /// on `/home/user/trash`. A cue said apart from it still counts ("trash
-/// trash-delete"). Not an option or an enum's value ("light" in "switch to
-/// light-mode" is how it sets), nor a cue that is a word of the target's
-/// aliases.
+/// trash-delete"), and so does one where the target is said again apart
+/// from it ("trash the trash folder", #1556's review). Not an option or an
+/// enum's value ("light" in "switch to light-mode" is how it sets), nor a
+/// cue that is a word of the target's aliases.
 fn inside_argument(
     words: &[Word],
     at: usize,
@@ -538,10 +539,16 @@ fn inside_argument(
         .any(|value| {
             let text = value.text.strip_prefix(HOME).unwrap_or(value.text);
             let value_len = self::words(text).len();
-            value_len >= len
-                && matches(words, text, false)
-                    .into_iter()
-                    .any(|start| start <= at && at + len <= start + value_len)
+            if value_len < len {
+                return false;
+            }
+            let starts = matches(words, text, false);
+            let apart = |a: usize, b: usize| a + value_len <= b || b + value_len <= a;
+            starts.iter().any(|&start| {
+                start <= at
+                    && at + len <= start + value_len
+                    && !starts.iter().any(|&other| apart(start, other))
+            })
         })
 }
 

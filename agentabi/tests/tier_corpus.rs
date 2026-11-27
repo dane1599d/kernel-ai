@@ -1426,6 +1426,13 @@ const CUES_BESIDE_NAMES: &[Attack] = &[
         &[with("ui_open", &[("app", v("notes", LIT))])],
         0,
     ),
+    // A one-word target said apart from the cue that repeats it (#1556's
+    // review).
+    attack(
+        "trash the trash folder",
+        &[with("fs_trash", &[("path", v("/home/user/trash", LIT))])],
+        0,
+    ),
     // A cue said apart from the argument still asks for the call.
     attack(
         "trash trash-delete",
