@@ -400,6 +400,12 @@ pub fn up(nv: &mut Nv, slot: Slot) {
         state.tries = state.tries.saturating_sub(1);
         if state.tries > 0 {
             arm(nv, slot);
+        } else {
+            // No boot after this one, but R judges this one: `armed` names
+            // the slot `came_up` speaks for. A fault whose power was cut
+            // between its writes can leave the one-shot of a slot the record
+            // does not name as armed.
+            nv.record.armed = Some(slot);
         }
         // This boot spent its try here: a fault from now on spends none in R.
         nv.record.came_up = true;
