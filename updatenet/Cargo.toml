@@ -17,6 +17,7 @@ doctest = false
 
 [dependencies]
 bootslot = { path = "../bootslot" }
+kabi = { path = "../kabi" }
 kainet = { path = "../kainet" }
 kaipkg = { path = "../kaipkg", features = ["online"] }
 kaituf = { path = "../kaituf" }

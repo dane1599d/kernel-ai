@@ -18,11 +18,12 @@ use alloc::vec;
 use alloc::vec::Vec;
 use bootslot::Nv;
 use kabi::handle::Handle;
-use kabi::update::{BLOCK, DISK, MAX_IO, SECTOR};
+use kabi::update::{DISK, MAX_IO, SECTOR};
 use kaituf::Error as TufError;
 use kaituf::meta::Root;
 use kaituf::updater::{Cache, Remote, Updater};
 use sha2::{Digest, Sha256};
+use updatenet::blocks;
 use user::{println, sys};
 
 /// The target an update disk carries.
@@ -258,7 +259,8 @@ pub fn update(handle: Handle, restart_now: bool) -> Result<Staged, String> {
         .map_err(|e| format!("SLOT_INFO: {e:?}"))?
         .sectors
         * SECTOR;
-    if length != target.length || length > room {
+    // The last write is whole blocks, and never stages an empty slot.
+    if length == 0 || length != target.length || blocks::padded(length) > room {
         return Err(format!(
             "refused: {file} is {length} bytes, the target {} and the slot {room}",
             target.length
@@ -326,18 +328,19 @@ pub fn update(handle: Handle, restart_now: bool) -> Result<Staged, String> {
 /// flushes it, then reads the slot back and returns the SHA-256 of what it
 /// holds: the read-back hash ADR 0008's *stage* asks for.
 fn stream(handle: Handle, offset: u64, length: u64, to: u64) -> Result<Vec<u8>, String> {
-    let mut buf = vec![0u8; MAX_IO as usize];
+    let (mut from, mut buf) = (vec![0u8; MAX_IO as usize], vec![0u8; MAX_IO as usize]);
     let mut done = 0;
     while done < length {
         let want = (length - done).min(MAX_IO);
-        let read = &mut buf[..want.next_multiple_of(SECTOR) as usize];
+        let read = &mut from[..want.next_multiple_of(SECTOR) as usize];
         sys::slot_read(handle, DISK, (offset + done) / SECTOR, read)
             .map_err(|e| format!("reading the update disk: {e:?}"))?;
         // A last partial block is written whole, zero past the image's end.
-        let chunk = &mut buf[..want.next_multiple_of(BLOCK) as usize];
-        chunk[want as usize..].fill(0);
-        sys::slot_write(handle, to, done / SECTOR, chunk)
-            .map_err(|e| format!("SLOT_WRITE: {e:?}"))?;
+        let image = &from[..want as usize];
+        blocks::write_blocks(done, image, &mut buf, |sector, piece| {
+            let wrote = sys::slot_write(handle, to, sector, piece);
+            wrote.map(|_| ()).map_err(|e| format!("SLOT_WRITE: {e:?}"))
+        })?;
         done += want;
         pause(done / SECTOR);
     }

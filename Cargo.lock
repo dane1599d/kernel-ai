@@ -2963,6 +2963,7 @@ name = "updatenet"
 version = "0.1.0-dev"
 dependencies = [
  "bootslot",
+ "kabi",
  "kainet",
  "kaipkg",
  "kaituf",

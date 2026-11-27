@@ -4,8 +4,8 @@
 //! later boot rebuilds the slots from its own build, as [`slots::build`] does,
 //! and keeps `kai-data` as the last boot left it.
 
-use super::gpt;
 use super::slots::{self, DISK_NAME, Room};
+use super::{MIB, gpt};
 use std::fs;
 use std::path::Path;
 
@@ -47,6 +47,32 @@ pub fn build(
     slots::write(&plan, &next, Some((out, data)))?;
     fs::rename(&next, out).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
     Ok(plan.bytes())
+}
+
+/// Copies the `len` bytes at `at` of the file `old` into `to`, a new file of
+/// zeros, at the same place, a MiB at a time. A MiB of zeros is not written,
+/// so it stays sparse in `to`.
+pub(super) fn copy_range(old: &Path, to: &mut fs::File, at: u64, len: u64) -> Result<(), String> {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let shown = old.display();
+    let mut from = fs::File::open(old).map_err(|e| format!("cannot read {shown}: {e}"))?;
+    from.seek(SeekFrom::Start(at))
+        .map_err(|e| format!("cannot read {shown}: {e}"))?;
+    let zeros = vec![0u8; MIB as usize];
+    let mut piece = vec![0u8; MIB as usize];
+    let mut done = 0;
+    while done < len {
+        let n = (len - done).min(MIB) as usize;
+        from.read_exact(&mut piece[..n])
+            .map_err(|e| format!("cannot read {shown}: {e}"))?;
+        if piece[..n] != zeros[..n] {
+            to.seek(SeekFrom::Start(at + done))
+                .and_then(|_| to.write_all(&piece[..n]))
+                .map_err(|e| format!("cannot copy bytes {at}.. from {shown}: {e}"))?;
+        }
+        done += n as u64;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
