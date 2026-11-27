@@ -177,7 +177,7 @@ fn judged<'a>(
         if let Some(a) = composite.filter(|_| figure.name.starts_with(kabi::perf::COMPOSITE_FIGURE))
         {
             log!(
-                "desk-perf: {what}, {run}: {}: judged at {} ms, the larger of {} ms for the runner and {} times (a)'s p50 {} ms",
+                "desk-perf: {what}, {run}: {}: judged at {} ms, the larger of {} ms for the runner and {} times (a)'s p50 {} ms (at most 1.15 times the first)",
                 figure.name,
                 hundredths_text(kabi::perf::composite_budget(figure.budget, reference, a)),
                 hundredths_text(kabi::perf::scaled_budget(figure.budget, reference)),

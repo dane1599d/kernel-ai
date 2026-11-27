@@ -135,15 +135,22 @@ pub const COMPOSITE_REFERENCE: &str = "(a) full composite";
 /// 15%, 20% or 25% slower in (g)
 /// (`docs/decisions/rows/2026-11-23-desk-perf-scaled-budgets.md`).
 pub const COMPOSITE_TIMES_HUNDREDTHS: u64 = 140;
+/// The composite term never lifts (g)'s budget past this many hundredths of
+/// its [`scaled_budget`]: one slowed (a)-(c) run, or a whole-composite
+/// slowdown, moves it by at most 15%. Every budget the three failing PR runs
+/// and main's runs needed is under it (the closest, job 140284960282's 27.46
+/// ms, against 27.77).
+pub const COMPOSITE_CAP_HUNDREDTHS: u64 = 115;
 
 /// (g)'s budget in hundredths of a ms: the larger of its [`scaled_budget`] and
 /// [`COMPOSITE_TIMES_HUNDREDTHS`] of `composite_p50`, (a)'s p50 from the same
-/// boot, that second term never past the slow factor's scale of the budget.
-/// Only ever at least the scaled budget, so only (g)'s judging changes.
+/// boot, that second term never past [`COMPOSITE_CAP_HUNDREDTHS`] of the scaled
+/// budget. Only ever at least the scaled budget, so only (g)'s judging changes.
 pub fn composite_budget(budget: u64, reference_ns: u64, composite_p50: u64) -> u64 {
+    let scaled = scaled_budget(budget, reference_ns);
     let composite = composite_p50.saturating_mul(COMPOSITE_TIMES_HUNDREDTHS) / 100;
-    let cap = budget.saturating_mul(SLOW_FACTOR_TENTHS) / 10;
-    scaled_budget(budget, reference_ns).max(composite.min(cap))
+    let cap = scaled.saturating_mul(COMPOSITE_CAP_HUNDREDTHS) / 100;
+    scaled.max(composite.min(cap))
 }
 
 /// The p50 of the figure in `reply` whose name starts with `prefix`, in
@@ -478,7 +485,7 @@ mod tests {
     }
 
     /// (g)'s budget is the larger of the reference's and 1.40 times (a)'s p50,
-    /// the second never past the slow factor; other figures are as before.
+    /// the second never past 1.15 times the first; other figures are as before.
     #[test]
     fn the_composite_budget_is_the_larger_of_the_two() {
         // Main's 8573C run (job 139591500596): 1.73x, (a) p50 18.64 ms.
@@ -488,8 +495,10 @@ mod tests {
         assert_eq!(composite_budget(1440, 40_147_810, 1848), 3613);
         // A fast runner, under the baseline: never under the bare budget.
         assert_eq!(composite_budget(1440, 15_000_000, 900), 1440);
-        // A stalled (a) cannot lift (g) past 3.5 times its budget.
-        assert_eq!(composite_budget(1440, 16_000_000, 10_000), 5040);
+        // A stalled (a) lifts (g) by at most 15%: 14.40 to 16.56 at the
+        // baseline, 24.92 to 28.65 on the 8573C run.
+        assert_eq!(composite_budget(1440, 16_000_000, 10_000), 1656);
+        assert_eq!(composite_budget(1440, 27_689_930, 10_000), 2865);
         assert_eq!(
             judged_budget("(f) drag under load", 1670, 21_467_770, Some(9999)),
             2240
