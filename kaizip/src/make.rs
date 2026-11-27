@@ -142,7 +142,9 @@ impl<W: Write + Seek> Maker<W> {
     /// A file, `path`, of what `from` reads to its end: at most
     /// [`Limits::max_entry`], and [`Limits::max_total`] with the rest. If it
     /// deflates past [`Limits::max_ratio`], `from` is read again from where it
-    /// was, and the file is stored.
+    /// was, and the file is stored. A refused name or a duplicate writes
+    /// nothing and leaves the Maker usable; any failure once the file is
+    /// begun, including a `stream_position` or `seek` on `from`, spends it.
     pub fn file<R: Read + Seek>(&mut self, path: &str, from: &mut R) -> Result<(), Error> {
         self.usable()?;
         let (path, _) = self.take(path, false)?;

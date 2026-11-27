@@ -121,6 +121,19 @@ fn links_devices_and_encrypted_entries_are_refused_by_name() {
         !message.contains('\n') && !message.contains('\u{202e}'),
         "{message}"
     );
+    // #1452's review: line and paragraph separators, the Arabic letter mark,
+    // zero-width characters and a backslash are escaped too, so the text `\n`
+    // and a real newline read differently.
+    let entry = Raw {
+        flags: 1,
+        name: "a\u{2028}b\u{2029}c\u{61c}d\u{200b}e\u{feff}f\\n g"
+            .as_bytes()
+            .to_vec(),
+        ..Raw::stored("x", b"xxxxxxxxxxxx")
+    };
+    let got = open(&kit::archive(&[entry]));
+    let shown = r"a\u{2028}b\u{2029}c\u{61c}d\u{200b}e\u{feff}f\\n g";
+    assert_eq!(got, Err(Error::Encrypted { name: shown.into() }));
     let link = Raw {
         mode: Some(0o120_777),
         name: b"a\x1b[2Jb".to_vec(),

@@ -372,3 +372,67 @@ fn a_file_that_fails_once_begun_leaves_the_archive_unfinished() {
         .collect();
     assert_eq!(names, ["a", "b"]);
 }
+
+/// Zeros that fail partway through the second read, after a seek to the start.
+struct FailsOnReread {
+    left: usize,
+    reread: bool,
+}
+
+impl Read for FailsOnReread {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.reread && self.left == 0 {
+            return Err(std::io::Error::other("the second read failed"));
+        }
+        if self.left == 0 {
+            return Ok(0);
+        }
+        let n = buf.len().min(self.left);
+        buf[..n].fill(0);
+        self.left -= n;
+        Ok(n)
+    }
+}
+
+impl Seek for FailsOnReread {
+    fn seek(&mut self, _: SeekFrom) -> std::io::Result<u64> {
+        self.reread = true;
+        self.left = 1000;
+        Ok(0)
+    }
+}
+
+/// #1452's review: an error in the stored pass spends the Maker with that
+/// error, and a file that follows a stored one is written and read back.
+#[test]
+fn an_error_in_the_stored_pass_spends_the_maker() {
+    let mut maker = Maker::new(Cursor::new(Vec::new()), Limits::default());
+    let mut from = FailsOnReread {
+        left: 2 * MIB,
+        reread: false,
+    };
+    assert_eq!(
+        maker.file("zeros", &mut from),
+        Err(Error::Io("the second read failed".into()))
+    );
+    match maker.finish() {
+        Err(Error::Io(said)) => {
+            assert!(said.contains("left unfinished") && said.contains("the second read failed"));
+        }
+        other => panic!("{:?}", other.map(|_| ())),
+    }
+}
+
+#[test]
+fn a_file_after_a_stored_one_is_intact() {
+    let zeros = vec![0u8; 2 * MIB];
+    let files: [(&str, &[u8]); 3] = [("a", b"first"), ("zeros", &zeros), ("z", b"after")];
+    let bytes = make(&[], &files, Limits::default()).unwrap();
+    let mut archive = open(&bytes).unwrap();
+    assert_eq!(archive.entries()[1].packed, zeros.len() as u64, "stored");
+    let mut tree = Tree::default();
+    archive.extract(&mut tree).unwrap();
+    for (path, bytes) in files {
+        assert!(tree.files[path] == bytes, "{path}");
+    }
+}

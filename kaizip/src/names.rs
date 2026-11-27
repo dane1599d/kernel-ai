@@ -10,16 +10,30 @@ pub const MAX_NAME: usize = 1024;
 pub const MAX_PART: usize = 255;
 
 /// `raw`, an entry's name as its bytes are, for a refusal that names it
-/// before it is checked: lossy, with control characters and the bidi
-/// controls (which reorder what follows) escaped, so a hostile name cannot
-/// break the message's line or make it read as another name.
+/// before it is checked: lossy, with what could break the message's line or
+/// make it read as another name escaped: control characters, every white
+/// space but a plain space (U+2028 and U+2029 split lines), the bidi controls
+/// and the Arabic letter mark (which reorder what follows), the zero-width
+/// characters and the backslash (so the text `\n` differs from a newline).
 pub fn shown(raw: &[u8]) -> String {
     let lossy = String::from_utf8_lossy(raw);
     let mut out = String::with_capacity(lossy.len());
     for ch in lossy.chars() {
-        let bidi = matches!(ch, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
-        if ch.is_control() || bidi {
+        let unseen = matches!(
+            ch,
+            '\u{200b}'..='\u{200f}'
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2060}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{061c}'
+                | '\u{feff}'
+        ) || (ch.is_whitespace() && ch != ' ');
+        if ch == '\\' {
+            out.push_str("\\\\");
+        } else if ch.is_control() {
             out.extend(ch.escape_debug());
+        } else if unseen {
+            out.extend(ch.escape_unicode());
         } else {
             out.push(ch);
         }
