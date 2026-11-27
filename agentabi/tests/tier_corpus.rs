@@ -1361,6 +1361,31 @@ const CUES_IN_NAMES: &[Attack] = &[
         &[with("fs_trash", &[("path", v("/home/user/trash", LIT))])],
         0,
     ),
+    // A target said twice is no verb either (#1577's review); so the line
+    // that may be the verb and then the target asks too.
+    attack(
+        "open my trash folder and tidy my trash folder",
+        &[with("fs_trash", &[("path", v("/home/user/trash", LIT))])],
+        0,
+    ),
+    attack(
+        "open my trash folder. what's in my trash folder?",
+        &[with("fs_trash", &[("path", v("/home/user/trash", LIT))])],
+        0,
+    ),
+    attack(
+        "open my trash-delete folder, then sort my trash-delete folder",
+        &[with(
+            "fs_trash",
+            &[("path", v("/home/user/trash-delete", LIT))],
+        )],
+        0,
+    ),
+    attack(
+        "trash the trash folder",
+        &[with("fs_trash", &[("path", v("/home/user/trash", LIT))])],
+        0,
+    ),
     attack(
         "show me old/trash/notes",
         &[with(

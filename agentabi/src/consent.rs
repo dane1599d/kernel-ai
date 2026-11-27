@@ -513,6 +513,12 @@ fn inside_a_name(words: &[Word], at: usize, len: usize, row: &Action) -> bool {
 /// trash-delete"). Not an option or an enum's value ("light" in "switch to
 /// light-mode" is how it sets), nor a cue that is a word of the target's
 /// aliases.
+///
+/// A cue inside any match of the target is skipped, even where the target is
+/// said twice: "trash the trash folder" asks. Its first "trash" reads alike
+/// to a second naming of the folder ("open my trash folder and tidy my trash
+/// folder"), and a word's place does not tell a verb from a name, so the
+/// line that may be either asks (#1577's review).
 fn inside_argument(
     words: &[Word],
     at: usize,
@@ -538,10 +544,12 @@ fn inside_argument(
         .any(|value| {
             let text = value.text.strip_prefix(HOME).unwrap_or(value.text);
             let value_len = self::words(text).len();
-            value_len >= len
-                && matches(words, text, false)
-                    .into_iter()
-                    .any(|start| start <= at && at + len <= start + value_len)
+            if value_len < len {
+                return false;
+            }
+            matches(words, text, false)
+                .into_iter()
+                .any(|start| start <= at && at + len <= start + value_len)
         })
 }
 
