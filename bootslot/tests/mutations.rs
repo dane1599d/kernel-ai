@@ -14,12 +14,12 @@ mod starts;
 #[path = "model/walk.rs"]
 mod walk;
 
-use bootslot::{ArmFailed, Refused, UpFailed, may_boot, may_set, one_shot_first};
+use bootslot::{ArmFailed, Nv, Refused, UpFailed, commit, may_boot, may_set, one_shot_first};
 use kernel::{Kernel, REAL};
 use std::panic::{self, AssertUnwindSafe};
 
 /// The kernel's fixes, each undone.
-const UNDONE: [(&str, Kernel); 7] = [
+const UNDONE: [(&str, Kernel); 12] = [
     (
         // #1561 F2a: *up* told the fault path its record only after writing
         // it and the one-shot.
@@ -108,6 +108,60 @@ const UNDONE: [(&str, Kernel); 7] = [
                     record().map_err(ArmFailed::Record)?;
                     one_shot(Some(next)).map_err(ArmFailed::OneShot)
                 }
+            },
+            ..REAL
+        },
+    ),
+    // The kernel's glue around those steps (`bootslot::glue`, #1567's
+    // review): each argument `kernel/src/slots.rs` hands on, undone.
+    (
+        "BOOTREC_SET checks against no record, not the firmware's",
+        Kernel {
+            bootrec_set: |may, _read, lost, running, next, one_shot, writes| {
+                bootslot::glue::bootrec_set(may, || Ok(None), lost, running, next, one_shot, writes)
+            },
+            ..REAL
+        },
+    ),
+    (
+        "BOOTREC_SET is not told up's record was lost",
+        Kernel {
+            bootrec_set: |may, read, _lost, running, next, one_shot, writes| {
+                bootslot::glue::bootrec_set(may, read, false, running, next, one_shot, writes)
+            },
+            ..REAL
+        },
+    ),
+    (
+        "up never tells the fault path its record (BOOTED)",
+        Kernel {
+            up_step: |writes, _tell, record, one_shot, lost| {
+                bootslot::glue::up_step(writes, &mut || {}, record, one_shot, lost)
+            },
+            ..REAL
+        },
+    ),
+    (
+        "up keeps no lost record (UP_LOST)",
+        Kernel {
+            up_step: |writes, tell, record, one_shot, _lost| {
+                bootslot::glue::up_step(writes, tell, record, one_shot, || {})
+            },
+            ..REAL
+        },
+    ),
+    (
+        "probation reads the record before it takes SETTING",
+        Kernel {
+            commit_step: |hold, read, slot, epoch, set| {
+                let record = read()?;
+                hold();
+                let mut nv = Nv {
+                    record,
+                    one_shot: Some(slot),
+                };
+                commit(&mut nv, slot, epoch);
+                Some(set(nv))
             },
             ..REAL
         },

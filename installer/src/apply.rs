@@ -1,12 +1,16 @@
 //! Writing a plan: the device step, over any disk.
 
 use alloc::vec;
+use alloc::vec::Vec;
+use sha2::{Digest, Sha256};
 
-use crate::{BLOCK_SECTORS, Error, Plan, SECTOR, Step, format_data};
+use crate::{BLOCK_SECTORS, Error, Expect, Plan, SECTOR, Step, format_data};
 
 const S: usize = SECTOR as usize;
-/// Sectors copied or zeroed in one write: 64 KiB.
+/// Sectors copied, zeroed or read back in one go: 64 KiB.
 const PIECE: u64 = 128;
+/// The most of `boot/slot` read: the record is a few lines.
+const RECORD_MAX: usize = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IoError;
@@ -28,38 +32,174 @@ impl From<IoError> for Error {
     }
 }
 
-/// The sectors of the FAT volume whose boot sector is `boot`, refused unless
-/// it is a 512-byte-sector FAT boot sector of at most `most` sectors.
-fn volume_sectors(boot: &[u8], most: u64) -> Result<u64, Error> {
-    let u16_at = |at: usize| u16::from_le_bytes([boot[at], boot[at + 1]]);
-    if boot[510..512] != [0x55, 0xAA] || u16_at(11) != SECTOR as u16 {
-        return Err(Error::Source("a running partition holds no FAT volume"));
+/// A disk as `diskmap` and `espfat` read it. It never writes.
+struct ReadOnly<'a>(&'a mut dyn Disk);
+
+impl diskmap::Disk for ReadOnly<'_> {
+    fn sectors(&self) -> u64 {
+        self.0.sectors()
     }
-    let total = match u16_at(19) {
-        0 => u64::from(u32::from_le_bytes([boot[32], boot[33], boot[34], boot[35]])),
-        n => u64::from(n),
-    };
-    match (1..=most).contains(&total) {
-        true => Ok(total),
-        false => Err(Error::Source("a running volume does not fit its partition")),
+
+    fn read(&mut self, lba: u64, out: &mut [u8]) -> Result<(), diskmap::Error> {
+        self.0.read(lba, out).map_err(|_| diskmap::Error::Read)
     }
 }
 
-/// Writes `plan` to `target`, copying from `source`, the running disk. Every
-/// volume to copy is checked first, so a source that cannot be copied writes
-/// nothing.
-pub fn apply(plan: &Plan, source: &mut dyn Disk, target: &mut dyn Disk) -> Result<(), Error> {
-    if target.sectors() != plan.sectors {
-        return Err(Error::Target);
+impl espfat::Disk for ReadOnly<'_> {
+    fn read(&mut self, lba: u64, out: &mut [u8; S]) -> Result<(), espfat::IoError> {
+        self.0.read(lba, out).map_err(|_| espfat::IoError)
     }
-    let mut boot = [0u8; S];
-    for step in &plan.steps {
-        if let Step::Copy { from, most, .. } = *step {
-            source.read(from, &mut boot)?;
-            volume_sectors(&boot, most)?;
+
+    fn write(&mut self, _: u64, _: &[u8; S]) -> Result<(), espfat::IoError> {
+        Err(espfat::IoError)
+    }
+
+    fn flush(&mut self) -> Result<(), espfat::IoError> {
+        Ok(())
+    }
+}
+
+/// What a target holds before an install: what [`crate::plan`] records as
+/// [`Plan::wipes`], for the device to show the user before it asks to go on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Current {
+    /// No GPT, no GPT header and no boot signature at sector 0.
+    Blank,
+    /// A valid GPT, read from the primary or the backup.
+    Gpt(diskmap::Table),
+    /// Something that is not a GPT the installer can read: why, such as an
+    /// MBR disk, a GPT with bad checksums or a disk that fails to read.
+    Unreadable(&'static str),
+}
+
+impl Current {
+    /// The table, for a valid GPT.
+    pub fn gpt(self) -> Option<diskmap::Table> {
+        match self {
+            Current::Gpt(t) => Some(t),
+            _ => None,
         }
     }
+}
+
+/// What `disk` holds now: what [`crate::plan`] takes as the target's current
+/// contents.
+pub fn current(disk: &mut dyn Disk) -> Current {
+    let why = match diskmap::read(&mut ReadOnly(disk)) {
+        Ok(table) => return Current::Gpt(table),
+        Err(diskmap::Error::NoTable) => None,
+        Err(diskmap::Error::Read) => Some("the disk fails to read"),
+        Err(diskmap::Error::Small) => Some("the disk is too small for a GPT"),
+        Err(diskmap::Error::BadPartitions) => {
+            Some("a GPT header names partitions that are not valid")
+        }
+        Err(diskmap::Error::BadLayout) => Some("the GPT cannot be read"),
+    };
+    if let Some(why) = why {
+        return Current::Unreadable(why);
+    }
+    // No valid header: blank, or a header with bad checksums, or an MBR.
+    let mut sector = [0u8; S];
+    for lba in [1, disk.sectors() - 1] {
+        if disk.read(lba, &mut sector).is_err() {
+            return Current::Unreadable("the disk fails to read");
+        }
+        if sector.starts_with(b"EFI PART") {
+            return Current::Unreadable("a GPT header or its array fails its checksum");
+        }
+    }
+    if disk.read(0, &mut sector).is_err() {
+        return Current::Unreadable("the disk fails to read");
+    }
+    if sector[510..] == [0x55, 0xAA] {
+        return Current::Unreadable("an MBR or a whole-disk filesystem, no GPT");
+    }
+    Current::Blank
+}
+
+/// The sectors of the FAT32 volume at `from` on `disk`, checked by espfat's
+/// boot-sector parse, at most `most`.
+fn volume_sectors(disk: &mut dyn Disk, from: u64, most: u64) -> Result<u64, Error> {
+    let mut boot = [0u8; S];
+    disk.read(from, &mut boot)?;
+    match espfat::Geometry::parse(&boot, from, most) {
+        Ok(g) => Ok(u64::from(g.sectors)),
+        Err(espfat::Error::NotFat32(why)) => Err(Error::Source(why)),
+        Err(_) => Err(Error::Source("a running partition holds no FAT32 volume")),
+    }
+}
+
+/// The SHA-256 of `sectors` from `lba`.
+fn hash(disk: &mut dyn Disk, lba: u64, sectors: u64, piece: &mut [u8]) -> Result<[u8; 32], Error> {
+    let mut h = Sha256::new();
+    let mut done = 0;
+    while done < sectors {
+        let n = (sectors - done).min(PIECE);
+        let bytes = &mut piece[..n as usize * S];
+        disk.read(lba + done, bytes)?;
+        h.update(&*bytes);
+        done += n;
+    }
+    Ok(h.finalize().into())
+}
+
+/// The `release_seq` of the `kai-slot 1` record at `boot/slot` in the volume
+/// at `lba`.
+fn release_seq(disk: &mut dyn Disk, lba: u64, most: u64) -> Result<u32, Error> {
+    let bad = Error::Verify("the slot copy holds no readable boot/slot record");
+    let mut volume = espfat::Volume::open(ReadOnly(disk), lba, most).map_err(|_| bad)?;
+    let record: Vec<u8> = volume.read_file("boot/slot", RECORD_MAX).map_err(|_| bad)?;
+    let text = core::str::from_utf8(&record).map_err(|_| bad)?;
+    let mut lines = text.lines();
+    if lines.next() != Some("kai-slot 1") {
+        return Err(bad);
+    }
+    lines
+        .find_map(|l| l.strip_prefix("release_seq "))
+        .and_then(|n| n.parse().ok())
+        .ok_or(bad)
+}
+
+/// Writes `plan` to `target`, copying from `source`, the running disk.
+/// Before any write, the target must still hold the table the plan was made
+/// over, and every volume to copy is checked, so a refusal writes nothing.
+pub fn apply(plan: &Plan, source: &mut dyn Disk, target: &mut dyn Disk) -> Result<(), Error> {
+    if target.sectors() != plan.sectors || current(target) != plan.wipes {
+        return Err(Error::Target);
+    }
     let mut piece = vec![0u8; PIECE as usize * S];
+    for step in &plan.steps {
+        match *step {
+            Step::Copy { from, most, .. } => {
+                volume_sectors(source, from, most)?;
+            }
+            // The running slot must be the committed one before anything is
+            // written; the copy is checked again once durable.
+            Step::Check {
+                from,
+                most,
+                expect:
+                    Expect::Slot {
+                        sha256,
+                        release_seq: seq,
+                    },
+                ..
+            } => {
+                let sectors = volume_sectors(source, from, most)?;
+                if hash(source, from, sectors, &mut piece)? != sha256 {
+                    return Err(Error::Source(
+                        "the running slot's SHA-256 is not the committed slot's",
+                    ));
+                }
+                if release_seq(source, from, most).ok() != Some(seq) {
+                    return Err(Error::Source(
+                        "the running slot's record does not name the committed release",
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
     for step in &plan.steps {
         match *step {
             Step::Zero { lba, sectors } => {
@@ -72,8 +212,7 @@ pub fn apply(plan: &Plan, source: &mut dyn Disk, target: &mut dyn Disk) -> Resul
                 }
             }
             Step::Copy { from, to, most } => {
-                source.read(from, &mut boot)?;
-                let sectors = volume_sectors(&boot, most)?;
+                let sectors = volume_sectors(source, from, most)?;
                 let mut done = 0;
                 while done < sectors {
                     let n = (sectors - done).min(PIECE);
@@ -81,6 +220,37 @@ pub fn apply(plan: &Plan, source: &mut dyn Disk, target: &mut dyn Disk) -> Resul
                     source.read(from + done, bytes)?;
                     target.write(to + done, bytes)?;
                     done += n;
+                }
+            }
+            Step::Check {
+                from,
+                to,
+                most,
+                expect,
+            } => {
+                let sectors = volume_sectors(source, from, most)?;
+                let got = hash(target, to, sectors, &mut piece)?;
+                match expect {
+                    Expect::Same => {
+                        if got != hash(source, from, sectors, &mut piece)? {
+                            return Err(Error::Verify("a copy differs from the running disk"));
+                        }
+                    }
+                    Expect::Slot {
+                        sha256,
+                        release_seq: seq,
+                    } => {
+                        if got != sha256 {
+                            return Err(Error::Verify(
+                                "the slot copy's SHA-256 is not the committed slot's",
+                            ));
+                        }
+                        if release_seq(target, to, most)? != seq {
+                            return Err(Error::Verify(
+                                "the slot copy's record names another release",
+                            ));
+                        }
+                    }
                 }
             }
             Step::Format {
@@ -94,7 +264,8 @@ pub fn apply(plan: &Plan, source: &mut dyn Disk, target: &mut dyn Disk) -> Resul
                     first: lba,
                     blocks: sectors / BLOCK_SECTORS,
                 };
-                format_data(window, uuid, "kai-data", now).map_err(Error::Data)?;
+                format_data(window, uuid, "kai-data", now)
+                    .map_err(|(what, e)| Error::Data(what, e))?;
             }
             Step::Write { lba, ref bytes } => target.write(lba, bytes)?,
             Step::Flush => target.flush()?,

@@ -402,6 +402,34 @@ const A_IDLE: TestCase = TestCase {
     )
 };
 
+/// `slot-rebase` boot 3: the commit a stale set would have dropped is there.
+const REBASE_KEPT: TestCase = boot(
+    "slot-rebase (3: kai-a committed)",
+    "test=slot panic=reset",
+    &["slots: up in kai-a (committed, 0 tries left)"],
+);
+/// `slot-rebase` boot 2 (#1567's review): `updated` reads the record while
+/// kai-a is a trial and sets it only after probation commits it, so
+/// BOOTREC_SET answers Busy and `updated`'s `set` rebases onto the commit.
+/// `probation_ms=15000` puts the idle commit about 60 s in, well after the
+/// read and inside `updated`'s 120 s wait.
+const REBASE_SETS: TestCase = TestCase {
+    then: Some(&REBASE_KEPT),
+    ..boot(
+        "slot-rebase (2: a set from before the commit is rebased)",
+        "test=update updated=rebase probation_calls=1000 probation_ms=15000 panic=reset",
+        &[
+            "slots: up in kai-a (trial, 2 tries left)",
+            "updated: rebase: read the record while A is a trial",
+            "slots: kai-a passed probation (0 requests, ",
+            "updated: rebase: A is committed; setting the record read before",
+            "updated: A committed meanwhile; setting the record again with it",
+            "updated: rebase: A's commit stayed",
+            "updated: restarting into the running slot",
+        ],
+    )
+};
+
 /// `slot-efi-fault` boot 3: R finds kai-a's boot lost, not faulted, and arms
 /// it again with a try spent.
 const R_AFTER_EFI_FAULT: TestCase = boot(
@@ -607,6 +635,12 @@ pub(super) const CASES: &[TestCase] = &[
     TestCase {
         then: Some(&A_IDLE),
         ..boot("slot-idle", "test=slot panic=reset", INSTALL)
+    },
+    // A set from a record read before probation's commit: Busy, then rebased
+    // onto the commit, which the next boot still finds.
+    TestCase {
+        then: Some(&REBASE_SETS),
+        ..boot("slot-rebase", "test=slot panic=reset", INSTALL)
     },
     // A fault inside a firmware call still resets, and R boots next.
     TestCase {

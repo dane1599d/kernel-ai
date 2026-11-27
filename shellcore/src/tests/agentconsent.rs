@@ -93,11 +93,51 @@ fn a_run_whose_changes_did_not_land_is_told_as_failed_not_as_a_no() {
     assert!(step(&mut shell, badge, RR).starts_with("ok asked "));
     let menu = take_agents_card(&mut shell);
     shell.pending = None;
-    shell.landing.line = Some(String::from("its file changes did not land"));
+    shell.landing.line = Some(String::from("the files did not land: disk full"));
     shell.desk_answered(Some((menu.id, "allow")), &crate::Reply::err("x"), false);
     let told = step(&mut shell, badge, &format!("wait {}", menu.id));
     assert!(
         told.starts_with(&format!("err failed #{}:", menu.id)),
+        "{told}"
+    );
+    // The fixed words, not what the log write said: the goals agent keys on them.
+    assert!(told.ends_with(goalcore::reply::NOT_LANDED), "{told}");
+}
+
+/// A card nobody answered in two minutes, then Allowed late, is told as lapsed,
+/// not as the person's no, so the goals agent holds the step and logs no refusal.
+#[test]
+fn a_card_allowed_after_its_two_minutes_is_told_as_lapsed_not_as_a_no() {
+    let (host, mut shell, badge) = with_agent();
+    assert!(step(&mut shell, badge, RR).starts_with("ok asked "));
+    let menu = take_agents_card(&mut shell);
+    let once = host.mint(menu.id, menu.call());
+    host.clock
+        .set(host.clock.get() + crate::actions::CONFIRM_EXPIRY_NS + 1);
+    let late = shell.eval_console(&format!("answer {} allow once={once}", menu.id));
+    assert!(!late.ok, "{late:?}");
+    assert_eq!(host.policy.get(), None, "a late Allow runs nothing");
+    let told = step(&mut shell, badge, &format!("wait {}", menu.id));
+    assert!(
+        told.starts_with(&format!("err lapsed #{}:", menu.id)),
+        "{told}"
+    );
+}
+
+/// A Deny after the two minutes is the person's no to an agent, however late:
+/// the kernel's countdown sends the same word, and a step that may have been
+/// refused is not asked again and again.
+#[test]
+fn a_deny_after_the_two_minutes_is_a_no_to_an_agent() {
+    let (host, mut shell, badge) = with_agent();
+    assert!(step(&mut shell, badge, RR).starts_with("ok asked "));
+    let menu = take_agents_card(&mut shell);
+    host.clock
+        .set(host.clock.get() + crate::actions::CONFIRM_EXPIRY_NS + 1);
+    shell.eval_console(&format!("answer {} deny", menu.id));
+    let told = step(&mut shell, badge, &format!("wait {}", menu.id));
+    assert!(
+        told.starts_with(&format!("err not run #{}:", menu.id)),
         "{told}"
     );
 }
@@ -295,7 +335,8 @@ fn a_lapsed_agents_question_is_its_entry_and_its_wait_hears_so() {
     host.step_ns.set(1000);
     assert_eq!(shell.log.get(id).unwrap().agent.as_str(), "notes-agent");
     let told = step(&mut shell, badge, &format!("wait {id}"));
-    assert!(told.starts_with(&format!("err not run #{id}")), "{told}");
+    // Lapsed in the queue: no no, so the goals agent holds the step.
+    assert!(told.starts_with(&format!("err lapsed #{id}")), "{told}");
     // Its places came back.
     for _ in 0..2 {
         assert!(step(&mut shell, badge, RR).starts_with("ok asked "));

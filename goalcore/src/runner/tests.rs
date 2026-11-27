@@ -67,11 +67,17 @@ struct Recorded {
     next_entry: u64,
     /// Rows the person says no to on the card.
     deny: Vec<&'static str>,
+    /// Rows whose card lapses unanswered, once each.
+    lapse: Vec<&'static str>,
 }
 
 impl Steps<&'static str> for Recorded {
     fn run(&mut self, goal: u64, step: &Step<&'static str>) -> Outcome {
         self.ran.push((goal, step.row.clone()));
+        if let Some(at) = self.lapse.iter().position(|row| *row == step.row) {
+            self.lapse.remove(at);
+            return Outcome::Lapsed;
+        }
         if self.deny.contains(&step.row.as_str()) {
             return Outcome::Denied("the person said no".to_string());
         }
@@ -540,4 +546,148 @@ fn a_no_on_the_card_is_a_denied_step_not_a_failed_one() {
     assert!(goal.flight.is_none());
     let text = goals.to_text();
     assert_eq!(Goals::parse(&text).as_ref(), Ok(&goals), "{text}");
+}
+
+/// A card nobody answered is no no: the step is held, counted as no refusal,
+/// not remembered as one, and may be asked again.
+#[test]
+fn a_lapsed_card_is_held_not_denied_and_may_ask_again() {
+    let mut goals = Goals::new();
+    let id = approved(&mut goals);
+    let mut planner = Script(VecDeque::from([
+        Plan::Step(step("fs_list")),
+        Plan::Step(step("fs_list")),
+    ]));
+    let mut steps = Recorded {
+        lapse: vec!["fs_list"],
+        ..Recorded::default()
+    };
+    let mut runner = Runner::new();
+    let events = go(
+        &mut runner,
+        &mut goals,
+        T0 + 1,
+        Presence::Away,
+        &mut planner,
+        &mut steps,
+    );
+    assert_eq!(events, [Event::Lapsed { goal: id, step: 1 }]);
+    let goal = goals.get(id).unwrap();
+    assert_eq!(goal.log[0].status, StepStatus::Held);
+    assert_eq!(goal.log[0].note, crate::LAPSED);
+    assert_eq!((goal.steps_run, goal.denied), (0, 0));
+    assert!(goal.flight.is_none());
+    // The same step again is asked, not held as one the person refused.
+    let events = go(
+        &mut runner,
+        &mut goals,
+        T0 + 2,
+        Presence::Away,
+        &mut planner,
+        &mut steps,
+    );
+    assert!(matches!(events[..], [Event::Ran { .. }]), "{events:?}");
+}
+
+/// A person who is away leaves every card unanswered: the same step lapsing
+/// twice in a row pauses the goal, with no third card, and the step is no no.
+#[test]
+fn the_same_step_lapsing_twice_pauses_the_goal_with_no_third_card() {
+    let mut goals = Goals::new();
+    let id = approved(&mut goals);
+    let mut planner = Script(VecDeque::from([
+        Plan::Step(step("fs_list")),
+        Plan::Step(step("fs_list")),
+        Plan::Step(step("fs_list")),
+    ]));
+    let mut steps = Recorded {
+        lapse: vec!["fs_list", "fs_list"],
+        ..Recorded::default()
+    };
+    let mut runner = Runner::new();
+    let mut turn = |now| {
+        go(
+            &mut runner,
+            &mut goals,
+            now,
+            Presence::Away,
+            &mut planner,
+            &mut steps,
+        )
+    };
+    assert_eq!(turn(T0 + 1), [Event::Lapsed { goal: id, step: 1 }]);
+    assert_eq!(
+        turn(T0 + 2),
+        [
+            Event::Lapsed { goal: id, step: 2 },
+            Event::Paused {
+                goal: id,
+                pause: Pause::User
+            }
+        ]
+    );
+    // Paused: the third is not planned, and no card goes up.
+    assert_eq!(turn(T0 + 3), []);
+    assert_eq!(steps.ran.len(), 2, "{:?}", steps.ran);
+    let goal = goals.get(id).unwrap();
+    assert_eq!(goal.state, State::Paused(Pause::User));
+    assert_eq!(goal.next, crate::LAPSED_NEXT);
+    assert_eq!(goal.denied, 0);
+    assert!(goal.log.iter().all(|s| s.status == StepStatus::Held));
+    // Their resume lets it be asked once more, and it runs.
+    goals.resume(id).unwrap();
+    let events = go(
+        &mut runner,
+        &mut goals,
+        T0 + 5,
+        Presence::Away,
+        &mut planner,
+        &mut steps,
+    );
+    assert!(matches!(events[..], [Event::Ran { .. }]), "{events:?}");
+}
+
+/// Lapses of different steps, or with a step that ran between, are not "the
+/// same step twice in a row".
+#[test]
+fn lapses_of_other_steps_or_with_a_run_between_do_not_pause() {
+    let mut goals = Goals::new();
+    let id = approved(&mut goals);
+    // The same row, another call: a different step.
+    let mut other = step("fs_list");
+    other.call = "another call";
+    let mut planner = Script(VecDeque::from([
+        Plan::Step(step("fs_list")),
+        Plan::Step(other.clone()),
+        Plan::Step(step("fs_list")),
+        Plan::Step(step("fs_list")),
+        Plan::Step(step("fs_list")),
+    ]));
+    let mut steps = Recorded {
+        lapse: vec!["fs_list", "fs_list", "fs_list"],
+        ..Recorded::default()
+    };
+    let mut runner = Runner::new();
+    for now in 1..=3 {
+        let events = go(
+            &mut runner,
+            &mut goals,
+            T0 + now,
+            Presence::Away,
+            &mut planner,
+            &mut steps,
+        );
+        assert!(matches!(events[..], [Event::Lapsed { .. }]), "{events:?}");
+    }
+    // That fs_list ran (the lapse list is spent), and the next lapse is a first.
+    let events = go(
+        &mut runner,
+        &mut goals,
+        T0 + 4,
+        Presence::Away,
+        &mut planner,
+        &mut steps,
+    );
+    assert!(matches!(events[..], [Event::Ran { .. }]), "{events:?}");
+    assert_eq!(goals.get(id).unwrap().state, State::Active);
 }

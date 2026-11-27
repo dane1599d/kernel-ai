@@ -59,6 +59,7 @@ extern crate alloc;
 extern crate std;
 
 mod checkin;
+mod flight;
 mod goal;
 mod goals;
 pub mod planner;
@@ -73,12 +74,13 @@ mod valid;
 mod tests;
 
 pub use checkin::{CheckIn, CheckKind};
+pub use flight::{ENDED_IN_FLIGHT, FINISHED_AFTER_END, LAPSED, LAPSED_NEXT};
 pub use goal::{
     Ask, AskKind, Budget, Door, Goal, Pause, Posted, Presence, Proposal, Resource, Scope, Spec,
     State, Step, StepLog, StepStatus, Tier,
 };
 pub use goals::Goals;
-pub use run::{ENDED_IN_FLIGHT, FINISHED_AFTER_END, REPEATED, Refusal, StepDone, Verdict};
+pub use run::{REPEATED, Refusal, StepDone, Verdict};
 pub use text::MAGIC;
 
 /// Longest text of a goal, a note or a step's note.

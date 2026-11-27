@@ -1,168 +1,20 @@
 //! The installer's plan over in-memory disks: the installed disk reads back
 //! through `diskmap::read` and kaifs mounts its `kai-data`; installs get their
-//! own GUIDs; and a cut after any write leaves either the old install whole or
-//! a disk with no valid GPT, until the backup header lands on a whole new one.
+//! own GUIDs; and a power cut at any point, with any of the writes since the
+//! last flush lost, leaves either the old install whole or a disk with no valid
+//! GPT, until the backup header lands on a whole new one.
+
+mod common;
 
 use std::collections::BTreeMap;
 
-use diskmap::{Guid, Spec, Table};
+use common::*;
+use diskmap::{Guid, KAI_A_TYPE, KAI_B_TYPE, Table};
 use installer::{
-    CLEARED, Disk, Error, FOLDERS, IoError, KINDS, NAMES, PARTITION_MIB, Plan, Step, Target,
-    Window, apply, data_first, minimum_sectors, plan,
+    CLEARED, Committed, Current, Error, Expect, FOLDERS, PARTITION_MIB, Plan, Source, Step, Target,
+    Window, apply, current, minimum_sectors, plan,
 };
 use kaifs::Fs;
-
-const S: usize = 512;
-type Sector = [u8; S];
-
-/// A sparse disk: unwritten sectors, and sectors written as zeros, are absent.
-#[derive(Clone, Default, PartialEq, Eq)]
-struct Mem {
-    sectors: u64,
-    data: BTreeMap<u64, Sector>,
-    /// Every write, as (first LBA, sectors), and `None` for a flush.
-    log: Vec<Option<(u64, Vec<Sector>)>>,
-    logging: bool,
-}
-
-impl Mem {
-    fn new(sectors: u64) -> Self {
-        Self {
-            sectors,
-            ..Self::default()
-        }
-    }
-
-    fn put(&mut self, lba: u64, s: Sector) {
-        match s == [0; S] {
-            true => self.data.remove(&lba),
-            false => self.data.insert(lba, s),
-        };
-    }
-
-    fn get(&self, lba: u64) -> Sector {
-        self.data.get(&lba).copied().unwrap_or([0; S])
-    }
-
-    fn writes(&self) -> impl Iterator<Item = &(u64, Vec<Sector>)> {
-        self.log.iter().flatten()
-    }
-}
-
-impl Disk for Mem {
-    fn sectors(&self) -> u64 {
-        self.sectors
-    }
-
-    fn read(&mut self, lba: u64, out: &mut [u8]) -> Result<(), IoError> {
-        let n = (out.len() / S) as u64;
-        if lba + n > self.sectors {
-            return Err(IoError);
-        }
-        for (i, chunk) in out.as_chunks_mut::<S>().0.iter_mut().enumerate() {
-            chunk.copy_from_slice(&self.get(lba + i as u64));
-        }
-        Ok(())
-    }
-
-    fn write(&mut self, lba: u64, data: &[u8]) -> Result<(), IoError> {
-        let n = (data.len() / S) as u64;
-        if lba + n > self.sectors {
-            return Err(IoError);
-        }
-        let sectors: Vec<Sector> = data.as_chunks::<S>().0.to_vec();
-        for (i, s) in sectors.iter().enumerate() {
-            self.put(lba + i as u64, *s);
-        }
-        if self.logging {
-            self.log.push(Some((lba, sectors)));
-        }
-        Ok(())
-    }
-
-    fn flush(&mut self) -> Result<(), IoError> {
-        if self.logging {
-            self.log.push(None);
-        }
-        Ok(())
-    }
-}
-
-impl diskmap::Disk for Mem {
-    fn sectors(&self) -> u64 {
-        self.sectors
-    }
-
-    fn read(&mut self, lba: u64, out: &mut [u8]) -> Result<(), diskmap::Error> {
-        Disk::read(self, lba, out).map_err(|_| diskmap::Error::Read)
-    }
-}
-
-/// A target with 64 MiB for `kai-data`.
-fn disk_sectors() -> u64 {
-    data_first() + 64 * 2048 + 34
-}
-
-/// Sectors of each running volume: small, so the tests stay quick.
-const VOLUME: [u32; 3] = [4096, 2048, 3000];
-
-/// A 512-byte-sector FAT boot sector for a volume of `total` sectors.
-fn boot_sector(total: u32) -> Sector {
-    let mut s = [0u8; S];
-    s[0..3].copy_from_slice(&[0xEB, 0x58, 0x90]);
-    s[11..13].copy_from_slice(&512u16.to_le_bytes());
-    s[32..36].copy_from_slice(&total.to_le_bytes());
-    s[510] = 0x55;
-    s[511] = 0xAA;
-    s
-}
-
-fn pattern(lba: u64, seed: u8) -> Sector {
-    let mut s = [0u8; S];
-    for (i, b) in s.iter_mut().enumerate() {
-        *b = ((lba as u8).wrapping_mul(31) ^ (i as u8) ^ seed) | 1;
-    }
-    s
-}
-
-/// The running disk: a GPT of the ADR's layout, a FAT volume of
-/// [`VOLUME`] sectors in the ESP, `kai-r` and `kai-a`, and bytes past each
-/// volume, in `kai-b` and in `kai-data` that no install may copy.
-fn running(seed: u8) -> (Mem, Table) {
-    let mut disk = Mem::new(disk_sectors());
-    let mut first = installer::FIRST_LBA;
-    let mut specs = Vec::new();
-    for (n, name) in NAMES.iter().enumerate() {
-        let count = PARTITION_MIB.get(n).map_or(64 * 2048, |mib| mib * 2048);
-        specs.push(Spec {
-            kind: KINDS[n],
-            guid: Guid(installer::unique("running", name)),
-            first,
-            last: first + count - 1,
-            name,
-        });
-        first += count;
-    }
-    for (lba, bytes) in
-        diskmap::layout(disk.sectors, Guid(installer::guid("running")), &specs).unwrap()
-    {
-        Disk::write(&mut disk, lba, &bytes).unwrap();
-    }
-    for (n, spec) in specs.iter().enumerate() {
-        match VOLUME.get(n) {
-            Some(&total) => {
-                disk.put(spec.first, boot_sector(total));
-                for lba in spec.first + 1..spec.first + u64::from(total) {
-                    disk.put(lba, pattern(lba, seed + n as u8));
-                }
-                disk.put(spec.first + u64::from(total), [0xEE; S]);
-            }
-            None => disk.put(spec.first, [0xDD; S]),
-        }
-    }
-    let table = diskmap::read(&mut disk).unwrap();
-    (disk, table)
-}
 
 fn target(id: &str) -> Target<'_> {
     Target {
@@ -173,17 +25,18 @@ fn target(id: &str) -> Target<'_> {
     }
 }
 
-/// `plan` for `id`, applied to `disk` from a fresh running disk.
-fn install(disk: &mut Mem, id: &str) -> Plan {
-    let (mut source, table) = running(7);
-    let plan = plan(target(id), &table).unwrap();
-    apply(&plan, &mut source, disk).unwrap();
+/// `plan` for `id` from `running`, applied to `disk`.
+fn install(disk: &mut Mem, running: &Running, id: &str) -> Plan {
+    let now = current(disk);
+    let plan = plan(target(id), running.source(), &now).unwrap();
+    apply(&plan, &mut running.disk.clone(), disk).unwrap();
     plan
 }
 
-/// Checks that `disk` is a whole install of `plan` from [`running`].
-fn installed(disk: &mut Mem, plan: &Plan) {
-    let table = diskmap::read(disk).unwrap();
+/// Checks that `disk` is a whole install of `plan` from `running`.
+fn installed(disk: &Mem, plan: &Plan, running: &Running) {
+    let mut disk = disk.clone();
+    let table = diskmap::read(&mut disk).unwrap();
     assert_eq!(table.disk_guid, plan.disk_guid);
     let got: Vec<_> = table
         .partitions
@@ -196,27 +49,34 @@ fn installed(disk: &mut Mem, plan: &Plan) {
         .map(|p| (p.kind, p.guid, p.first, p.last, p.name.to_string()))
         .collect();
     assert_eq!(got, want);
-    let (source, from) = running(7);
-    for n in 0..3 {
-        let (at, to) = (from.partitions[n].first, plan.parts[n].first);
-        for i in 0..u64::from(VOLUME[n]) {
-            assert!(
-                disk.get(to + i) == source.get(at + i),
-                "{} sector {i}",
-                NAMES[n]
-            );
-        }
-        // Nothing past the volume is copied.
-        assert!(disk.get(to + u64::from(VOLUME[n])) != [0xEE; S]);
+    let from = &running.table;
+    let slot = from.find(running.committed.kind).unwrap().first;
+    let sources = [from.partitions[0].first, from.partitions[1].first, slot];
+    for (n, at) in sources.into_iter().enumerate() {
+        let to = plan.parts[n].first;
+        let name = plan.parts[n].name;
+        assert_eq!(
+            disk.hash(to, VOLUME),
+            running.disk.hash(at, VOLUME),
+            "{name}"
+        );
+        assert!(
+            disk.get(to + VOLUME) != [0xEE; S],
+            "past {name}'s volume copied"
+        );
     }
     let b = &plan.parts[3];
     assert!((b.first..b.first + CLEARED).all(|lba| disk.get(lba) == [0; S]));
     let data = &plan.parts[4];
     assert!((data.first..data.first + 8).all(|lba| disk.get(lba) == [0; S]));
+    mounts(&mut disk, data.first, data.sectors());
+}
+
+fn mounts(disk: &mut Mem, first: u64, sectors: u64) {
     let window = Window {
         disk,
-        first: data.first,
-        blocks: data.sectors() / 8,
+        first,
+        blocks: sectors / 8,
     };
     let mut fs = Fs::mount(window).expect("kai-data mounts");
     for (vol, path) in FOLDERS {
@@ -227,30 +87,35 @@ fn installed(disk: &mut Mem, plan: &Plan) {
 
 #[test]
 fn an_install_reads_back_and_its_data_mounts() {
-    let mut disk = Mem::new(disk_sectors());
-    let plan = install(&mut disk, "install-1");
-    installed(&mut disk, &plan);
-    assert!(!diskmap::read(&mut disk).unwrap().from_backup);
-    // ADR 0008 §1: 2,368 MiB before kai-data, which starts on a MiB.
-    assert_eq!(plan.parts[4].first, 2048 * (1 + 2368));
-    assert_eq!(plan.parts[4].sectors() % 8, 0);
-    let sizes: Vec<u64> = plan.parts[..4].iter().map(|p| p.sectors() / 2048).collect();
-    assert_eq!(sizes, PARTITION_MIB);
+    for slot in [KAI_A_TYPE, KAI_B_TYPE] {
+        let running = Running::new(7, slot);
+        let mut disk = Mem::new(disk_sectors());
+        let plan = install(&mut disk, &running, "install-1");
+        assert_eq!(plan.wipes, Current::Blank);
+        installed(&disk.cut(), &plan, &running);
+        assert!(!diskmap::read(&mut disk.cut()).unwrap().from_backup);
+        // ADR 0008 §1: 2,368 MiB before kai-data, which starts on a MiB.
+        assert_eq!(plan.parts[4].first, 2048 * (1 + 2368));
+        assert_eq!(plan.parts[4].sectors() % 8, 0);
+        let sizes: Vec<u64> = plan.parts[..4].iter().map(|p| p.sectors() / 2048).collect();
+        assert_eq!(sizes, PARTITION_MIB);
+    }
 }
 
 #[test]
 fn two_installs_share_no_guid_and_one_id_writes_the_same_disk() {
+    let running = Running::new(7, KAI_B_TYPE);
     let (mut a, mut again, mut b) = (
         Mem::new(disk_sectors()),
         Mem::new(disk_sectors()),
         Mem::new(disk_sectors()),
     );
     let (pa, _, pb) = (
-        install(&mut a, "install-a"),
-        install(&mut again, "install-a"),
-        install(&mut b, "install-b"),
+        install(&mut a, &running, "install-a"),
+        install(&mut again, &running, "install-a"),
+        install(&mut b, &running, "install-b"),
     );
-    assert!(a.data == again.data, "one id wrote two disks");
+    assert!(a.durable == again.durable, "one id wrote two disks");
     let guids: Vec<Guid> = [&pa, &pb]
         .iter()
         .flat_map(|p| p.parts.iter().map(|x| x.guid).chain([p.disk_guid]))
@@ -259,7 +124,6 @@ fn two_installs_share_no_guid_and_one_id_writes_the_same_disk() {
         assert!(!guids[i + 1..].contains(g), "a GUID repeats");
         assert!(!diskmap::TYPES.contains(g));
     }
-    // The volume id of kai-data differs too.
     let uuid = |p: &Plan| {
         p.steps.iter().find_map(|s| match s {
             Step::Format { uuid, .. } => Some(*uuid),
@@ -267,78 +131,142 @@ fn two_installs_share_no_guid_and_one_id_writes_the_same_disk() {
         })
     };
     assert_ne!(uuid(&pa), uuid(&pb));
-    // xtask's release image derives its GUIDs the same way.
     assert_eq!(pa.disk_guid, Guid(installer::guid("install-a disk")));
 }
 
-/// Over an old install, cut after each write: the old install, whole, or no
-/// valid GPT, until the backup header lands on a whole new install.
-#[test]
-fn a_cut_after_any_write_never_leaves_a_half_install_that_boots() {
-    let mut old = Mem::new(disk_sectors());
-    let old_plan = install(&mut old, "old");
-    // What an old install's use leaves: a slot in kai-b, a model hint.
-    old.put(old_plan.parts[3].first, boot_sector(2048));
-    old.put(old_plan.parts[4].first, [0x4B; S]);
-    let old_table = diskmap::read(&mut old).unwrap();
+/// The sectors that decide what `diskmap::read` finds: the MBR, the primary
+/// header and array, and the backup array and header.
+fn decides(lba: u64, n: usize) -> bool {
+    let tail = disk_sectors() - 1 - diskmap::ENTRY_SECTORS;
+    lba < diskmap::FIRST_USABLE || lba + n as u64 > tail
+}
 
-    let mut logged = old.clone();
-    logged.logging = true;
-    let plan = install(&mut logged, "new");
-    let last = disk_sectors() - 1;
-    let writes: Vec<_> = logged.writes().cloned().collect();
-    let backup_at = writes.iter().position(|(lba, _)| *lba == last).unwrap();
-    assert_eq!(
-        backup_at,
-        writes.len() - 2,
-        "the backup header is next to last"
-    );
-    assert_eq!(writes.last().unwrap().0, 1, "the primary header is last");
-    // The first flush ends the zeroing of both old tables.
-    let first_flush = logged.log.iter().position(Option::is_none).unwrap();
-
-    let mut disk = old.clone();
-    for (k, (lba, sectors)) in writes.iter().enumerate() {
+/// `durable` with `writes` on top, in order, all durable.
+fn with(durable: &BTreeMap<u64, Sector>, writes: &[&(u64, Vec<Sector>)]) -> Mem {
+    let mut disk = Mem::new(disk_sectors());
+    disk.durable = durable.clone();
+    for (lba, sectors) in writes {
         for (i, s) in sectors.iter().enumerate() {
-            disk.put(lba + i as u64, *s);
-        }
-        let read = diskmap::read(&mut disk);
-        match k {
-            k if k < first_flush => {
-                if let Ok(t) = read {
-                    assert_eq!(t.partitions, old_table.partitions, "after write {k}");
-                }
-            }
-            k if k < backup_at => assert!(read.is_err(), "a table after write {k}"),
-            k if k == backup_at => {
-                assert!(read.unwrap().from_backup);
-                installed(&mut disk.clone(), &plan);
-            }
-            _ => assert!(!read.unwrap().from_backup),
-        }
-        // Before the backup header, no write after the first flush touches
-        // either header's sector, in whatever order the flush's writes land.
-        if (first_flush..backup_at).contains(&k) {
-            let end = lba + sectors.len() as u64;
-            assert!(!(*lba..end).contains(&1) && !(*lba..end).contains(&last));
+            set(&mut disk.durable, lba + i as u64, *s);
         }
     }
-    installed(&mut disk, &plan);
+    disk
+}
+
+/// Over an old install, a cut at every write keeping any subset of the writes
+/// since the last flush: the old install whole, or no valid GPT, until the
+/// backup header lands on a whole new install. A valid new primary header
+/// never stands without a valid new backup.
+#[test]
+fn a_cut_anywhere_never_leaves_a_half_install_that_boots() {
+    let old_running = Running::new(3, KAI_A_TYPE);
+    let mut old = Mem::new(disk_sectors());
+    let old_plan = install(&mut old, &old_running, "old");
+    let mut old = old.cut();
+    // What an old install's use leaves: a slot volume in kai-b, and a
+    // `kai-modelhint 1` in kai-data's block 0. The install must clear both.
+    let slot = old_plan.parts[2].first;
+    old.put(old_plan.parts[3].first, old.get(slot));
+    let mut hint = [0u8; S];
+    let text = b"kai-modelhint 1\nblob old-model\n";
+    hint[..text.len()].copy_from_slice(text);
+    old.put(old_plan.parts[4].first, hint);
+    let old_table = current(&mut old.clone()).gpt().unwrap();
+    let old_whole = |disk: &Mem| {
+        for p in &old_plan.parts[..3] {
+            let name = p.name;
+            assert_eq!(
+                disk.hash(p.first, VOLUME),
+                old.hash(p.first, VOLUME),
+                "{name}"
+            );
+        }
+        let data = &old_plan.parts[4];
+        mounts(&mut disk.clone(), data.first, data.sectors());
+    };
+
+    let running = Running::new(7, KAI_B_TYPE);
+    let mut logged = old.clone();
+    let plan = install(&mut logged, &running, "new");
+    let mut durable = old.durable.clone();
+    let mut pending: Vec<&(u64, Vec<Sector>)> = Vec::new();
+    let (mut olds, mut news) = (0, 0);
+    for op in &logged.log {
+        let Some(write) = op else {
+            for (lba, sectors) in pending.drain(..) {
+                for (i, s) in sectors.iter().enumerate() {
+                    set(&mut durable, lba + i as u64, *s);
+                }
+            }
+            continue;
+        };
+        pending.push(write);
+        // Every subset of the pending writes that decide the table, each with
+        // all or none of the rest.
+        let (table, rest): (Vec<_>, Vec<_>) = pending
+            .iter()
+            .copied()
+            .partition(|(lba, s)| decides(*lba, s.len()));
+        assert!(
+            table.len() <= 4,
+            "{} table writes in one flush",
+            table.len()
+        );
+        for mask in 0..1u32 << table.len() {
+            let kept: Vec<_> = (0..table.len())
+                .filter(|i| mask & (1 << i) != 0)
+                .map(|i| table[i])
+                .collect();
+            let mut disk = with(&durable, &kept);
+            let Ok(found) = diskmap::read(&mut disk) else {
+                continue;
+            };
+            for others in [&[][..], &rest[..]] {
+                let state = with(&disk.durable, others);
+                // Read from either copy: the old primary may be zeroed first.
+                if (found.disk_guid, &found.partitions)
+                    == (old_table.disk_guid, &old_table.partitions)
+                {
+                    olds += 1;
+                    old_whole(&state);
+                } else {
+                    news += 1;
+                    assert_eq!(found.disk_guid, plan.disk_guid, "a third table");
+                    installed(&state, &plan, &running);
+                    backed(&disk, &found);
+                }
+            }
+        }
+    }
+    assert!(olds > 0 && news > 0, "old {olds}, new {news}");
+    installed(&logged.cut(), &plan, &running);
+}
+
+/// A new table read from the primary has a valid backup too: the primary
+/// header is written last, in a flush of its own.
+fn backed(disk: &Mem, found: &Table) {
+    if found.from_backup {
+        return;
+    }
+    let mut backup = disk.clone();
+    backup.put(1, [0; S]);
+    let got = diskmap::read(&mut backup).expect("a primary header without a backup");
+    assert!(got.from_backup);
+    assert_eq!(got.disk_guid, found.disk_guid);
+    assert_eq!(got.partitions, found.partitions);
 }
 
 #[test]
 fn a_disk_too_small_or_not_512_byte_sectors_is_refused() {
-    let (_, table) = running(7);
+    let running = Running::new(7, KAI_A_TYPE);
     let at = |sectors: u64, sector_size: u32| {
-        plan(
-            Target {
-                sectors,
-                sector_size,
-                id: "x",
-                now: 0,
-            },
-            &table,
-        )
+        let t = Target {
+            sectors,
+            sector_size,
+            id: "x",
+            now: 0,
+        };
+        plan(t, running.source(), &Current::Blank)
     };
     let need = minimum_sectors();
     assert_eq!(at(need - 1, 512), Err(Error::TooSmall { need }));
@@ -346,56 +274,255 @@ fn a_disk_too_small_or_not_512_byte_sectors_is_refused() {
     // 2,368 MiB and kai-data's minimum: it installs, and kai-data mounts.
     let plan = at(need, 512).unwrap();
     assert_eq!(plan.parts[4].sectors(), installer::DATA_MIN_BLOCKS * 8);
-    let (mut source, _) = running(7);
     let mut disk = Mem::new(need);
-    apply(&plan, &mut source, &mut disk).unwrap();
+    apply(&plan, &mut running.disk.clone(), &mut disk).unwrap();
     let data = &plan.parts[4];
-    Fs::mount(Window {
-        disk: &mut disk,
-        first: data.first,
-        blocks: data.sectors() / 8,
-    })
-    .expect("the smallest kai-data mounts");
+    mounts(&mut disk, data.first, data.sectors());
     // A target not the plan's size is refused before any write.
     let mut other = Mem::new(need + 8);
-    assert_eq!(apply(&plan, &mut source, &mut other), Err(Error::Target));
-    assert!(other.data.is_empty());
+    let refused = apply(&plan, &mut running.disk.clone(), &mut other);
+    assert_eq!(refused, Err(Error::Target));
+    assert!(other.log.is_empty());
 }
 
 #[test]
 fn bad_ids_are_refused() {
-    let (_, table) = running(7);
+    let running = Running::new(7, KAI_A_TYPE);
     for id in ["", "has space", &"x".repeat(65), "tab\t"] {
-        assert_eq!(plan(target(id), &table), Err(Error::BadId), "{id:?}");
+        let got = plan(target(id), running.source(), &Current::Blank);
+        assert_eq!(got, Err(Error::BadId), "{id:?}");
     }
+}
+
+/// The plan names the table it wipes; the running disk is refused, and so is
+/// a target whose table changed since the plan was made.
+#[test]
+fn the_plan_names_what_it_wipes_and_refuses_the_running_disk() {
+    let running = Running::new(7, KAI_A_TYPE);
+    let on_itself = plan(
+        target("x"),
+        running.source(),
+        &Current::Gpt(running.table.clone()),
+    );
+    assert_eq!(on_itself, Err(Error::RunningDisk));
+    let mut disk = Mem::new(disk_sectors());
+    let first = install(&mut disk, &running, "first");
+    let held = current(&mut disk);
+    assert_eq!(held.clone().gpt().unwrap().disk_guid, first.disk_guid);
+    let again = plan(target("second"), running.source(), &held).unwrap();
+    assert_eq!(again.wipes, held);
+    // Planned over that table, applied to a blank disk: refused, unwritten.
+    let mut blank = Mem::new(disk_sectors());
+    let refused = apply(&again, &mut running.disk.clone(), &mut blank);
+    assert_eq!(refused, Err(Error::Target));
+    assert!(blank.log.is_empty());
+    // Planned over nothing, applied over the first install: the same.
+    let blind = plan(target("second"), running.source(), &Current::Blank).unwrap();
+    disk.log.clear();
+    let refused = apply(&blind, &mut running.disk.clone(), &mut disk);
+    assert_eq!(refused, Err(Error::Target));
+    assert!(disk.log.is_empty());
+    apply(&again, &mut running.disk.clone(), &mut disk).unwrap();
+    installed(&disk.cut(), &again, &running);
+}
+
+fn source<'a>(table: &'a Table, committed: Committed) -> Source<'a> {
+    Source { table, committed }
 }
 
 /// A running disk that cannot be copied is refused, and nothing is written.
 #[test]
 fn a_running_disk_that_cannot_be_copied_writes_nothing() {
-    let (_, table) = running(7);
-    let mut missing = table.clone();
-    missing.partitions.retain(|p| p.kind != diskmap::KAI_A_TYPE);
-    assert!(matches!(plan(target("x"), &missing), Err(Error::Source(_))));
-    let mut larger = table.clone();
+    let running = Running::new(7, KAI_A_TYPE);
+    let committed = running.committed;
+    let mut missing = running.table.clone();
+    missing.partitions.retain(|p| p.kind != diskmap::ESP_TYPE);
+    let mut larger = running.table.clone();
     larger.partitions[1].last += 1;
-    assert!(matches!(plan(target("x"), &larger), Err(Error::Source(_))));
+    let mut not_a_slot = committed;
+    not_a_slot.kind = diskmap::KAI_R_TYPE;
+    for (why, src) in [
+        ("no ESP", source(&missing, committed)),
+        ("a larger kai-r", source(&larger, committed)),
+        ("R as the slot", source(&running.table, not_a_slot)),
+    ] {
+        let got = plan(target("x"), src, &Current::Blank);
+        assert!(matches!(got, Err(Error::Source(_))), "{why}: {got:?}");
+    }
 
-    let plan = plan(target("x"), &table).unwrap();
-    let r = table.partitions[1].first;
+    let plan = plan(target("x"), running.source(), &Current::Blank).unwrap();
+    let r = running.table.partitions[1].first;
+    let mut past = running.disk.get(r);
+    past[32..36].copy_from_slice(&(256 * 2048 + 1u32).to_le_bytes());
+    let mut fat16 = running.disk.get(r);
+    fat16[19..21].copy_from_slice(&100u16.to_le_bytes());
     for (why, boot) in [
         ("no FAT volume", [0u8; S]),
-        ("a volume past its partition", boot_sector(256 * 2048 + 1)),
-        ("an empty volume", boot_sector(0)),
+        ("a volume past its partition", past),
+        ("FAT16 fields", fat16),
     ] {
-        let (mut source, _) = running(7);
+        let mut source = running.disk.clone();
         source.put(r, boot);
         let mut disk = Mem::new(disk_sectors());
-        disk.logging = true;
-        assert!(
-            matches!(apply(&plan, &mut source, &mut disk), Err(Error::Source(_))),
-            "{why}"
-        );
+        let got = apply(&plan, &mut source, &mut disk);
+        assert!(matches!(got, Err(Error::Source(_))), "{why}: {got:?}");
         assert!(disk.log.is_empty(), "{why}: wrote");
     }
+}
+
+/// `plan` with the committed slot's expectation replaced.
+fn expecting(plan: &Plan, expect: Expect) -> Plan {
+    let mut p = plan.clone();
+    for step in &mut p.steps {
+        if let Step::Check { expect: e, .. } = step
+            && matches!(e, Expect::Slot { .. })
+        {
+            *e = expect;
+        }
+    }
+    p
+}
+
+/// Whether no table write landed: every write to the sectors that decide the
+/// table wrote zeros.
+fn no_table(disk: &Mem) -> bool {
+    disk.writes()
+        .all(|(lba, s)| !decides(*lba, s.len()) || s.iter().all(|x| *x == [0; S]))
+}
+
+/// A source whose sector `at` changes at its `change_at`th read.
+struct Flaky<'a> {
+    disk: &'a mut Mem,
+    at: u64,
+    reads: u32,
+    change_at: u32,
+}
+
+impl installer::Disk for Flaky<'_> {
+    fn sectors(&self) -> u64 {
+        self.disk.sectors
+    }
+
+    fn read(&mut self, lba: u64, out: &mut [u8]) -> Result<(), installer::IoError> {
+        let n = (out.len() / S) as u64;
+        if (lba..lba + n).contains(&self.at) {
+            self.reads += 1;
+            if self.reads == self.change_at {
+                self.disk.put(self.at, [0x77; S]);
+            }
+        }
+        installer::Disk::read(self.disk, lba, out)
+    }
+
+    fn write(&mut self, lba: u64, data: &[u8]) -> Result<(), installer::IoError> {
+        installer::Disk::write(self.disk, lba, data)
+    }
+
+    fn flush(&mut self) -> Result<(), installer::IoError> {
+        installer::Disk::flush(self.disk)
+    }
+}
+
+/// A running slot that is not the committed one is refused before any write.
+#[test]
+fn a_running_slot_that_is_not_the_committed_one_writes_nothing() {
+    let running = Running::new(7, KAI_B_TYPE);
+    let base = plan(target("x"), running.source(), &Current::Blank).unwrap();
+    let Committed {
+        sha256,
+        release_seq,
+        ..
+    } = running.committed;
+    let mut wrong = sha256;
+    wrong[0] ^= 1;
+    for (why, expect) in [
+        (
+            "another SHA-256",
+            Expect::Slot {
+                sha256: wrong,
+                release_seq,
+            },
+        ),
+        (
+            "another release",
+            Expect::Slot {
+                sha256,
+                release_seq: release_seq + 1,
+            },
+        ),
+    ] {
+        let mut disk = Mem::new(disk_sectors());
+        let got = apply(
+            &expecting(&base, expect),
+            &mut running.disk.clone(),
+            &mut disk,
+        );
+        assert!(matches!(got, Err(Error::Source(_))), "{why}: {got:?}");
+        assert!(disk.log.is_empty(), "{why}: wrote");
+    }
+}
+
+/// A copy that differs from what was checked before the writes stops the
+/// install before the table: no GPT is written.
+#[test]
+fn a_copy_that_does_not_read_back_writes_no_table() {
+    let running = Running::new(7, KAI_B_TYPE);
+    let base = plan(target("x"), running.source(), &Current::Blank).unwrap();
+    let slot = running.table.find(KAI_B_TYPE).unwrap().first;
+    // A source sector that changes after its first read: the ESP's (read by
+    // the copy, then the read-back), and the slot's (read by the check before
+    // the writes, then the copy).
+    for (why, at, reads) in [
+        ("the ESP", running.table.partitions[0].first + 5000, 2),
+        ("the slot", slot + 1200, 2),
+    ] {
+        let mut flaky = running.disk.clone();
+        let mut source = Flaky {
+            disk: &mut flaky,
+            at,
+            reads: 0,
+            change_at: reads,
+        };
+        let mut disk = Mem::new(disk_sectors());
+        let got = apply(&base, &mut source, &mut disk);
+        assert!(matches!(got, Err(Error::Verify(_))), "{why}: {got:?}");
+        assert!(
+            matches!(current(&mut disk.cut()), Current::Blank),
+            "{why}: a table"
+        );
+        assert!(no_table(&disk), "{why}: a table write");
+    }
+}
+
+/// What a target holds, as the device shows it before it asks to go on.
+#[test]
+fn the_current_contents_say_blank_gpt_or_unreadable() {
+    let running = Running::new(7, KAI_A_TYPE);
+    let mut disk = Mem::new(disk_sectors());
+    assert_eq!(current(&mut disk), Current::Blank);
+    install(&mut disk, &running, "x");
+    assert!(matches!(current(&mut disk), Current::Gpt(_)));
+    // Both arrays fail their checksums.
+    let mut bad = disk.cut();
+    let array = 2;
+    let mut s = bad.get(array);
+    s[0] ^= 1;
+    bad.put(array, s);
+    let tail = disk_sectors() - 1 - diskmap::ENTRY_SECTORS;
+    let mut s = bad.get(tail);
+    s[0] ^= 1;
+    bad.put(tail, s);
+    assert!(matches!(current(&mut bad), Current::Unreadable(_)));
+    // An MBR disk, no GPT.
+    let mut mbr = Mem::new(disk_sectors());
+    let mut s = [0u8; S];
+    s[510..].copy_from_slice(&[0x55, 0xAA]);
+    mbr.put(0, s);
+    assert!(matches!(current(&mut mbr), Current::Unreadable(_)));
+    // Planned over an MBR disk: applied to a blank one, refused.
+    let over_mbr = plan(target("y"), running.source(), &current(&mut mbr)).unwrap();
+    let mut blank = Mem::new(disk_sectors());
+    let got = apply(&over_mbr, &mut running.disk.clone(), &mut blank);
+    assert_eq!(got, Err(Error::Target));
+    assert!(blank.log.is_empty());
 }

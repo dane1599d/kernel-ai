@@ -14,18 +14,19 @@ pub const FOLDERS: [(u64, &str); 5] = [
 
 /// Formats kaifs over all of `dev` with its volumes `system`, `home` and
 /// `models`, the [`FOLDERS`] and the clock at `now`; the generation it commits.
-/// The same arguments write the same bytes.
+/// The same arguments write the same bytes. An error names the step that
+/// failed: `mkfs`, a folder's path, or `commit`.
 pub fn format_data<D: BlockDev>(
     dev: D,
     uuid: [u8; 16],
     label: &str,
     now: u64,
-) -> Result<u64, Error> {
-    let mut fs = Fs::mkfs(dev, uuid, label)?;
+) -> Result<u64, (&'static str, Error)> {
+    let mut fs = Fs::mkfs(dev, uuid, label).map_err(|e| ("mkfs", e))?;
     fs.clock = now;
     for (vol, path) in FOLDERS {
-        fs.set_volume(vol)?;
-        fs.mkdir(ROOT, &path[1..])?;
+        fs.set_volume(vol).map_err(|e| (path, e))?;
+        fs.mkdir(ROOT, &path[1..]).map_err(|e| (path, e))?;
     }
-    fs.commit()
+    fs.commit().map_err(|e| ("commit", e))
 }
