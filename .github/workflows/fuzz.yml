@@ -5,7 +5,10 @@
 # parsers of an app's bytes (plan p3-desktop §1 and §6's fuzz gate): surfabi's
 # message stream, header page and tree records, and look's `kai-theme 1`; and
 # `desktop`'s readers of other processes' bytes (plan p3-desktop section 9):
-# deskcore's client calls, queues, wire parsers and agent requests; and
+# deskcore's client calls, queues, wire parsers and agent requests; and what
+# `pkg` and `updated` read from a repository and `fs`'s wire (ADR 0000 P8):
+# kaipkg's `.kpkg` reader, kaituf's TUF metadata and fsproto's requests and
+# replies, whose bodies are fuzz/pkg_harness.rs and fuzz/fsproto_harness.rs; and
 # kaimedia's PNG, JPEG, GIF and WebP decoders (P6 groundwork G8).
 # The targets are fuzz/fuzz_targets/*.rs, outside the workspace; their bodies
 # are fuzz/harness.rs, fuzz/surfabi_harness.rs, fuzz/look_harness.rs and
@@ -60,6 +63,11 @@ jobs:
         env:
           FUZZ_SEED_DIR: ${{ github.workspace }}/fuzz/corpus
         run: cargo test -p surfabi -p look -p deskcore -p kaimedia --test hostile write_fuzz_seeds -- --ignored
+      # The P8 targets start from their harness tests' samples.
+      - name: Seed the P8 corpora
+        env:
+          FUZZ_SEED_DIR: ${{ github.workspace }}/fuzz/corpus
+        run: cargo test -p kaipkg -p fsproto --test fuzz_harness write_fuzz_seeds -- --ignored
       - name: Fuzz
         env:
           # A scheduled run has no inputs: every target, 300 s each.
