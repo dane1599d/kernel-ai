@@ -239,9 +239,11 @@ pub trait Host {
     fn power_reboot(&self) -> Result<(), String> {
         Err(String::from("this host cannot restart the computer"))
     }
-    /// The user's appearance as `kai-appearance 1` text (P4 task 8).
-    fn appearance_read(&self) -> Option<String> {
-        None
+    /// The user's appearance as `kai-appearance 1` text (P4 task 8): `None`
+    /// with no file, and why not when it could not be read (a failed read is no
+    /// proof the file is absent, so nothing is written over it).
+    fn appearance_read(&self) -> Result<Option<String>, String> {
+        Ok(None)
     }
     /// Saves the appearance and has `desktop` draw with it.
     fn appearance_write(&self, _text: &str) -> Result<(), String> {
@@ -428,9 +430,10 @@ pub trait Host {
         Err(String::from("apps cannot be kept running here"))
     }
     /// The restart window as `/system/state/restart/window` holds it
-    /// (`kai-updates 1`), which `updated` follows.
-    fn restart_read(&self) -> Option<String> {
-        None
+    /// (`kai-updates 1`), which `updated` follows: `None` with no file, and why
+    /// not when it could not be read.
+    fn restart_read(&self) -> Result<Option<String>, String> {
+        Ok(None)
     }
     fn restart_write(&self, _text: &str) -> Result<(), String> {
         Err(String::from("there is no /system/state here"))

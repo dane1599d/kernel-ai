@@ -152,10 +152,20 @@ pub struct Settings {
     pub updates: Updates,
     /// The hosts each app may reach.
     pub net: Vec<NetLine>,
+    /// The last read of the hosts, or of the rules, failed: the page says so,
+    /// not that there are none.
+    pub net_unread: bool,
+    pub rules_unread: bool,
     pub about: About,
 }
 
 impl Settings {
+    /// Marks the network grants' or the rules' last read as failed.
+    pub fn set_unread(&mut self, net: bool, rules: bool) {
+        self.net_unread |= net;
+        self.rules_unread |= rules;
+    }
+
     /// The theme after `name`, wrapping: the Appearance page's "Theme" button.
     pub fn next_theme(&self) -> Intent {
         let themes = look::THEMES;
