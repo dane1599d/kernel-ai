@@ -294,3 +294,6 @@ fn the_fitting_volume_is_the_smallest_whole_mib_that_holds_the_files() {
     assert_eq!(fitting_sectors(&small).unwrap(), 33 * 2048);
     assert!(volume(33 * 2048, 0, 1, &small).is_ok());
 }
+
+#[path = "fat32_espfat_tests.rs"]
+mod espfat_tests;
