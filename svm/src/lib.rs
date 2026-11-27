@@ -6,16 +6,21 @@
 //! - [`vmcb`]: the VMCB, a 4 KiB page: its control area and its state save
 //!   area, at the offsets of AMD64 APM vol. 2 (pub. 24593) appendix B, each
 //!   checked by a test.
-//! - [`exit`]: `EXITCODE` values and the decoding of `EXITINFO1`/`EXITINFO2`
-//!   for the exits the kernel handles itself (I/O, MSR, nested page fault).
+//! - [`exit`]: `EXITCODE` values, the decoding of `EXITINFO1`/`EXITINFO2`
+//!   for the exits the kernel handles itself (I/O, MSR, nested page fault),
+//!   and [`exit::dispatch`]: each exit to one action, with the instruction
+//!   length decoded where the CPU has no NRIPS.
 //! - [`intercept`]: the intercept vectors as a set, and the MSR and I/O
 //!   permission maps' bit positions.
 //! - [`event`]: `EVENTINJ` (and `EXITINTINFO`, the same format).
-//! - [`npt`]: nested page table entries and the walk's indices.
+//! - [`npt`]: nested page table entries, the walk's indices, and guest
+//!   RAM's [`npt::Layout`] over one `Shm`, mapped into a table.
 //!
-//! The source is AMD64 APM vol. 2, chapter 15 and appendix B; the revision
-//! was not checked (ADR 0006). Linux's `arch/x86/include/asm/svm.h` and
-//! `uapi/asm/svm.h` (master, 2026-11) transcribe the same tables, and agree
+//! The source is AMD64 APM vol. 2, chapter 15 and appendix B. The exit
+//! dispatch and guest-RAM layout were checked against revision 3.38
+//! (November 2021): 15.7.1 (nRIP), 15.8.4, 15.10.2, 15.12, 15.14 and
+//! 15.25.6. Linux's `arch/x86/include/asm/svm.h` and `uapi/asm/svm.h`
+//! (master, 2026-11) transcribe the same tables, and agree
 //! with every offset and value here.
 
 #![no_std]
@@ -27,9 +32,9 @@ pub mod npt;
 pub mod vmcb;
 
 pub use event::{Event, EventType};
-pub use exit::ExitCode;
+pub use exit::{Action, Exit, ExitCode, dispatch};
 pub use intercept::{Intercept, Intercepts};
-pub use npt::{Access, NptEntry};
+pub use npt::{Access, Layout, NptEntry, Region};
 pub use vmcb::{ControlArea, SaveArea, Segment, Vmcb};
 
 /// CPUID leaf 0x8000_000A: SVM's revision, ASID count and features
