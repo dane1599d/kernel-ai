@@ -472,8 +472,8 @@ impl Host for System {
         }
     }
 
-    fn restart_read(&self) -> Option<String> {
-        self.state.read(files::RESTART).ok().flatten()
+    fn restart_read(&self) -> Result<Option<String>, String> {
+        self.state.read(files::RESTART)
     }
 
     /// As the keep-running list is: with the line's files, if it changed any.
@@ -491,8 +491,8 @@ impl Host for System {
         supervise(&supervise::keep::encode(app, on))
     }
 
-    fn appearance_read(&self) -> Option<String> {
-        self.state.read(files::APPEARANCE).ok().flatten()
+    fn appearance_read(&self) -> Result<Option<String>, String> {
+        self.state.read(files::APPEARANCE)
     }
 
     /// Saved with the line's files, as the rules are; then `desktop` paints in

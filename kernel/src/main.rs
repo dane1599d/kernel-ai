@@ -359,6 +359,13 @@ extern "C" fn boot_continue() -> ! {
         Err(message) => fail(message),
     }
     log!("{}", fpu::features_line());
+    // The nesting census (P6 row 1, ADR 0006): the VMX and SVM bits this guest
+    // sees, one grep-able line; nesting-census.yml tabulates it per runner.
+    log!(
+        "nesting: vendor={} {}",
+        core::str::from_utf8(&cpufeat::vendor()).unwrap_or("?"),
+        cpufeat::Nesting::detect()
+    );
     // Before the other CPUs start: SetVirtualAddressMap runs on a borrowed PML4.
     if let Err(message) = efi::init() {
         log!("{message}; no runtime services");

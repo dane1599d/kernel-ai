@@ -107,6 +107,8 @@ impl Forward {
         reply: &mut [u8],
     ) -> bool {
         let mut owed = self.take(host);
+        // A request nothing answered is given up before room is counted.
+        owed.extend(self.ledger.expire(crate::now_ms()));
         owed.extend(self.send(route, reply));
         owed.extend(self.results(route, reply));
         let any = !owed.is_empty();

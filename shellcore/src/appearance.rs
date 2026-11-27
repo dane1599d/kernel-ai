@@ -12,9 +12,14 @@ use alloc::string::{String, ToString};
 use look::appearance::{Appearance, Shipped};
 
 /// The appearance the host keeps; the default when it keeps none, or one out
-/// of shape (which is reported and left alone until a change replaces it).
-pub(crate) fn current(host: &dyn Host) -> Appearance {
-    match host.appearance_read() {
+/// of shape (which is reported and left alone until a change replaces it). An
+/// error when the host could not read it: a change must not start from the
+/// defaults then, and write them over what is saved.
+pub(crate) fn current(host: &dyn Host) -> Result<Appearance, String> {
+    let read = host.appearance_read().map_err(|why| {
+        format!("the saved appearance could not be read, so it is not written over: {why}")
+    })?;
+    Ok(match read {
         Some(text) => match Appearance::decode_audited(&text, &Shipped) {
             // A save from before `shell` and `hover` existed may hold a colour
             // that falls short on one of them: that colour is dropped and the
@@ -31,7 +36,7 @@ pub(crate) fn current(host: &dyn Host) -> Appearance {
             }
         },
         None => Appearance::default(),
-    }
+    })
 }
 
 /// `setting`'s value in `appearance`, as `appearance_set` takes it.
@@ -53,7 +58,7 @@ pub(crate) fn value_of(appearance: &Appearance, setting: &str) -> String {
 /// Sets `setting` to `value` and saves it: the value it replaced and the
 /// reply's words.
 pub(crate) fn set(host: &dyn Host, setting: &str, value: &str) -> Result<(String, String), String> {
-    let before = current(host);
+    let before = current(host)?;
     let after = before
         .set(setting, value, &Shipped)
         .map_err(|why| format!("appearance_set: {}", why.0))?;
@@ -75,7 +80,7 @@ pub(crate) fn changed(
         "token" => String::from(value.split(' ').next().unwrap_or(value)),
         _ => before,
     };
-    let after = value_of(&current(host), setting);
+    let after = value_of(&current(host)?, setting);
     let named = |text: &str| {
         Name::new(text).ok_or_else(|| format!("appearance_set: {text:?} is too long to undo"))
     };
@@ -106,7 +111,7 @@ pub(crate) fn revert(
     now: Name,
     anyway: bool,
 ) -> Result<String, Refused> {
-    let current = current(host);
+    let current = current(host).map_err(Refused::Failed)?;
     let is = value_of(&current, setting.as_str());
     if !anyway && is != now.as_str() {
         return Err(Refused::Moved(format!("{} {is}", setting.as_str())));

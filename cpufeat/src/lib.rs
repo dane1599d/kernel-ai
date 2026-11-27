@@ -332,6 +332,90 @@ pub fn hypervisor_signature() -> Option<[u8; 12]> {
     None
 }
 
+/// The nesting census (P6 row 1, ADR 0006 step 1; first run as spike S06-1):
+/// the raw virtualisation bits CPUID shows this guest, for the boot line
+/// `nesting: ...`. VMX is CPUID.1:ECX bit 5; SVM is 0x8000_0001 ECX bit 2; leaf
+/// 0x8000_000A's four registers are kept raw so the census can read bits [`Svm`]
+/// does not name.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Nesting {
+    pub vmx: bool,
+    pub max_extended: u32,
+    /// Leaf 0x8000_000A's EAX, EBX, ECX and EDX, or zeros when the CPU has no
+    /// such leaf.
+    pub leaf_a: (u32, u32, u32, u32),
+    pub svm: Option<Svm>,
+}
+
+impl Nesting {
+    /// Decodes the census from CPUID.1 ECX, the highest extended leaf, 0x8000_0001
+    /// ECX and leaf 0x8000_000A's registers. Leaf 0x8000_000A is ignored when the
+    /// highest extended leaf is below it.
+    pub fn decode(
+        ecx_1: u32,
+        max_extended: u32,
+        ecx_8000_0001: u32,
+        leaf_a: (u32, u32, u32, u32),
+    ) -> Self {
+        let leaf_a = if max_extended >= SVM_LEAF {
+            leaf_a
+        } else {
+            (0, 0, 0, 0)
+        };
+        let (eax, ebx, _, edx) = leaf_a;
+        Self {
+            vmx: ecx_1 & (1 << 5) != 0,
+            max_extended,
+            leaf_a,
+            svm: Svm::decode(max_extended, ecx_8000_0001, (eax, ebx, edx)),
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    pub fn detect() -> Self {
+        let ecx_1 = cpuid(1, 0).2;
+        let max_extended = cpuid(0x8000_0000, 0).0;
+        let ecx_ext = if max_extended >= 0x8000_0001 {
+            cpuid(0x8000_0001, 0).2
+        } else {
+            0
+        };
+        let leaf_a = if max_extended >= SVM_LEAF {
+            cpuid(SVM_LEAF, 0)
+        } else {
+            (0, 0, 0, 0)
+        };
+        Self::decode(ecx_1, max_extended, ecx_ext, leaf_a)
+    }
+
+    #[cfg(not(target_arch = "x86_64"))]
+    pub fn detect() -> Self {
+        Self::default()
+    }
+}
+
+/// `vmx=0 svm=1 npt=1 nrips=0 decode_assists=0 avic=0 asids=16 leaf_8000000a=eax:0x1,ebx:0x10,ecx:0x0,edx:0x10010001`:
+/// one `key=value` word each, so a CI job can grep them.
+impl core::fmt::Display for Nesting {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let svm = self.svm.unwrap_or_default();
+        let on = |b: bool| u8::from(b);
+        let (eax, ebx, ecx, edx) = self.leaf_a;
+        write!(
+            f,
+            "vmx={} svm={} npt={} nrips={} decode_assists={} avic={} asids={} \
+             leaf_8000000a=eax:{eax:#x},ebx:{ebx:#x},ecx:{ecx:#x},edx:{edx:#x}",
+            on(self.vmx),
+            on(self.svm.is_some()),
+            on(svm.npt),
+            on(svm.nrips),
+            on(svm.decode_assists),
+            on(svm.avic),
+            svm.asids,
+        )
+    }
+}
+
 /// Whether CPUID says the TSC runs at a constant rate in every power state
 /// (0x80000007 EDX bit 8, "invariant TSC").
 #[cfg(target_arch = "x86_64")]
@@ -455,6 +539,48 @@ mod tests {
 
     use super::*;
     use std::vec::Vec;
+
+    /// The guest lines S06-1's census recorded (run 45734622772, 2026-11-25).
+    const KVM_AMD: &str = "vmx=0 svm=1 npt=1 nrips=1 decode_assists=0 avic=0 asids=16 \
+                           leaf_8000000a=eax:0x1,ebx:0x10,ecx:0x0,edx:0x10009479";
+    const TCG: &str = "vmx=0 svm=1 npt=1 nrips=0 decode_assists=0 avic=0 asids=16 \
+                       leaf_8000000a=eax:0x1,ebx:0x10,ecx:0x0,edx:0x10010001";
+    const KVM_INTEL: &str = "vmx=1 svm=0 npt=0 nrips=0 decode_assists=0 avic=0 asids=0 \
+                             leaf_8000000a=eax:0x0,ebx:0x0,ecx:0x0,edx:0x0";
+
+    #[test]
+    fn nesting_reads_the_census_recorded_leaf_values() {
+        // KVM on the AMD runners: NPT and NRIPS; decode assists and AVIC not
+        // passed through, though the host has decode assists.
+        let amd = Nesting::decode(0, 0x8000_0021, 1 << 2, (1, 16, 0, 0x1000_9479));
+        assert_eq!(std::format!("{amd}"), KVM_AMD);
+        let svm = amd.svm.unwrap();
+        assert!(svm.npt && svm.nrips && !svm.decode_assists && !svm.avic);
+        assert_eq!((svm.revision, svm.asids), (1, 16));
+
+        // QEMU's TCG: NPT without NRIPS (ADR 0006), on every runner.
+        let tcg = Nesting::decode(0, 0x8000_0021, 1 << 2, (1, 16, 0, 0x1001_0001));
+        assert_eq!(std::format!("{tcg}"), TCG);
+        let svm = tcg.svm.unwrap();
+        assert!(svm.npt && !svm.nrips);
+
+        // KVM on the Intel runners: VMX, no SVM, and leaf 0x8000_000A beyond the
+        // highest extended leaf, so its registers are not trusted.
+        let intel = Nesting::decode(1 << 5, 0x8000_0008, 0, (9, 9, 9, 9));
+        assert!(intel.vmx && intel.svm.is_none());
+        assert_eq!(intel.leaf_a, (0, 0, 0, 0));
+        assert_eq!(std::format!("{intel}"), KVM_INTEL);
+    }
+
+    #[test]
+    fn nesting_without_the_svm_bit_ignores_leaf_a_for_svm() {
+        // A leaf 0x8000_000A without the SVM bit keeps the raw registers but
+        // reports no SVM.
+        let n = Nesting::decode(0, 0x8000_0021, 0, (1, 16, 0, 0x1000_9479));
+        assert!(n.svm.is_none() && !n.vmx);
+        assert_eq!(n.leaf_a, (1, 16, 0, 0x1000_9479));
+        assert!(std::format!("{n}").starts_with("vmx=0 svm=0 npt=0 nrips=0 "));
+    }
 
     #[test]
     fn the_tsc_is_the_default_only_under_kvm_with_a_trustworthy_rate() {

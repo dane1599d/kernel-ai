@@ -3,13 +3,14 @@
 //! that keeps every promise the loader relies on, or fail with an error. None
 //! panics.
 
+#[path = "hostile/harness.rs"]
+mod harness;
 #[path = "../../testkit/hostile.rs"]
 mod hostile;
 
-use core::ops::Range;
-use uelf::{Error, Image, MAX_SEGMENTS, parse};
-
-const ALLOWED: Range<u64> = 0x1_0000..0x10_0000_0000;
+use harness::{ALLOWED, check_image};
+use hostile::XorShift;
+use uelf::{Error, MAX_SEGMENTS, parse};
 const PAGE: u64 = 4096;
 const PH_SIZE: usize = 56;
 const PT_LOAD: u32 = 1;
@@ -73,32 +74,6 @@ fn sample() -> Vec<u8> {
 
 /// The table's end: the bytes every field sweep covers.
 const HEADERS_END: usize = 64 + 3 * PH_SIZE;
-
-/// The promises the loader relies on, for any image `parse` returns.
-fn check_image(image: &Image, data: &[u8]) {
-    let segments = image.segments();
-    assert!(!segments.is_empty() && segments.len() <= MAX_SEGMENTS);
-    for s in segments {
-        assert!(s.file.start <= s.file.end && s.file.end <= data.len());
-        assert!((s.file.end - s.file.start) as u64 <= s.memsz && s.memsz > 0);
-        let pages = s.pages();
-        assert!(ALLOWED.start <= pages.start && pages.end <= ALLOWED.end);
-        assert!(pages.start % PAGE == 0 && pages.end % PAGE == 0);
-        assert!(!(s.write && s.execute));
-    }
-    for (i, a) in segments.iter().enumerate() {
-        for b in &segments[i + 1..] {
-            let (a, b) = (a.pages(), b.pages());
-            assert!(a.end <= b.start || b.end <= a.start);
-        }
-    }
-    assert!(
-        segments
-            .iter()
-            .any(|s| s.execute && s.vaddr <= image.entry && image.entry - s.vaddr < s.memsz)
-    );
-    let _ = image.page_count();
-}
 
 fn check(data: &[u8]) -> Result<(), Error> {
     let image = parse(data, ALLOWED)?;
@@ -269,4 +244,103 @@ fn a_mutated_kai_note_parses_or_fails_and_never_panics() {
             assert!(check(prefix).is_err(), "cut at {cut}");
         }
     });
+}
+
+// G31: the fuzz target's body (`harness.rs`) over random executables.
+
+#[test]
+fn random_bytes_never_panic() {
+    let mut rng = XorShift::new(0xe1f);
+    for _ in 0..20_000 {
+        let len = rng.below(512);
+        let bytes: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
+        harness::uelf(&bytes);
+    }
+}
+
+/// Values near every edge a segment can cross: the allowed range's ends, a
+/// page's, and the integer's.
+fn edgy(rng: &mut XorShift) -> u64 {
+    let near = [
+        0,
+        1,
+        PAGE,
+        ALLOWED.start,
+        0x40_0000,
+        ALLOWED.end,
+        ALLOWED.end - PAGE,
+        1 << 47,
+        u64::MAX - PAGE,
+        u64::MAX,
+    ];
+    let base = near[rng.below(near.len())];
+    let jitter = rng.below(2 * PAGE as usize + 1) as u64;
+    if rng.below(2) == 0 {
+        base.wrapping_add(jitter)
+    } else {
+        base.wrapping_sub(jitter)
+    }
+}
+
+/// A valid header over a table of random program headers, so every check of
+/// a segment is reached, not only the header's.
+#[test]
+fn random_program_tables_never_map_outside_allowed() {
+    let mut rng = XorShift::new(0x5e9);
+    let mut taken = 0;
+    for _ in 0..20_000 {
+        let count = if rng.below(8) == 0 {
+            1 + rng.below(MAX_SEGMENTS + 2)
+        } else {
+            1 + rng.below(3)
+        };
+        let phs: Vec<Ph> = (0..count as u64)
+            .map(|i| {
+                let memsz = if rng.below(4) == 0 {
+                    edgy(&mut rng)
+                } else {
+                    1 + rng.below(0x3000) as u64
+                };
+                Ph {
+                    kind: [
+                        PT_LOAD,
+                        PT_LOAD,
+                        PT_LOAD,
+                        PT_LOAD,
+                        PT_LOAD,
+                        4,
+                        6,
+                        0x6474_e551,
+                    ][rng.below(8)],
+                    flags: [PF_R | PF_X, PF_R, PF_R | PF_W, rng.below(8) as u32][rng.below(4)],
+                    offset: if rng.below(4) == 0 {
+                        edgy(&mut rng)
+                    } else {
+                        rng.below(0x2f00) as u64
+                    },
+                    vaddr: if rng.below(4) == 0 {
+                        edgy(&mut rng)
+                    } else {
+                        0x40_0000 + PAGE * (4 * i + rng.below(2) as u64) + rng.below(64) as u64
+                    },
+                    filesz: rng.below(0x100) as u64 % (memsz.max(1)),
+                    memsz,
+                }
+            })
+            .collect();
+        let entry = match rng.below(4) {
+            0 => edgy(&mut rng),
+            _ => phs[rng.below(phs.len())]
+                .vaddr
+                .wrapping_add(rng.below(64) as u64),
+        };
+        let data = elf(entry, &phs, 0x3000);
+        if let Ok(image) = parse(&data, ALLOWED) {
+            check_image(&image, &data);
+            taken += 1;
+        }
+    }
+    // Enough tables pass that the image's promises are checked, not only
+    // the refusals.
+    assert!(taken > 500, "{taken}");
 }
