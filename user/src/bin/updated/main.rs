@@ -17,6 +17,10 @@
 //!    flushed, read back and compared, then a trial of release 2;
 //! 5. *restart into* it: BOOTREC_SET with the restart flag.
 //!
+//! `step=rebase` holds a record read while the slot is a trial until
+//! probation commits it, then sets it, so BOOTREC_SET's Busy and `set`'s
+//! rebase run (the `slot-rebase` case).
+//!
 //! `step=models` exercises the model channel (`models.rs`) for the `models`
 //! case: the list, the import of the import disk's fixture, and `model_use`.
 //! `step=probation`, that case's next boot, waits until the trial is kept or
@@ -95,6 +99,9 @@ fn main() -> i32 {
             n * 100
         ),
     }
+    // `step=rebase` reads its record now, before reconcile and the model
+    // channel, which take long enough for an idle probation to commit first.
+    let stale = (step == Some("rebase")).then(|| rebase_read(handle));
     // Every start first settles an update left in flight (`restore.rs`).
     let reconciled = restore::reconcile(handle);
     if let Ok(outcome) = reconciled
@@ -121,6 +128,10 @@ fn main() -> i32 {
     let result = match (step, reconciled) {
         (_, Err(why)) => Err(why),
         (Some("check"), _) => check(handle),
+        (Some("rebase"), _) => stale
+            .unwrap_or_else(|| Err(String::from("rebase: no record read")))
+            .and_then(|(running, stale)| rebase_check(handle, running, &stale))
+            .map(|()| restart_here(handle)),
         (Some("models"), _) => models_check(channel.as_mut()),
         (Some("download"), _) => download_check(channel.as_mut()),
         (Some("probation"), _) => probation_check(channel.as_mut()),
@@ -205,6 +216,52 @@ fn download_check(channel: Option<&mut models::Channel>) -> Result<(), String> {
         return Err(String::from("the store does not hold fixture-dl"));
     }
     println!("updated: the store holds {ID}, as the role signs it");
+    Ok(())
+}
+
+/// How long `step=rebase` waits for probation to commit this slot.
+const REBASE_WAIT_MS: u64 = 120_000;
+
+/// `step=rebase`, the `slot-rebase` case (#1567's review): the record read
+/// while this slot is a trial, as a stage's is, and set only once probation
+/// has committed the slot. BOOTREC_SET answers Busy, since the set would drop
+/// the commit, and [`set`] rebases it onto the commit and sets it again; the
+/// next boot finds the slot committed.
+///
+/// The read is [`rebase_read`], right after the boot lever: by the time the
+/// step runs, after reconcile and the model channel, probation may well have
+/// committed the slot (#1598's review).
+fn rebase_read(handle: Handle) -> Result<(Slot, Nv), String> {
+    let running = sys::slot_info(handle, 1)
+        .map_err(|e| format!("SLOT_INFO: {e:?}"))
+        .and_then(|info| slot_of(info.active))?;
+    let stale = Nv {
+        record: record(handle)?,
+        one_shot: Some(running),
+    };
+    if stale.record.slot(running).successful {
+        return Err(format!("rebase: {running:?} is committed already"));
+    }
+    println!("updated: rebase: read the record while {running:?} is a trial");
+    Ok((running, stale))
+}
+
+/// The rest of `step=rebase`: waits for the commit, then sets `stale`.
+fn rebase_check(handle: Handle, running: Slot, stale: &Nv) -> Result<(), String> {
+    let mut waited = 0;
+    while !record(handle)?.slot(running).successful {
+        if waited >= REBASE_WAIT_MS {
+            return Err(format!("rebase: {running:?} never committed"));
+        }
+        sys::sleep_ms(500);
+        waited += 500;
+    }
+    println!("updated: rebase: {running:?} is committed; setting the record read before");
+    set(handle, stale, false)?;
+    if !record(handle)?.slot(running).successful {
+        return Err(format!("rebase: the set dropped {running:?}'s commit"));
+    }
+    println!("updated: rebase: {running:?}'s commit stayed");
     Ok(())
 }
 
@@ -350,11 +407,24 @@ fn tick(channel: &mut Option<models::Channel>) {
 
 /// Restarts into the slot this boot runs in, with the record as it stands.
 fn restart_here(handle: Handle) {
-    let (Ok(record), Ok(info)) = (record(handle), sys::slot_info(handle, 1)) else {
-        return;
+    let active = sys::slot_info(handle, 1)
+        .map_err(|e| format!("SLOT_INFO: {e:?}"))
+        .and_then(|info| slot_of(info.active));
+    let (record, active) = match (record(handle), active) {
+        (Ok(record), Ok(active)) => (record, active),
+        (Err(why), _) | (_, Err(why)) => {
+            println!("updated: FAIL restart here: {why}");
+            return;
+        }
     };
     println!("updated: restarting into the running slot");
-    let _ = sys::bootrec_set(handle, &record.encode(), info.active, true);
+    let nv = Nv {
+        record,
+        one_shot: Some(active),
+    };
+    if let Err(why) = set(handle, &nv, true) {
+        println!("updated: FAIL {why}");
+    }
 }
 
 pub(crate) fn idle() -> ! {
@@ -410,6 +480,12 @@ fn check(handle: Handle) -> Result<(), String> {
         record: record(handle)?,
         one_shot: Some(active),
     };
+    // As the update disk's stage: never over the committed slot from a trial.
+    if !bootslot::may_stage(&nv.record, active) {
+        return Err(format!(
+            "refused: {active:?} is a trial and {other:?} is committed; staging {other:?} would leave nothing to fall back to"
+        ));
+    }
     let mut bad = nv.record.encode();
     bad[10] ^= 0xFF;
     if sys::bootrec_set(handle, &bad, NONE, false) != Err(Error::Invalid) {
@@ -468,9 +544,26 @@ fn import_disk(handle: Handle) -> Result<(), String> {
     Ok(())
 }
 
+/// BOOTREC_SET of `nv`. A stage runs for minutes from the record it read,
+/// and probation may commit the running slot meanwhile: BOOTREC_SET then
+/// answers Busy rather than drop the commit, and the record is set again
+/// with that commit in it (`bootslot::rebase`), once, since a boot commits
+/// once.
 pub(crate) fn set(handle: Handle, nv: &Nv, restart: bool) -> Result<(), String> {
     let one_shot = nv.one_shot.map_or(NONE, |s| s as u64);
-    sys::bootrec_set(handle, &nv.record.encode(), one_shot, restart)
+    let mut result = sys::bootrec_set(handle, &nv.record.encode(), one_shot, restart);
+    if result == Err(Error::Busy) {
+        let running = sys::slot_info(handle, 1)
+            .map_err(|e| format!("SLOT_INFO: {e:?}"))
+            .and_then(|info| slot_of(info.active))?;
+        let firmware = record(handle)?;
+        let mut mine = nv.record;
+        if bootslot::rebase(&mut mine, &firmware, running) {
+            println!("updated: {running:?} committed meanwhile; setting the record again with it");
+            result = sys::bootrec_set(handle, &mine.encode(), one_shot, restart);
+        }
+    }
+    result
         .map(|_| ())
         .map_err(|e| format!("BOOTREC_SET: {e:?}"))
 }

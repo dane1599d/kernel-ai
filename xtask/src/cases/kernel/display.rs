@@ -12,6 +12,7 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
             "desktop: the screen is back",
             "display-claim: a full input queue starts the next read with INPUT_LOST",
             "desktop: the Kai pane came back with a 3-character line",
+            "display-claim: Ctrl+Alt+F12 stopped a flush after",
             "display-claim: desktop claimed the screen, Ctrl+Alt+F12 gave it to the console and back, and only desktop could hold it",
         ],
         ..case("display-claim", "test=display-claim")

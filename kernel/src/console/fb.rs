@@ -27,9 +27,10 @@ impl Fb {
         self.format.pack(color)
     }
 
-    fn put(self, x: usize, y: usize, color: u32) {
+    /// Writes `pixel`, already packed.
+    fn put(self, x: usize, y: usize, pixel: u32) {
         // SAFETY: callers keep x and y inside the framebuffer Limine mapped.
-        unsafe { self.at(x, y).write_volatile(self.pack(color)) };
+        unsafe { self.at(x, y).write_volatile(pixel) };
     }
 
     /// The address of pixel (x, y).
@@ -101,6 +102,9 @@ impl Fb {
         let r = radius as isize;
         // Squared distances in quarter pixels: inside, on the edge, outside.
         let (inner, outer) = ((4 * r - 2).pow(2), (4 * r + 2).pow(2));
+        // The opaque and empty pixels, most of the disc's box, are packed once.
+        let native = self.format.is_native();
+        let (packed, packed_bg) = (self.pack(color), self.pack(bg));
         for dy in -r..=r {
             for dx in -r..=r {
                 let d = (4 * dx).pow(2) + (4 * dy).pow(2);
@@ -110,7 +114,13 @@ impl Fb {
                     d => 255 * (outer - d) / (outer - inner),
                 };
                 let (x, y) = (cx as isize + dx, cy as isize + dy);
-                self.put(x as usize, y as usize, blend(coverage as u8, color, bg));
+                let pixel = match coverage {
+                    255 => packed,
+                    0 => packed_bg,
+                    c if native => blend(c as u8, color, bg),
+                    c => self.pack(blend(c as u8, color, bg)),
+                };
+                self.put(x as usize, y as usize, pixel);
             }
         }
     }

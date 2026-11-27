@@ -91,10 +91,12 @@ pub enum Kernel {
     InterruptWindow,
     /// CPUID, from the table fixed at create.
     Cpuid,
-    /// RDMSR or WRMSR of an MSR on the kernel's allow-list in that direction
-    /// ([`MSR_ALLOWED`](super::MSR_ALLOWED), from [`Exit::rcx`]); `dispatch`
-    /// gives any other MSR #GP(0), so this always names a listed one.
-    Msr { write: bool },
+    /// RDMSR or WRMSR of `msr`, which is on the kernel's allow-list in that
+    /// direction ([`MSR_ALLOWED`](super::MSR_ALLOWED)). `msr` is ECX as
+    /// `dispatch` checked it ([`Exit::rcx`]'s low half), and `dispatch` gives
+    /// any other MSR #GP(0). The emulation uses this `msr`, never ECX read
+    /// again, so it emulates only what was checked.
+    Msr { msr: u32, write: bool },
     /// HLT: the vCPU sleeps until an interrupt for it.
     Hlt,
     /// XSETBV: XCR0 checked against what CPUID offers.
@@ -276,10 +278,12 @@ pub const fn intercept(code: ExitCode) -> Option<crate::Intercept> {
 /// endless chain of them (CVE-2015-8104, CVE-2015-5307). VINTR is added
 /// only while the kernel waits for an interrupt window. RDTSC is left to the
 /// CPU with the VMCB's TSC offset, which needs no exit. RDTSCP is taken on
-/// hardware, so the guest reads its own TSC_AUX, not the host's CPU number;
-/// QEMU's TCG never raises that intercept (its RDTSCP checks only RDTSC's),
-/// so the run loop must also load the guest's TSC_AUX before VMRUN and put
-/// the host's back after, which covers both.
+/// hardware, so the guest reads its own TSC_AUX, not the host's CPU number.
+/// Two reads of TSC_AUX are not taken: RDPID, which SVM has no intercept
+/// for, on hardware too; and RDTSCP under QEMU's TCG, which never raises
+/// that intercept (its RDTSCP checks only RDTSC's). So the run loop must
+/// also load the guest's TSC_AUX before VMRUN and put the host's back after,
+/// on hardware as well as under TCG.
 pub const fn intercepts() -> crate::Intercepts {
     use crate::Intercept;
     crate::Intercepts::required()
@@ -346,8 +350,9 @@ pub fn dispatch(exit: &Exit, guest: &Guest) -> Action {
             0 | 1 => {
                 let write = exit.info1 == 1;
                 let insn = if write { Insn::Wrmsr } else { Insn::Rdmsr };
-                match super::msr_allowed(exit.rcx as u32, write) {
-                    true => kernel(Kernel::Msr { write }, insn),
+                let msr = exit.rcx as u32;
+                match super::msr_allowed(msr, write) {
+                    true => kernel(Kernel::Msr { msr, write }, insn),
                     false => fault(code, 13, Some(0), None),
                 }
             }

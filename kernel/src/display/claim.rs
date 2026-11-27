@@ -96,7 +96,9 @@ fn switcher(_: usize) {
     }
 }
 
-/// One Ctrl+Alt+F12.
+/// One Ctrl+Alt+F12. A press that finds no holder showing and none taken from
+/// is ignored, and logged. One that finds the screen kept for an answer is
+/// ignored silently.
 pub fn switch() {
     input::end_lease();
     let mut state = STATE.lock();
@@ -111,6 +113,12 @@ pub fn switch() {
         drop(state);
         input::screen(true);
         log!("display: Ctrl+Alt+F12 gave the screen back to its holder");
+    } else if !state.taken_back {
+        // No holder shows and none was taken from: the press does nothing.
+        // Said once per press (a keypress, not a hot path), since a press that
+        // vanished hid a key race in the release boot.
+        drop(state);
+        log!("display: Ctrl+Alt+F12 with no holder showing the screen; ignored");
     }
 }
 
@@ -314,6 +322,28 @@ pub fn shows(slot: usize) -> bool {
     let pid = process::identity(slot).pid;
     let state = STATE.lock();
     state.holder == Some(pid) && state.showing.is_some_and(|g| Kernel.alive(g))
+}
+
+/// DISPLAY_FLUSH's `rect` for the process in `slot`, onto a shadowed screen
+/// (`display::shadowed`): packed band by band, each band under this module's
+/// lock and only while `slot` still shows. Ctrl+Alt+F12 and
+/// [`take_for_answer`] take `showing` under the same lock before the console
+/// repaints, so a band either finishes before the console has the screen or is
+/// never packed: no window pixel lands over the console. A busy display is no
+/// error: the next present sends the whole screen.
+pub fn present(slot: usize, rect: gfxcore::Rect) -> Result<(), Error> {
+    let pid = process::identity(slot).pid;
+    let mut shown = true;
+    gfxcore::rect::each_band(super::pending(rect), super::BAND_ROWS, |band| {
+        let state = STATE.lock();
+        shown = state.holder == Some(pid) && state.showing.is_some_and(|g| Kernel.alive(g));
+        // Packed with the lock held: the switch waits for this band.
+        shown && super::pack_band(band).is_ok()
+    });
+    match shown {
+        true => Ok(()),
+        false => Err(Error::Permission),
+    }
 }
 
 /// The hardware cursor's hot spot, for DISPLAY_CURSOR's image.

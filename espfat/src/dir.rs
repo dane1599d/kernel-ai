@@ -117,45 +117,70 @@ fn short_matches(e: &[u8], name: &str) -> bool {
     want_base.eq_ignore_ascii_case(base) && want_ext.eq_ignore_ascii_case(ext)
 }
 
+impl Found {
+    fn at(e: &[u8], lba: u64, at: usize) -> Self {
+        Self {
+            attr: e[11],
+            first: (u32::from(u16_at(e, 20)) << 16) | u32::from(u16_at(e, 26)),
+            size: u32_at(e, 28),
+            lba,
+            at,
+        }
+    }
+
+    /// Whether this is a directory's "." or ".." entry.
+    fn is_dot(e: &[u8]) -> bool {
+        &e[..11] == b".          " || &e[..11] == b"..         "
+    }
+}
+
 impl<D: Disk> Volume<D> {
-    /// The entry named `name` in the directory that starts at `first`.
-    pub(crate) fn lookup(&mut self, first: u32, name: &str) -> Result<Found, Error> {
+    /// Calls `each` with every file and directory entry in the directory that
+    /// starts at `first`, read through FAT copy `copy`, with the long name that
+    /// belongs to it, until `each` returns something. "." and ".." are never
+    /// given to `each`, whatever long name comes before them, so a lookup and
+    /// the whole-volume walk skip the same entries.
+    pub(crate) fn scan<T>(
+        &mut self,
+        copy: u32,
+        first: u32,
+        mut each: impl FnMut(&[u8], Option<&[u16]>, Found) -> Option<T>,
+    ) -> Result<Option<T>, Error> {
         let g = self.geometry;
         let mut long = Long::new();
-        for cluster in self.dir_chain(first)? {
+        for cluster in self.dir_chain(copy, first)? {
             for n in 0..g.sectors_per_cluster {
                 let lba = g.cluster_lba(cluster, n);
                 let sector = *self.sector(lba)?;
                 for at in (0..SECTOR).step_by(32) {
                     let e = &sector[at..at + 32];
                     match (e[0], e[11]) {
-                        (0x00, _) => return Err(Error::NotFound),
+                        (0x00, _) => return Ok(None),
                         (0xE5, _) => long.active = false,
                         (_, attr) if attr & 0x3F == ATTR_LFN => long.take(e),
                         (_, attr) if attr & ATTR_VOLUME != 0 => long.active = false,
-                        (_, attr) => {
-                            let hit = match long.name(e) {
-                                Some(units) => long_matches(units, name),
-                                None => false,
-                            } || short_matches(e, name);
+                        _ if Found::is_dot(e) => long.active = false,
+                        _ => {
+                            let got = each(e, long.name(e), Found::at(e, lba, at));
                             long.active = false;
-                            if hit {
-                                let first =
-                                    u32::from(u16_at(e, 20)) << 16 | u32::from(u16_at(e, 26));
-                                return Ok(Found {
-                                    attr,
-                                    first,
-                                    size: u32_at(e, 28),
-                                    lba,
-                                    at,
-                                });
+                            if got.is_some() {
+                                return Ok(got);
                             }
                         }
                     }
                 }
             }
         }
-        Err(Error::NotFound)
+        Ok(None)
+    }
+
+    /// The entry named `name` in the directory that starts at `first`.
+    pub(crate) fn lookup(&mut self, first: u32, name: &str) -> Result<Found, Error> {
+        let hit = |e: &[u8], long: Option<&[u16]>, found: Found| {
+            let by_long = long.is_some_and(|units| long_matches(units, name));
+            (by_long || short_matches(e, name)).then_some(found)
+        };
+        self.scan(self.read_fat, first, hit)?.ok_or(Error::NotFound)
     }
 }
 

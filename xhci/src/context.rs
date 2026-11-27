@@ -45,9 +45,50 @@ pub fn input_control(add: u32) -> Dwords {
 /// A slot context for a device on root port `port` at `speed` whose highest
 /// context is `last_dci`.
 pub fn slot(speed: u8, port: u8, last_dci: u8) -> Dwords {
+    let path = Path {
+        root_port: port,
+        ..Path::default()
+    };
+    slot_at(speed, &path, last_dci, None)
+}
+
+/// Where a device sits: on a root port, or behind hubs (xHCI 4.3.3, 6.2.2).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Path {
+    /// The root port the chain of hubs starts at, or the device is on.
+    pub root_port: u8,
+    /// The route string: one nibble for the port on each hub on the way, the
+    /// tier-1 hub's first. 0 for a device on a root port.
+    pub route: u32,
+    /// For a low- or full-speed device behind a high-speed hub: that hub's slot
+    /// and the port the device is on, which name its transaction translator.
+    pub translator: Option<(u8, u8)>,
+}
+
+/// What a hub's slot context adds (xHCI 6.2.2): it is a hub, with `ports`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Hub {
+    pub ports: u8,
+    /// The hub's transaction translator think time, from its descriptor.
+    pub think_time: u8,
+}
+
+/// The slot context of a device at `path` and `speed`, highest context
+/// `last_dci`; `hub` is set once the device is known to be a hub.
+pub fn slot_at(speed: u8, path: &Path, last_dci: u8, hub: Option<Hub>) -> Dwords {
     let mut slot = [0; 8];
-    slot[0] = (u32::from(speed) << 20) | (u32::from(last_dci) << 27);
-    slot[1] = u32::from(port) << 16;
+    slot[0] = (path.route & 0xF_FFFF) | (u32::from(speed) << 20) | (u32::from(last_dci) << 27);
+    slot[1] = u32::from(path.root_port) << 16;
+    if let Some(hub) = hub {
+        // Hub; MTT stays 0, as a single transaction translator is all the
+        // driver's hubs use.
+        slot[0] |= 1 << 26;
+        slot[1] |= u32::from(hub.ports) << 24;
+        slot[2] |= u32::from(hub.think_time & 0x3) << 16;
+    }
+    if let Some((hub_slot, port)) = path.translator {
+        slot[2] |= u32::from(hub_slot) | (u32::from(port) << 8);
+    }
     slot
 }
 
@@ -195,5 +236,47 @@ mod tests {
         assert_eq!(interrupt_interval(speed::HIGH, 4), 3);
         assert_eq!(interrupt_interval(speed::SUPER, 0), 0);
         assert_eq!(interrupt_interval(speed::HIGH, 20), 15);
+    }
+
+    #[test]
+    fn a_slot_context_behind_a_hub_has_its_route_and_translator() {
+        let path = Path {
+            root_port: 2,
+            route: 0x12,
+            translator: Some((5, 3)),
+        };
+        let dwords = slot_at(speed::FULL, &path, 3, None);
+        assert_eq!(dwords[0], 0x12 | (1 << 20) | (3 << 27));
+        assert_eq!(dwords[1], 2 << 16);
+        assert_eq!(dwords[2], 5 | (3 << 8));
+        // The hub's own context: the Hub bit, its ports and think time.
+        let hub = slot_at(
+            speed::HIGH,
+            &Path {
+                root_port: 1,
+                ..Path::default()
+            },
+            1,
+            Some(Hub {
+                ports: 4,
+                think_time: 1,
+            }),
+        );
+        assert_eq!(hub[0], (3 << 20) | (1 << 26) | (1 << 27));
+        assert_eq!(hub[1], (1 << 16) | (4 << 24));
+        assert_eq!(hub[2], 1 << 16);
+        // A device on a root port is what `slot` always made.
+        assert_eq!(
+            slot(speed::HIGH, 1, 1),
+            slot_at(
+                speed::HIGH,
+                &Path {
+                    root_port: 1,
+                    ..Path::default()
+                },
+                1,
+                None
+            )
+        );
     }
 }

@@ -12,7 +12,7 @@ const FS_INFO_LEAD: u32 = 0x4161_5252;
 const FS_INFO_STRUCT: u32 = 0x6141_7272;
 const FS_INFO_TRAIL: u32 = 0xAA55_0000;
 /// FSInfo's "not known" free count and next-free hint.
-const UNKNOWN: u32 = 0xFFFF_FFFF;
+pub(crate) const UNKNOWN: u32 = 0xFFFF_FFFF;
 
 /// A FAT32 volume on a disk.
 pub struct Volume<D> {
@@ -111,7 +111,7 @@ impl<D: Disk> Volume<D> {
         if size > max {
             return Err(Error::TooLarge);
         }
-        let chain = self.file_chain(found.first, found.size)?;
+        let chain = self.file_chain(self.read_fat, found.first, found.size)?;
         let g = self.geometry;
         let mut out = Vec::with_capacity(size);
         let mut buf = [0u8; SECTOR];
@@ -131,10 +131,16 @@ impl<D: Disk> Volume<D> {
     /// Replaces the contents of the existing file at `path` with `bytes`,
     /// keeping its name, attributes and times. A cut at any point leaves the
     /// old contents or the new ones (see the crate's docs for the order).
+    ///
+    /// It first checks the whole volume ([`Volume::check`]'s walk), and writes
+    /// nothing unless every chain is sound, the same in every FAT copy, and
+    /// named once. So the old chain it frees is this file's alone, and the
+    /// clusters it takes, free in every copy, are named by no file.
     pub fn replace(&mut self, path: &str, bytes: &[u8]) -> Result<(), Error> {
         let size = u32::try_from(bytes.len()).map_err(|_| Error::TooLarge)?;
         let found = self.find_file(path)?;
-        let old = self.file_chain(found.first, found.size)?;
+        self.named()?;
+        let old = self.file_chain(self.geometry.first_fat, found.first, found.size)?;
         let g = self.geometry;
         let need = size.div_ceil(g.cluster_bytes());
         let (new, free) = self.free_clusters(need)?;
@@ -185,7 +191,7 @@ impl<D: Disk> Volume<D> {
 
     /// Sets FSInfo's free count to `free` and its next-free hint to unknown,
     /// when the volume has an FSInfo sector whose signatures hold.
-    fn fs_info(&mut self, free: u32) -> Result<(), Error> {
+    pub(crate) fn fs_info(&mut self, free: u32) -> Result<(), Error> {
         let Some(at) = self.geometry.fs_info else {
             return Ok(());
         };

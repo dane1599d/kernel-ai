@@ -7,20 +7,31 @@
 //! |---|---|---|
 //! | arbitrary installation | [`arbitrary_installation`] | `hostile.rs`: `a_refresh_over_one_mutated_file_fails_cleanly` |
 //! | endless data | [`endless_data`] | |
+//! | extraneous dependencies | [`arbitrary_installation`], [`endless_data`] | see below |
 //! | fast-forward | [`fast_forward_timestamp`], [`fast_forward_snapshot`] | |
 //! | indefinite freeze | [`indefinite_freeze`] | `client.rs`: `expired_metadata_is_refused_and_not_kept` |
 //! | malicious mirrors | [`malicious_mirrors`] | |
 //! | mix-and-match | [`mix_and_match`] | `client.rs`: `hashes_named_in_meta_are_checked` |
 //! | rollback | [`rollback`] | `client.rs`: `versions_never_go_back` (timestamp, snapshot, targets) |
-//! | slow retrieval | does not apply here | see below |
+//! | slow retrieval (no longer in 1.0.37's list) | does not apply here | see below |
 //! | vulnerability to key compromise | [`threshold_of_keys_compromised`] | `client.rs`: `a_role_short_of_its_threshold_is_refused`, `two_signatures_by_one_key_are_refused_and_a_bad_extra_one_is_ignored`, `root_rotates_only_when_signed_by_the_old_keys_and_the_new` |
 //! | wrong software | [`wrong_software`] | `client.rs`: `own_targets_are_the_roles_own_entries_its_delegation_covers`, `a_top_level_target_is_never_a_delegations` |
 //!
-//! **Slow retrieval does not apply to `kaituf`.** It has no transport: every
-//! byte comes through the caller's [`Remote`], which is given a size bound per
-//! file ([`endless_data`] checks the bounds). A server that sends slowly, or
-//! not at all, is the transport's to cut off: `updatenet`'s HTTP timeout
-//! (`updatenet/src/stage.rs`, `HttpError::Timeout`).
+//! **Extraneous dependencies** travel inside a target's bytes: a package's
+//! list of what it needs is part of the package, so it is trusted only as the
+//! target is. A target's bytes are checked against the length and hashes its
+//! signed role names ([`arbitrary_installation`] for other bytes,
+//! [`endless_data`] for more of them), so nothing can be added to that list.
+//!
+//! **Slow retrieval does not apply to `kaituf`.** TUF 1.0.37 no longer lists
+//! it; its row stays because G45 asks for it. `kaituf` has no transport:
+//! every byte comes through the caller's [`Remote`], which is given a size
+//! bound per file ([`endless_data`] checks the bounds). A server that sends
+//! slowly, or not at all, is the transport's to cut off: kainet's request
+//! deadline (`Limits::deadline_ns`, checked by `in_time` between reads in
+//! `kainet/src/http/mod.rs`, returning `HttpError::Timeout`), which
+//! `updated` sets to `REQUEST_NS` for each request
+//! (`user/src/bin/updated/online.rs`).
 //!
 //! Mirrors are the caller's too: `kaituf` refreshes over one [`Remote`]. What
 //! it owes [`malicious_mirrors`] is that a bad mirror's files leave nothing
@@ -295,6 +306,8 @@ fn indefinite_freeze() {
 
 /// What a bad mirror does to the files it serves.
 type Mirror<'a> = Box<dyn Fn(&mut Repo) + 'a>;
+/// Whether a refresh's error is the one that mirror's files get.
+type Refusal = fn(&Error) -> bool;
 
 /// Malicious mirrors: a mirror that serves files of its own making, or old
 /// ones, gets a refresh refused. All it leaves in the cache is what the
@@ -313,7 +326,7 @@ fn malicious_mirrors() {
     let good = repo.files.clone();
 
     let attacker = Signer::ed25519(203);
-    let bad_mirrors: Vec<(&str, Mirror)> = vec![
+    let bad_mirrors: Vec<(&str, Mirror, Refusal)> = vec![
         // Its own timestamp.
         (
             "forged timestamp",
@@ -321,11 +334,14 @@ fn malicious_mirrors() {
                 let forged = envelope(&signed(r, "timestamp.json"), &[&attacker]);
                 r.files.insert("timestamp.json".into(), forged);
             }),
+            |e| matches!(e, Error::Threshold(w) if w.starts_with("timestamp")),
         ),
         // The real files of an older release (the version the client has).
         (
             "older release",
             Box::new(|r: &mut Repo| r.files = old_files.clone()),
+            // Never refused: see below.
+            |_| false,
         ),
         // Truncated snapshot.
         (
@@ -334,21 +350,24 @@ fn malicious_mirrors() {
                 let name = format!("{}.snapshot.json", r.version["snapshot"]);
                 r.files.get_mut(&name).unwrap().truncate(10);
             }),
+            |e| matches!(e, Error::Malformed(_)),
         ),
         // Nothing but the root.
         (
             "no metadata",
             Box::new(|r: &mut Repo| r.files.retain(|name, _| name.ends_with("root.json"))),
+            |e| *e == Error::NotFound("timestamp.json".into()),
         ),
     ];
-    for (what, make) in &bad_mirrors {
+    for (what, make, refused) in &bad_mirrors {
         let kept = cache.clone();
         make(&mut repo);
         let (result, _) = refresh(&repo, &mut cache, NOW);
         // The older release's files verify; they only fail to move the
         // client on, which `rollback` and `indefinite_freeze` bound.
-        if *what != "older release" {
-            assert!(result.is_err(), "{what}: {result:?}");
+        match *what {
+            "older release" => assert_eq!(result, Ok(()), "{what}"),
+            _ => assert!(result.as_ref().is_err_and(refused), "{what}: {result:?}"),
         }
         for (role, bytes) in &cache.0 {
             let real = good.values().any(|g| g == bytes) || kept.0.get(role) == Some(bytes);
@@ -545,6 +564,55 @@ fn threshold_of_keys_compromised() {
         matches!(result, Err(Error::Threshold(ref w)) if w.starts_with("timestamp")),
         "{result:?}"
     );
+
+    // The same with a P-256 key, listed once as PEM and once as SEC1 hex:
+    // two key IDs, two ways of writing it, one key.
+    let mut repo = Repo::new();
+    let (pem, sec1) = (
+        Signer::p256(207, true, false),
+        Signer::p256(207, false, false),
+    );
+    assert_ne!(pem.id(), sec1.id());
+    let mut root = repo.root_signed();
+    root["version"] = json!(2);
+    root["keys"][pem.id()] = pem.public.clone();
+    root["keys"][sec1.id()] = sec1.public.clone();
+    root["roles"]["timestamp"] = json!({ "keyids": [pem.id(), sec1.id()], "threshold": 2 });
+    repo.files.insert(
+        "2.root.json".into(),
+        envelope(&root, &[&repo.signers["root"][0]]),
+    );
+    let ts = signed(&repo, "timestamp.json");
+    repo.files
+        .insert("timestamp.json".into(), envelope(&ts, &[&pem, &sec1]));
+    let (result, _) = refresh(&repo, &mut fresh(&repo), NOW);
+    assert_eq!(
+        result,
+        Err(Error::Threshold(
+            "timestamp has 1 valid signatures of the 2 it needs".into()
+        ))
+    );
+
+    // An online key compromised: the real snapshot or timestamp key signs
+    // targets metadata, and is no targets key.
+    for role in ["snapshot", "timestamp"] {
+        let mut repo = Repo::new();
+        let mut cache = fresh(&repo);
+        refresh(&repo, &mut cache, NOW).0.unwrap();
+        repo.add_artifact("targets", "kernel.img", b"the attacker's");
+        repo.publish(&["targets"]);
+        let name = format!("{}.targets.json", repo.version["targets"]);
+        let evil = envelope(&signed(&repo, &name), &[&repo.signers[role][0]]);
+        repo.files.insert(name, evil);
+        let (result, _) = refresh(&repo, &mut cache, NOW);
+        assert_eq!(
+            result,
+            Err(Error::Threshold(
+                "targets has 0 valid signatures of the 1 it needs".into()
+            )),
+            "{role}"
+        );
+    }
 }
 
 /// Wrong software: another target's bytes, validly signed for it, served for

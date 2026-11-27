@@ -115,6 +115,10 @@ pub struct TestCase {
     /// only if QMP's SHUTDOWN said `guest-reset` (a power-off exits 0 too), and
     /// the case also forbids [`RESET_FALLBACKS`].
     pub resets: bool,
+    /// With `resets`: the reset must be the hardware watchdog's, QMP's
+    /// WATCHDOG event with action `reset` before the SHUTDOWN. A reset case
+    /// without it fails if the watchdog fired.
+    pub watchdog: bool,
     /// The case passes only by the guest turning the machine off: QEMU runs
     /// with `-no-shutdown`, so a shutdown pauses it, and once every expected
     /// line is in the monitor must report `shutdown`. A reset (QEMU exits
@@ -301,6 +305,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         bridge: false,
         net_polled: false,
         resets: false,
+        watchdog: false,
         powers_off: false,
         data: None,
         data_mib: None,

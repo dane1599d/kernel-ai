@@ -9,7 +9,7 @@ use kaifs::check::{Cache, check};
 use kaifs::fs::{HOME, MODELS, SYSTEM};
 use kaifs::ns_check::check_namespace;
 use kaifs::repair_fs::{mount_to_repair, repair_fs};
-use kaifs::{Error, FileType, Fs, ROOT};
+use kaifs::{Error, FileType, Fs};
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{Read, Write};
@@ -22,15 +22,6 @@ pub const MOUNTS: [(&str, u64); 3] = [
     ("/system/models", MODELS),
     ("/system", SYSTEM),
     ("/home", HOME),
-];
-
-/// The folders every data disk starts with (P2 plan decision 5), by volume.
-const FOLDERS: [(u64, &str); 5] = [
-    (HOME, "/user"),
-    (HOME, "/.trash"),
-    (SYSTEM, "/settings"),
-    (SYSTEM, "/state"),
-    (SYSTEM, "/pkg"),
 ];
 
 /// Pieces a file is read and written in, so a large one never sits in memory.
@@ -104,13 +95,7 @@ pub fn mkfs(image: &Path, bytes: u64, label: &str, force: bool) -> Result<String
 /// makes its first folders; the generation it commits. A release image's
 /// `kai-data` passes a fixed `uuid` and `now`, so two builds make the same bytes.
 pub fn format(dev: FileDev, uuid: [u8; 16], label: &str, now: u64) -> Result<u64, String> {
-    let mut fs = Fs::mkfs(dev, uuid, label).map_err(fail("mkfs"))?;
-    fs.clock = now;
-    for (vol, path) in FOLDERS {
-        fs.set_volume(vol).map_err(fail(path))?;
-        fs.mkdir(ROOT, &path[1..]).map_err(fail(path))?;
-    }
-    fs.commit().map_err(fail("commit"))
+    installer::format_data(dev, uuid, label, now).map_err(|(what, e)| fail(what)(e))
 }
 
 /// The inode at an inner path of the active volume.

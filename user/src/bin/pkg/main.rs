@@ -806,7 +806,8 @@ fn app_artifact(
 
 /// Each app generation `from` held that generation `to` does not, withdrawn
 /// from the supervisor (`withdraw`), so an undo ends the build it took out;
-/// `name as label` for each one that was running.
+/// `name as label` for each one that was running. A withdraw the supervisor
+/// could not save or end is sent again, up to `supervise::WITHDRAW_TRIES`.
 fn withdraw_apps(vol: &mut dyn Volume, from: u64, to: u64) -> Result<Vec<String>, String> {
     let kept = store::generation(vol, to)?.packages;
     let mut ended = Vec::new();
@@ -823,17 +824,32 @@ fn withdraw_apps(vol: &mut dyn Volume, from: u64, to: u64) -> Result<Vec<String>
             name: &service,
             version: &label,
         };
+        // A failed save or kill leaves the supervisor's record as it was, so
+        // the same withdraw is sent again, a few times, before it is shown.
         let mut reply = [0u8; 256];
-        let len = sys::call_route(
-            supervisor(),
-            withdraw.encode_withdraw().as_bytes(),
-            &mut reply,
-            CALL_MS,
-        )
-        .map_err(|e| format!("the supervisor did not answer {name}'s withdraw: {e:?}"))?;
-        match core::str::from_utf8(&reply[..len.min(reply.len())]).unwrap_or("") {
-            "ok" => ended.push(format!("{name} as {label}")),
-            other => println!("pkg: {name} ({label}) is not withdrawn: {other}"),
+        for tries in 1..=supervise::WITHDRAW_TRIES {
+            let len = sys::call_route(
+                supervisor(),
+                withdraw.encode_withdraw().as_bytes(),
+                &mut reply,
+                CALL_MS,
+            )
+            .map_err(|e| format!("the supervisor did not answer {name}'s withdraw: {e:?}"))?;
+            match core::str::from_utf8(&reply[..len.min(reply.len())]).unwrap_or("") {
+                "ok" => ended.push(format!("{name} as {label}")),
+                other
+                    if supervise::withdraw_may_retry(other)
+                        && tries < supervise::WITHDRAW_TRIES =>
+                {
+                    println!(
+                        "pkg: {name} ({label}) is not withdrawn yet, sending it again: {other}"
+                    );
+                    sys::sleep_ms(supervise::WITHDRAW_RETRY_MS);
+                    continue;
+                }
+                other => println!("pkg: {name} ({label}) is not withdrawn: {other}"),
+            }
+            break;
         }
     }
     Ok(ended)

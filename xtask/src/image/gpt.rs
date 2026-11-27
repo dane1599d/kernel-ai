@@ -6,30 +6,18 @@
 //! with different ids share no disk or partition GUID (ADR 0008 §1).
 
 use super::SECTOR;
-use sha2::{Digest, Sha256};
 
 /// Sectors the entry array takes: 128 entries of 128 bytes.
 const ENTRY_SECTORS: u64 = diskmap::ENTRY_SECTORS;
 /// The partition starts at 1 MiB, the alignment every tool expects.
 pub const FIRST_LBA: u64 = 2048;
 
-/// A version-4-shaped GUID from `label`, in GPT's byte order.
-pub fn guid(label: &str) -> [u8; 16] {
-    let digest = Sha256::digest(label.as_bytes());
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&digest[..16]);
-    out[7] = (out[7] & 0x0F) | 0x40;
-    out[8] = (out[8] & 0x3F) | 0x80;
-    out
-}
-
-/// A disk's, a partition's or a volume's own GUID: from the image's id and
-/// what it is the GUID of (`disk`, `partition kai-a`). The id is an image's
-/// seed (`release-image --image-id`); each fixed default keeps CI's images
-/// byte-identical.
-pub fn unique(image_id: &str, what: &str) -> [u8; 16] {
-    guid(&format!("{image_id} {what}"))
-}
+/// A version-4-shaped GUID from `label`, and a disk's, a partition's or a
+/// volume's own GUID from an image's id and what it is the GUID of (`disk`,
+/// `partition kai-a`). The id is an image's seed (`release-image --image-id`);
+/// each fixed default keeps CI's images byte-identical. The installer derives
+/// an install's GUIDs with the same functions.
+pub use installer::{guid, unique};
 
 /// Sectors a disk needs around a partition of `partition` sectors.
 pub fn disk_sectors(partition: u64) -> u64 {
@@ -59,7 +47,7 @@ pub fn disk(volume: &[u8], image_id: &str) -> Vec<u8> {
 pub fn laid_out(sectors: u64, disk_guid: &[u8; 16], parts: &[diskmap::Spec<'_>]) -> Vec<u8> {
     let mut disk = vec![0u8; (sectors * SECTOR as u64) as usize];
     let layout = diskmap::layout(sectors, diskmap::Guid(*disk_guid), parts)
-        .expect("xtask lays out only disks that fit");
+        .expect("xtask lays out only disks that fit, with unique GUIDs");
     for (lba, bytes) in layout {
         let at = (lba * SECTOR as u64) as usize;
         disk[at..at + bytes.len()].copy_from_slice(&bytes);

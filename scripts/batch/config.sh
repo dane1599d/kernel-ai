@@ -33,5 +33,16 @@ mkdir -p "$S" || { echo "config.sh: cannot create $S" >&2; exit 2; }
 MAX=${KAI_BATCH_MAX:-15}
 DELETE_BRANCHES=${KAI_BATCH_DELETE_BRANCHES:-1}
 FLUENCY_MIN=${KAI_FLUENCY_MIN:-90}
-MODEL_PATHS=${KAI_MODEL_PATHS:-'^(llmproto/|infer/src/|quant/|gguf/|user/src/bin/llm|user/src/pool\.rs|agentabi/|shellcore/src/(agentcore(\.rs|/)|state\.rs))'}
+# Every file that writes or gathers text a model prompt carries (the list, with
+# file:line for each, is in the PR that added the second line below):
+#   the prompt itself: llmproto/ (the pack, MODE turns, history, every request
+#   builder), agentabi/ (the rows the pack shows), the llm service and its pool;
+#   the request's parts: the State line (shellcore state.rs, user shell ui.rs),
+#   the apps turn (shellcore apps.rs, apps/), the window view the model reads
+#   (deskcore agent.rs, view/mod.rs, shellcore ui.rs), the `act` request and its
+#   history (shellcore agentcore), a goal's planning line (goalcore planner.rs,
+#   user goals.rs), script, program and app requests and their repair text
+#   (shellcore request.rs, guard.rs, appbuild.rs, cmode/program.rs), the tune
+#   summary (shellcore tune.rs).
+MODEL_PATHS=${KAI_MODEL_PATHS:-'^(llmproto/|infer/src/|quant/|gguf/|user/src/bin/llm|user/src/pool\.rs|agentabi/|shellcore/src/(agentcore(\.rs|/)|state\.rs|ui\.rs|apps(\.rs|/)|appbuild\.rs|request\.rs|guard\.rs|tune\.rs|cmode/program\.rs)|goalcore/src/planner\.rs|user/src/bin/(goals\.rs|shell/ui\.rs)|deskcore/src/(agent\.rs|view/mod\.rs))'}
 NOBOOT=${KAI_BATCH_NOBOOT:-1}

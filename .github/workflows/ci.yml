@@ -26,7 +26,7 @@ jobs:
     if: github.event.action != 'labeled' || startsWith(github.event.label.name, 'full-ci')
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # The DCO step reads every commit of the pull request.
           fetch-depth: ${{ github.event_name == 'pull_request' && '0' || '1' }}
@@ -100,7 +100,7 @@ jobs:
       - name: Install the WebAssembly target for live components
         if: steps.scope.outputs.code == 'true'
         run: rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - if: steps.scope.outputs.code == 'true'
@@ -175,7 +175,7 @@ jobs:
         run: cargo clippy -p kernel --target x86_64-unknown-none --features spikes -- -D warnings
       - name: Clippy for the engine crates on the soft-float kernel target
         if: steps.scope.outputs.code == 'true'
-        run: cargo clippy -p gguf -p cpufeat -p quant -p bpe -p infer -p svm -p vmx --target x86_64-unknown-none -- -D warnings
+        run: cargo clippy -p gguf -p cpufeat -p quant -p bpe -p infer -p svm -p vmx -p installer --target x86_64-unknown-none -- -D warnings
       - name: Clippy for espfat on the device target (no_std, row G43)
         if: steps.scope.outputs.code == 'true'
         run: cargo clippy -p espfat --target x86_64-unknown-none -- -D warnings
@@ -242,7 +242,7 @@ jobs:
     outputs:
       skip: ${{ steps.rule.outputs.skip }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
       - id: rule
@@ -279,19 +279,19 @@ jobs:
       QEMU_SHA256: 38a1a09f349660cb0e20b8fe5f224d6a53ec4235eb36f2e33a31e21bb6138147
     steps:
       - id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/qemu
           key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
           lookup-only: true
       - if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build QEMU ${{ env.QEMU_VERSION }}
         if: steps.cache.outputs.cache-hit != 'true'
         run: bash .github/actions/qemu/build.sh
       - name: Save QEMU ${{ env.QEMU_VERSION }}
         if: steps.cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/qemu
           key: qemu-${{ env.QEMU_VERSION }}-ubuntu-24.04-v1
@@ -320,13 +320,13 @@ jobs:
     outputs:
       sha: ${{ steps.build.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install pinned toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install the WebAssembly target for live components
         run: rustup target add wasm32-unknown-unknown
       # The shards' cache: this job now builds what they used to.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: qemu
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -335,7 +335,7 @@ jobs:
         run: |
           cargo xtask build --spikes --out "$RUNNER_TEMP/prebuilt"
           echo "sha=$(sha256sum "$RUNNER_TEMP/prebuilt/manifest.txt" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: prebuilt
           path: ${{ runner.temp }}/prebuilt
@@ -362,7 +362,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(github.event_name == 'pull_request' && !startsWith(github.head_ref, 'batch/') && !contains(github.event.pull_request.labels.*.name, 'full-ci-all') && '[{"accel":"kvm","shard":1,"of":3},{"accel":"kvm","shard":2,"of":3},{"accel":"kvm","shard":3,"of":3}]' || '[{"accel":"kvm","shard":1,"of":3},{"accel":"kvm","shard":2,"of":3},{"accel":"kvm","shard":3,"of":3},{"accel":"tcg","shard":1,"of":4},{"accel":"tcg","shard":2,"of":4},{"accel":"tcg","shard":3,"of":4},{"accel":"tcg","shard":4,"of":4}]') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/qemu
       - name: Show the runner's CPU count, vector features, vendor and nested virtualisation
         run: |
@@ -387,7 +387,7 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install the WebAssembly target for live components
         run: rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: qemu
           save-if: false
@@ -400,7 +400,7 @@ jobs:
       - name: Download the build job's artifacts
         if: needs.prebuild.outputs.sha != ''
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: prebuilt
           path: ${{ runner.temp }}/prebuilt
@@ -438,7 +438,7 @@ jobs:
     needs: qemu
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/qemu
       - name: Allow KVM for the runner user
         run: |
@@ -449,7 +449,7 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install the WebAssembly target for live components
         run: rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: qemu-release
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -482,13 +482,13 @@ jobs:
     needs: qemu
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/qemu
       - name: Install pinned toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install the WebAssembly target for live components
         run: rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: qemu
           save-if: false
@@ -513,13 +513,13 @@ jobs:
       matrix:
         runner: [first, second]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/qemu
       - name: Install pinned toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install the WebAssembly target for live components
         run: rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: qemu
           save-if: false
@@ -529,7 +529,7 @@ jobs:
           cargo xtask tune observe --mix A --boots 2 --timeout 900 | tee observe.txt
           grep -o 'built the same summary [0-9a-f]*' observe.txt | awk '{print $5}' > summary-sha.txt
           test -s summary-sha.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: observe-${{ matrix.runner }}
           path: summary-sha.txt
@@ -541,7 +541,7 @@ jobs:
     needs: observe
     if: ${{ !cancelled() && needs.observe.result == 'success' }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
       - name: Both runners built the same summary
         run: |
           cat observe-first/summary-sha.txt observe-second/summary-sha.txt

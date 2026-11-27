@@ -2,7 +2,8 @@
 #
 # On a `v*` tag: build the release image twice on clean runners and require one
 # SHA-256, rebuild it from the source tarball with no network and require the
-# same, assemble the five assets, sign them as TUF targets of a throwaway test
+# same, assemble the six assets (the image, NOTICES.txt, the source tarball, the
+# CycloneDX SBOM, the release notes and SHA256SUMS over them), sign them as TUF targets of a throwaway test
 # repository and check a client accepts them and refuses a tampered copy, then,
 # in the protected `release` environment, attest the assets and draft the GitHub
 # Release. The founder publishes the draft by hand.
@@ -138,7 +139,7 @@ jobs:
     uses: ./.github/workflows/release-images.yml
 
   assemble:
-    name: One SHA-256, then the five assets
+    name: One SHA-256, then the six assets
     needs: images
     runs-on: ubuntu-24.04
     steps:
@@ -154,6 +155,8 @@ jobs:
           test "$(sort -u image-hashes.txt | wc -l)" -eq 1
           cmp build-a/NOTICES.txt build-b/NOTICES.txt
           cmp build-a/NOTICES.txt offline/NOTICES.txt
+          # The SBOM too: both runners made the same bytes.
+          cmp build-a/kernel-ai.cdx.json build-b/kernel-ai.cdx.json
       - name: The image carries the committed root as kai.root.json and as pkgrepo's root
         run: |
           root=release/pkgrepo/metadata/1.root.json
@@ -170,6 +173,7 @@ jobs:
           mkdir release-assets
           cp build-a/kernel-ai.img.zst "release-assets/kernel-ai-$VERSION-x86_64.img.zst"
           cp build-a/NOTICES.txt release-assets/NOTICES.txt
+          cp build-a/kernel-ai.cdx.json "release-assets/kernel-ai-$VERSION.cdx.json"
           cp source/kernel-ai-source.tar.zst "release-assets/kernel-ai-$VERSION-source.tar.zst"
           python3 - "$VERSION" > release-assets/RELEASE-NOTES.md <<'EOF'
           import json, sys

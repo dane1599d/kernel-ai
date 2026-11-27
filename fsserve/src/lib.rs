@@ -18,6 +18,8 @@
 extern crate alloc;
 
 #[cfg(test)]
+mod abort_tests;
+#[cfg(test)]
 mod agentvol_tests;
 pub mod batch;
 mod buffer;
@@ -439,7 +441,7 @@ impl<D: BlockDev> Server<D> {
             && owner != 0
             && !(self.alive)(owner)
         {
-            self.drop_changes();
+            self.drop_changes(&"the open action's owner died");
         }
     }
 
@@ -672,8 +674,8 @@ impl<D: BlockDev> Server<D> {
                 self.quiet = (idle && !waiting).then_some(self.fs.committed);
             }
             Ok(_) => {}
-            Err(_) => {
-                self.drop_changes();
+            Err(e) => {
+                self.drop_changes(&e);
             }
         }
     }
@@ -853,9 +855,9 @@ impl<D: BlockDev> Server<D> {
                 // there is nothing else pending, inside one the disk failed,
                 // and its owner (the caller) is told its action is gone.
                 if changes && !in_action {
-                    self.drop_changes();
+                    self.drop_changes(&e);
                 } else if changes && e == Error::Io {
-                    self.drop_changes();
+                    self.drop_changes(&e);
                     return Err(Error::Dropped(DropCause::Io));
                 }
                 Err(e)
@@ -1060,7 +1062,7 @@ impl<D: BlockDev> Server<D> {
             }
             Request::Abort => {
                 self.owned(call.caller)?;
-                self.drop_changes();
+                self.drop_changes(&"Request::Abort");
                 Reply::Done
             }
             Request::Restore { txn, action } => {
@@ -1150,7 +1152,7 @@ impl<D: BlockDev> Server<D> {
                     Ok(true) => {}
                     Ok(false) => return Err(Error::Invalid),
                     Err(e) => {
-                        self.drop_changes();
+                        self.drop_changes(&e);
                         return Err(error(e));
                     }
                 }
@@ -1330,11 +1332,11 @@ impl<D: BlockDev> Server<D> {
         let done = match done {
             Ok(Some(rows)) => self.commit().map(|generation| (rows, generation)),
             Ok(None) => {
-                self.drop_changes();
+                self.drop_changes(&"a restore that found nothing");
                 Err(Error::Permission)
             }
             Err(e) => {
-                self.drop_changes();
+                self.drop_changes(&e);
                 Err(error(e))
             }
         };
@@ -1361,7 +1363,7 @@ impl<D: BlockDev> Server<D> {
     /// have died since are forgotten first, so the marks stay few.
     pub(crate) fn drop_unasked(&mut self, failed: Error) -> Error {
         let owner = self.owner;
-        self.drop_changes();
+        self.drop_changes(&failed);
         let alive = self.alive;
         self.dropped.retain(|&caller, _| alive(caller));
         let cause = match failed {
@@ -1380,15 +1382,20 @@ impl<D: BlockDev> Server<D> {
 
     /// Drops everything since the last commit, an open action with it; the
     /// generation now on the disk. That is the last commit, or one an error
-    /// interrupted after it had landed whole ([`Fs::abort`]).
-    fn drop_changes(&mut self) -> u64 {
+    /// interrupted after it had landed whole ([`Fs::abort`]). `first` is why the
+    /// changes are dropped: when the abort itself cannot read the disk, the
+    /// panic names both errors, the first one too.
+    fn drop_changes(&mut self, first: &dyn core::fmt::Debug) -> u64 {
         self.owner = None;
         self.pending = None;
         self.sealing = None;
         self.cache = None;
         // A disk that no longer mounts leaves nothing to serve: `fs` exits and
         // its supervisor starts it again.
-        self.fs.abort().expect("the last commit reads back")
+        match self.fs.abort() {
+            Ok(generation) => generation,
+            Err(again) => panic!("the last commit reads back: {again:?}, after {first:?}"),
+        }
     }
 
     /// Commits, or drops the changes if the commit fails; a commit that landed
@@ -1405,7 +1412,7 @@ impl<D: BlockDev> Server<D> {
             // Landed whole despite the error only if the disk says so after
             // a flush that worked: the slot read back may still sit in the
             // device's volatile cache, and a cache must never vouch for it.
-            Err(e) => match self.drop_changes() {
+            Err(e) => match self.drop_changes(&e) {
                 landed if landed > before && self.fs.io.dev.flush().is_ok() => Ok(landed),
                 _ => Err(error(e)),
             },

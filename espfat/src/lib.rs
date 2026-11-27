@@ -32,18 +32,20 @@
 //! A flush separates each phase. A cut before phase 3 is durable leaves the old
 //! file, and after it, the new one. Either way, each FAT copy on its own reads
 //! the same file. A cut can leave clusters marked used that no file names
-//! (leaked). That costs space, never data.
+//! (leaked). That costs space, never data, and [`Volume::reclaim`] frees them.
 
 #![no_std]
 
 extern crate alloc;
 
 mod bpb;
+mod check;
 mod dir;
 mod fat;
 mod volume;
 
 pub use bpb::Geometry;
+pub use check::Usage;
 pub use volume::Volume;
 
 /// The only sector size espfat mounts.

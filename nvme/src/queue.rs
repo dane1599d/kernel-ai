@@ -38,15 +38,24 @@ impl SubmissionQueue {
     }
 
     /// Records the head a completion reported. A head outside the queue is
-    /// ignored.
-    pub fn advance_head(&mut self, head: u16) {
-        if head < self.entries {
+    /// ignored, and then the queue keeps the room it thought it had: `false`.
+    /// With commands run one at a time, every completion that reports a head
+    /// inside the queue leaves it empty, so a queue looks full only after
+    /// reports like that ([`SubmissionQueue::full`] would be stale, not true).
+    pub fn advance_head(&mut self, head: u16) -> bool {
+        let inside = head < self.entries;
+        if inside {
             self.head = head;
         }
+        inside
     }
 
     pub fn tail(&self) -> u16 {
         self.tail
+    }
+
+    pub fn head(&self) -> u16 {
+        self.head
     }
 }
 
@@ -102,13 +111,35 @@ mod tests {
         assert_eq!(sq.push(), Some((2, 3)));
         assert!(sq.full());
         assert_eq!(sq.push(), None);
-        sq.advance_head(2);
+        assert!(sq.advance_head(2));
         assert_eq!(sq.push(), Some((3, 0)));
         assert_eq!(sq.push(), Some((0, 1)));
         assert!(sq.full());
-        sq.advance_head(9);
+        assert!(!sq.advance_head(9));
         assert!(sq.full());
-        assert_eq!(sq.tail(), 1);
+        assert_eq!((sq.tail(), sq.head()), (1, 2));
+    }
+
+    /// One command at a time, as the driver runs them: each completion reports
+    /// the head just past its command, and the queue is never full between
+    /// commands, however many wrap the queue.
+    #[test]
+    fn a_queue_run_one_command_at_a_time_never_fills() {
+        let mut sq = SubmissionQueue::new(4);
+        for _ in 0..100 {
+            assert!(!sq.full());
+            let (_, tail) = sq.push().expect("room");
+            assert!(sq.advance_head(tail));
+            assert_eq!(sq.head(), sq.tail());
+        }
+        // A controller that reports a head outside the queue never frees what
+        // it holds: the queue fills after entries - 1 such commands.
+        for _ in 0..3 {
+            sq.push().expect("room");
+            assert!(!sq.advance_head(u16::MAX));
+        }
+        assert!(sq.full());
+        assert_eq!(sq.push(), None);
     }
 
     #[test]

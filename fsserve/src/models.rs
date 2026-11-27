@@ -237,7 +237,7 @@ impl<D: BlockDev> Server<D> {
     /// A blob that failed after its writer was taken aborts the whole action,
     /// so a later Commit cannot keep the half-written file it leaves.
     fn failed(&mut self, e: Error) -> Error {
-        self.drop_changes();
+        self.drop_changes(&e);
         e
     }
 

@@ -9,9 +9,10 @@
 //!
 //! The driver brings up the controller, resets each connected root port, gives
 //! each device an address, reads its descriptors, configures its HID interfaces
-//! and keeps one interrupt-IN transfer queued on each. Hubs, hot-plug,
-//! isochronous and bulk transfers are left out: a keyboard and a pointer on root
-//! ports are what VirtualBox and most PCs offer.
+//! and keeps one interrupt-IN transfer queued on each. Hot-plug,
+//! isochronous and bulk transfers are left out. A USB 2 hub is enumerated, down
+//! to five tiers, and what is behind it set up like a device on a root port; a
+//! SuperSpeed hub is left alone, and so is a device plugged in later.
 //!
 //! Written from the eXtensible Host Controller Interface specification 1.2, the
 //! USB 2.0 specification (chapter 9) and Device Class Definition for HID 1.11
@@ -55,6 +56,8 @@ pub enum Error {
     BadDescriptor,
     /// More devices or endpoints than the driver keeps track of.
     TooMany,
+    /// A kind of device the driver does not drive (a SuperSpeed hub).
+    Unsupported,
 }
 
 impl Error {
@@ -68,6 +71,7 @@ impl Error {
             Error::Completion(code) => trb::completion_text(code),
             Error::BadDescriptor => "a device sent a bad descriptor",
             Error::TooMany => "more devices than the driver keeps",
+            Error::Unsupported => "a device the driver does not drive",
         }
     }
 }

@@ -341,8 +341,13 @@ impl Eptp {
 
     /// The pointer's value for the VMCS. Err for a walk length VM entry
     /// refuses (anything but 4 or 5, which `levels` 0 would also underflow),
-    /// or a memory type an EPT pointer cannot have (only UC and WB).
+    /// a memory type an EPT pointer cannot have (only UC and WB), or a `root`
+    /// that is not a 4 KiB-aligned address in 51:12: its low bits would
+    /// overwrite the memory type, walk length and A/D bits.
     pub const fn encode(self) -> Result<u64, BadEntry> {
+        if self.root & !ADDRESS != 0 {
+            return Err(BadEntry::Address(self.root));
+        }
         if self.levels != 4 && self.levels != 5 {
             return Err(BadEntry::WalkLength(self.levels as u64));
         }

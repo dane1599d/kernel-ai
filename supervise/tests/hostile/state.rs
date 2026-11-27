@@ -50,8 +50,8 @@ pub fn supervisor_state(data: &[u8]) {
 /// - `supervisor-state 3`: the same without stopped or keep.
 ///
 /// A flag is set only by the word `1`. A line with a word missing, a number
-/// that does not read or a version that is not a label is left out; a state
-/// with another first line has none.
+/// that is not all digits (a sign too) or past `u64::MAX`, or a version that
+/// is not a label is left out; a state with another first line has none.
 pub fn expected(text: &str) -> Vec<Record> {
     let mut lines = text.lines();
     let (stopped_at, keep_at, version_at) = match lines.next() {
@@ -76,9 +76,9 @@ pub fn expected(text: &str) -> Vec<Record> {
             if i == 0 || flag || Some(i) == version_at {
                 continue;
             }
-            match word.parse::<u64>() {
-                Ok(n) => numbers.push((i, n)),
-                Err(_) => continue 'lines,
+            match number(word) {
+                Some(n) => numbers.push((i, n)),
+                None => continue 'lines,
             }
         }
         let version = match version_at.map(|i| words[i]) {
@@ -102,6 +102,19 @@ pub fn expected(text: &str) -> Vec<Record> {
         });
     }
     out
+}
+
+/// A saved number, read digit by digit here rather than with `str::parse`
+/// as `decode` reads it, so a quirk both would share is seen: one or more
+/// ASCII digits (no sign), at most `u64::MAX`.
+fn number(word: &str) -> Option<u64> {
+    if word.is_empty() {
+        return None;
+    }
+    word.bytes().try_fold(0u64, |n, b| {
+        let digit = b.checked_sub(b'0').filter(|d| *d <= 9)?;
+        n.checked_mul(10)?.checked_add(u64::from(digit))
+    })
 }
 
 /// A package version's label, read here rather than with `kabi`'s own check
