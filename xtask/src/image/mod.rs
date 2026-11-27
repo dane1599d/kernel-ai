@@ -5,6 +5,8 @@
 
 pub mod fat32;
 pub mod gpt;
+#[cfg(test)]
+mod install_tests;
 pub mod modules;
 pub mod slots;
 pub mod update_disk;

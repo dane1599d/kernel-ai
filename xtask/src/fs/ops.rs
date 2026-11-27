@@ -95,7 +95,7 @@ pub fn mkfs(image: &Path, bytes: u64, label: &str, force: bool) -> Result<String
 /// makes its first folders; the generation it commits. A release image's
 /// `kai-data` passes a fixed `uuid` and `now`, so two builds make the same bytes.
 pub fn format(dev: FileDev, uuid: [u8; 16], label: &str, now: u64) -> Result<u64, String> {
-    installer::format_data(dev, uuid, label, now).map_err(fail("mkfs"))
+    installer::format_data(dev, uuid, label, now).map_err(|(what, e)| fail(what)(e))
 }
 
 /// The inode at an inner path of the active volume.

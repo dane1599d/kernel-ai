@@ -1,6 +1,7 @@
 //! The installer's plan (ADR 0008 §1 and §12, P8 row 2): given a target disk's
 //! size, the ordered writes that lay out ADR 0008 §1's five partitions from the
-//! running image. The ESP, `kai-r` and `kai-a` are copied from the running disk,
+//! running image. The ESP and `kai-r` are copied from the running disk, and the
+//! running system's committed slot, A or B, becomes the install's `kai-a`.
 //! `kai-b` is left empty, and `kai-data` is formatted as a release image's is.
 //! The disk's and partitions' GUIDs come from an install id, as `xtask
 //! release-image --image-id` derives them, so every install has its own.
@@ -8,7 +9,9 @@
 //! [`plan`] decides; [`apply`] writes. The order is what makes a cut safe:
 //! 1. the target's old GPT, both copies, and its protective MBR are zeroed, so
 //!    the disk no longer boots as anything;
-//! 2. every partition's contents are written;
+//! 2. every partition's contents are written, then read back: the ESP and
+//!    `kai-r` must match the running disk's, and `kai-a` must hash to the
+//!    committed slot's SHA-256 and hold its `boot/slot` record;
 //! 3. the protective MBR and both entry arrays;
 //! 4. the backup header; and last
 //! 5. the primary header.
@@ -26,7 +29,7 @@ extern crate alloc;
 mod apply;
 mod data;
 
-pub use apply::{Disk, IoError, Window, apply};
+pub use apply::{Current, Disk, IoError, Window, apply, current};
 pub use data::{FOLDERS, format_data};
 
 use alloc::format;
@@ -101,14 +104,20 @@ pub enum Error {
     /// The running image cannot be copied: a partition missing, or one larger
     /// than its place on the target, or a volume that does not fit it.
     Source(&'static str),
-    /// The target is not the size the plan was made for.
+    /// The target has the running disk's GUID: it is the running disk, or
+    /// another disk written from the same image (which shares its GUIDs).
+    RunningDisk,
+    /// The target is not the size the plan was made for, or its table is not
+    /// the one the plan was made over (and the user agreed to wipe).
     Target,
+    /// A copy did not read back as it should; nothing past it was written.
+    Verify(&'static str),
     /// `diskmap` refused the layout.
     Layout(diskmap::Error),
     /// A disk read, write or flush failed.
     Io,
-    /// kaifs refused to format `kai-data`.
-    Data(kaifs::Error),
+    /// kaifs refused to format `kai-data`, at the named step.
+    Data(&'static str, kaifs::Error),
 }
 
 /// One partition the plan lays out.
@@ -132,9 +141,17 @@ impl Part {
 pub enum Step {
     /// Zeros over `sectors` from `lba`.
     Zero { lba: u64, sectors: u64 },
-    /// The FAT volume at the source's `from`, as many sectors as its boot
+    /// The FAT32 volume at the source's `from`, as many sectors as its boot
     /// sector says and at most `most`, to the target's `to`.
     Copy { from: u64, to: u64, most: u64 },
+    /// The copy [`Step::Copy`] with the same fields made, read back from the
+    /// target and checked as `expect` says.
+    Check {
+        from: u64,
+        to: u64,
+        most: u64,
+        expect: Expect,
+    },
     /// `kai-data` formatted over `sectors` from `lba` ([`format_data`]).
     Format {
         lba: u64,
@@ -148,11 +165,25 @@ pub enum Step {
     Flush,
 }
 
+/// What a copy must read back as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Expect {
+    /// The same bytes as the source.
+    Same,
+    /// The committed slot's image: its SHA-256, and a `boot/slot` record with
+    /// its `release_seq`.
+    Slot { sha256: [u8; 32], release_seq: u32 },
+}
+
 /// A target disk's install.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Plan {
     /// The target's size in sectors.
     pub sectors: u64,
+    /// What the target held when the plan was made, which the install wipes:
+    /// what the device shows the user before it asks to go on. [`apply`]
+    /// refuses a target that no longer holds this.
+    pub wipes: Current,
     pub disk_guid: Guid,
     /// The five partitions, in disk order.
     pub parts: Vec<Part>,
@@ -170,6 +201,26 @@ pub struct Target<'a> {
     pub id: &'a str,
     /// `kai-data`'s clock at format, in seconds.
     pub now: u64,
+}
+
+/// The running system's committed slot, as the boot record gives it: the
+/// install's `kai-a` is a copy of it. Where `sha256` comes from is in decision
+/// row `2026-11-27-installer-plan`.
+#[derive(Clone, Copy, Debug)]
+pub struct Committed {
+    /// `diskmap::KAI_A_TYPE` or `diskmap::KAI_B_TYPE`.
+    pub kind: Guid,
+    /// The slot image's SHA-256, over its volume's sectors.
+    pub sha256: [u8; 32],
+    /// The release its `boot/slot` record names.
+    pub release_seq: u32,
+}
+
+/// The running disk: its table, and which slot is committed.
+#[derive(Clone, Copy, Debug)]
+pub struct Source<'a> {
+    pub table: &'a Table,
+    pub committed: Committed,
 }
 
 /// Where `kai-data` starts: right after `kai-b`.
@@ -210,9 +261,11 @@ fn parts(sectors: u64, id: &str) -> Vec<Part> {
     out
 }
 
-/// The plan that installs the running disk, whose table is `source`, to
-/// `target`. Nothing is read or written: [`apply`] does that.
-pub fn plan(target: Target<'_>, source: &Table) -> Result<Plan, Error> {
+/// The plan that installs the running disk `source` to `target`, whose table
+/// now is `current` ([`current`] reads it). Nothing is read or written:
+/// [`apply`] does that. A target with the running disk's GUID is refused,
+/// so another disk written from the same image is refused too.
+pub fn plan(target: Target<'_>, source: Source<'_>, current: &Current) -> Result<Plan, Error> {
     if target.sector_size != SECTOR {
         return Err(Error::SectorSize(target.sector_size));
     }
@@ -220,6 +273,9 @@ pub fn plan(target: Target<'_>, source: &Table) -> Result<Plan, Error> {
         return Err(Error::BadId);
     }
     let sectors = target.sectors;
+    if matches!(current, Current::Gpt(t) if t.disk_guid == source.table.disk_guid) {
+        return Err(Error::RunningDisk);
+    }
     if sectors < minimum_sectors() {
         return Err(Error::TooSmall {
             need: minimum_sectors(),
@@ -253,9 +309,24 @@ pub fn plan(target: Target<'_>, source: &Table) -> Result<Plan, Error> {
         sectors: tail,
     });
     steps.push(Step::Flush);
-    // 2. The contents.
-    for (n, kind) in KINDS[..3].iter().enumerate() {
+    // 2. The contents: the ESP, R, and the committed slot as kai-a.
+    let committed = source.committed;
+    if committed.kind != diskmap::KAI_A_TYPE && committed.kind != diskmap::KAI_B_TYPE {
+        return Err(Error::Source("the committed slot is not A or B"));
+    }
+    let kinds = [diskmap::ESP_TYPE, diskmap::KAI_R_TYPE, committed.kind];
+    let expects = [
+        Expect::Same,
+        Expect::Same,
+        Expect::Slot {
+            sha256: committed.sha256,
+            release_seq: committed.release_seq,
+        },
+    ];
+    let mut checks = Vec::new();
+    for (n, (kind, expect)) in kinds.iter().zip(expects).enumerate() {
         let from = source
+            .table
             .find(*kind)
             .ok_or(Error::Source("the running disk lacks a partition"))?;
         if from.sectors() > parts[n].sectors() {
@@ -263,10 +334,13 @@ pub fn plan(target: Target<'_>, source: &Table) -> Result<Plan, Error> {
                 "a running partition is larger than its place",
             ));
         }
-        steps.push(Step::Copy {
-            from: from.first,
-            to: parts[n].first,
-            most: from.sectors(),
+        let (from, to, most) = (from.first, parts[n].first, from.sectors());
+        steps.push(Step::Copy { from, to, most });
+        checks.push(Step::Check {
+            from,
+            to,
+            most,
+            expect,
         });
     }
     steps.push(Step::Zero {
@@ -287,6 +361,8 @@ pub fn plan(target: Target<'_>, source: &Table) -> Result<Plan, Error> {
         now: target.now,
     });
     steps.push(Step::Flush);
+    // Read back once durable: nothing past a bad copy is written.
+    steps.extend(checks);
     // 3-5. The table, the primary header last.
     for (lba, bytes) in [mbr, array, backup_array] {
         steps.push(Step::Write { lba, bytes });
@@ -298,6 +374,7 @@ pub fn plan(target: Target<'_>, source: &Table) -> Result<Plan, Error> {
     }
     Ok(Plan {
         sectors,
+        wipes: current.clone(),
         disk_guid,
         parts,
         steps,
