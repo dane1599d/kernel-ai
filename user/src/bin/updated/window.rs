@@ -7,11 +7,11 @@
 //! one-shot is already set, so any restart boots it. Times are UTC.
 
 use crate::folders::{self, Folders};
-use crate::{idle, record, slot_of};
+use crate::{idle, record, set, slot_of};
 use alloc::format;
 use alloc::string::String;
 use bootslot::window::{DAY_MINUTES, FILE, HEADER, allows, minute_of_day, restart_window, window};
-use bootslot::{Slot, Trial};
+use bootslot::{Nv, Slot, Trial};
 use kabi::handle::Handle;
 use user::{println, sys};
 
@@ -109,8 +109,16 @@ fn restart(handle: Handle, staged: Staged) -> ! {
                 "updated: restarting into {:?} in the restart window",
                 staged.slot
             );
-            let set = sys::bootrec_set(handle, &r.encode(), staged.slot as u64, true);
-            println!("updated: FAIL BOOTREC_SET: {set:?}");
+            // Through `set`, so a commit of the running slot that lands
+            // meanwhile (Busy) is rebased in, not a skipped restart.
+            let nv = Nv {
+                record: r,
+                one_shot: Some(staged.slot),
+            };
+            match set(handle, &nv, true) {
+                Ok(()) => println!("updated: FAIL BOOTREC_SET returned from a restart"),
+                Err(why) => println!("updated: FAIL {why}"),
+            }
         }
         Ok((_, false)) => println!("updated: the staged release changed; no restart"),
         Err(why) => println!("updated: FAIL {why}"),

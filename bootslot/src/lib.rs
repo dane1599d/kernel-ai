@@ -13,6 +13,7 @@
 
 #![no_std]
 
+pub mod glue;
 pub mod pending;
 pub mod slotfile;
 pub mod window;
