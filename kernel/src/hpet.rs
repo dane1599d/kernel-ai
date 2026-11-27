@@ -319,7 +319,16 @@ pub fn counter_nanos() -> u64 {
     hpet_nanos()
 }
 
+/// HPET counter reads for the clock since boot (G67's measuring): each is a
+/// VM exit under KVM.
+static HPET_READS: AtomicU64 = AtomicU64::new(0);
+
+pub fn hpet_reads() -> u64 {
+    HPET_READS.load(Ordering::Relaxed)
+}
+
 fn hpet_nanos() -> u64 {
+    HPET_READS.fetch_add(1, Ordering::Relaxed);
     let ticks = u128::from(main_counter());
     (ticks * u128::from(PERIOD_FS.load(Ordering::Relaxed)) / FEMTOS_PER_NANO) as u64
 }

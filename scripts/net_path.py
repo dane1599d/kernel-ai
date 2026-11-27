@@ -7,25 +7,25 @@ import sys
 from pathlib import Path
 
 RATE = re.compile(r"net-throughput: (\d+) bytes in (\d+) ms = ([0-9.]+) MB/s")
-CPU = re.compile(r"net-throughput: cpu bytes=(\d+) wall_ms=(\d+) busy_ms=(\d+) cpus=(\d+) cpu_ms_per_gib=(\d+) interrupts=(\d+)")
+CPU = re.compile(r"net-throughput: cpu bytes=(\d+) wall_ms=(\d+) busy_ms=(\d+) cpus=(\d+) cpu_ms_per_gib=(\d+) interrupts=(\d+)(?: hpet_reads=(\d+))?")
 STAGE = re.compile(r"net-throughput: stage (\w+) count=(\d+) ms=(\d+) ns_each=(\d+) share_of_wall_pct=(\d+)")
 
 
 def main(folder):
     runs = []
     print("### Runs\n")
-    print("| run | MB/s | wall ms | busy CPU ms | CPUs | CPU ms per GiB | interrupts |")
-    print("|---|---|---|---|---|---|---|")
+    print("| run | MB/s | wall ms | busy CPU ms | CPUs | CPU ms per GiB | interrupts | HPET reads |")
+    print("|---|---|---|---|---|---|---|---|")
     stages = {}
     for log in sorted(Path(folder).glob("net-path-*.log")):
         run = log.stem.rsplit("-", 1)[1]
         text = log.read_text(errors="replace")
         rate, cpu = RATE.search(text), CPU.search(text)
         if not (rate and cpu):
-            print(f"| {run} | failed | | | | | |")
+            print(f"| {run} | failed | | | | | | |")
             continue
         runs.append((float(rate.group(3)), int(cpu.group(5))))
-        print(f"| {run} | {rate.group(3)} | {cpu.group(2)} | {cpu.group(3)} | {cpu.group(4)} | {cpu.group(5)} | {cpu.group(6)} |")
+        print(f"| {run} | {rate.group(3)} | {cpu.group(2)} | {cpu.group(3)} | {cpu.group(4)} | {cpu.group(5)} | {cpu.group(6)} | {cpu.group(7) or '-'} |")
         for m in STAGE.finditer(text):
             stages.setdefault(m.group(1), []).append((int(m.group(2)), int(m.group(3)), int(m.group(4)), int(m.group(5))))
     print()

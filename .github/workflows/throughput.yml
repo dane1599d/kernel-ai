@@ -20,6 +20,10 @@ on:
       mode:
         description: floors, or net-path for G67's five 1 GiB runs
         default: floors
+      # Words added to net-path's kernel command line, such as clock=tsc.
+      net_cmdline:
+        description: net-path only, extra kernel command line words
+        default: ""
   push:
     branches: [main]
     paths:
@@ -248,7 +252,7 @@ jobs:
         env:
           XTASK_CASE: net-throughput
           XTASK_NETDEV: tap,id=net0,ifname=kaitap0,script=no,downscript=no
-          XTASK_CMDLINE: bytes=1073741824
+          XTASK_CMDLINE: bytes=1073741824 ${{ inputs.net_cmdline }}
         shell: bash
         run: |
           for run in 1 2 3 4 5; do

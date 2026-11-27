@@ -1,7 +1,8 @@
 //! Where the network path's time goes (G67's measuring): counts and
 //! nanoseconds per stage, read by `test=net-throughput` before and after its
-//! download. Each stage is timed with the clock `hpet::nanos` gives, the TSC
-//! under KVM.
+//! download. Each stage is timed in raw TSC cycles, never with the clock:
+//! when the HPET is the clock, as it is on runners whose TSC rate KVM does not
+//! report, each read is a VM exit of about 12 µs (run 45978777067).
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -45,15 +46,23 @@ static NANOS: [AtomicU64; STAGES] = [const { AtomicU64::new(0) }; STAGES];
 
 /// Runs `f`, counting it and its time under `stage`.
 pub fn timed<R>(stage: Stage, f: impl FnOnce() -> R) -> R {
-    let start = crate::hpet::nanos();
+    // SAFETY: RDTSC has no preconditions.
+    let start = unsafe { core::arch::x86_64::_rdtsc() };
     let out = f();
-    let spent = crate::hpet::nanos().saturating_sub(start);
+    // SAFETY: as above.
+    let spent = unsafe { core::arch::x86_64::_rdtsc() }.saturating_sub(start);
     COUNT[stage as usize].fetch_add(1, Ordering::Relaxed);
     NANOS[stage as usize].fetch_add(spent, Ordering::Relaxed);
     out
 }
 
-/// Every stage's count and nanoseconds now.
+/// The TSC now, to scale the stages' cycles by the wall time.
+pub fn cycles() -> u64 {
+    // SAFETY: RDTSC has no preconditions.
+    unsafe { core::arch::x86_64::_rdtsc() }
+}
+
+/// Every stage's count and TSC cycles now.
 pub fn snapshot() -> [(u64, u64); STAGES] {
     core::array::from_fn(|i| {
         (

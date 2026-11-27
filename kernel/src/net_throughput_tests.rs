@@ -53,14 +53,18 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
     let mut before = crate::sched_control::measure::Snapshots::new();
     let mut after = crate::sched_control::measure::Snapshots::new();
     let interrupts = net::interrupts_taken().unwrap_or(0);
+    let clock_reads = hpet::hpet_reads();
     let stages = net::profile::snapshot();
     before.take();
     let started = hpet::nanos();
+    let started_cycles = net::profile::cycles();
     let result = download(id, limit, window);
     let wall_ns = hpet::nanos().saturating_sub(started);
+    let wall_cycles = net::profile::cycles().saturating_sub(started_cycles).max(1);
     after.take();
     let stages_after = net::profile::snapshot();
     let interrupts = net::interrupts_taken().unwrap_or(0) - interrupts;
+    let clock_reads = hpet::hpet_reads() - clock_reads;
     let _ = stream::close(OWNER, id);
     let moved = result?;
     // Every CPU's time but its idle thread's, from the connect to the end.
@@ -69,14 +73,16 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
     let busy_ns = (wall_ns * cpus).saturating_sub(idle_ns);
     let per_gib = busy_ns as u128 * (1 << 30) / u128::from(moved.bytes.max(1)) / 1_000_000;
     log!(
-        "net-throughput: cpu bytes={} wall_ms={} busy_ms={} cpus={cpus} cpu_ms_per_gib={per_gib} interrupts={interrupts}",
+        "net-throughput: cpu bytes={} wall_ms={} busy_ms={} cpus={cpus} cpu_ms_per_gib={per_gib} interrupts={interrupts} hpet_reads={clock_reads}",
         moved.bytes,
         wall_ns / 1_000_000,
         busy_ns / 1_000_000
     );
     for (i, name) in net::profile::NAMES.iter().enumerate() {
         let count = stages_after[i].0 - stages[i].0;
-        let ns = stages_after[i].1 - stages[i].1;
+        let cycles = stages_after[i].1 - stages[i].1;
+        // Cycles as nanoseconds, at the TSC's rate over the download.
+        let ns = (u128::from(cycles) * u128::from(wall_ns) / u128::from(wall_cycles)) as u64;
         log!(
             "net-throughput: stage {name} count={count} ms={} ns_each={} share_of_wall_pct={}",
             ns / 1_000_000,
