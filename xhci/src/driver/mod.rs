@@ -3,6 +3,10 @@
 //! [`Controller::poll`] turns interrupt-IN completions into [`Input`].
 
 mod enumerate;
+#[cfg(test)]
+mod fake;
+#[cfg(test)]
+mod hubs;
 mod poll;
 #[cfg(test)]
 mod tests;
@@ -136,6 +140,8 @@ pub struct Controller<H: Hal> {
     endpoints: [Option<Endpoint>; MAX_ENDPOINTS],
     /// Transfers that ended in an error, since start.
     errors: u64,
+    /// When hub ports stop being waited for in this `enumerate`.
+    hub_deadline: u64,
 }
 
 impl<H: Hal> Controller<H> {
@@ -164,6 +170,7 @@ impl<H: Hal> Controller<H> {
             devices: [const { None }; MAX_DEVICES],
             endpoints: [const { None }; MAX_ENDPOINTS],
             errors: 0,
+            hub_deadline: 0,
         };
         controller.take_from_firmware();
         controller.reset()?;
