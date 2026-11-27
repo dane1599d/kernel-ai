@@ -149,6 +149,13 @@ jobs:
       - run: cargo xtask release-image --out "$OUT/kernel-ai.img" | tee "$OUT/build.log"
       # The image is gigabytes, most of them kai-data's free space: it travels
       # compressed, and the same zstd on the same bytes writes the same file.
+      # How full each slot is, per PR that touches the image: one runner, since
+      # both build the same bytes. A slot past 80% also gets a warning.
+      - name: Slot fill in the summary
+        if: matrix.runner == 'a'
+        run: |
+          { echo "### Slot fill"; echo; echo '```'; grep '^xtask: slot ' "$OUT/build.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          grep '^xtask: slot .* WARNING' "$OUT/build.log" | while read -r line; do echo "::warning::${line#xtask: }"; done || true
       - run: zstd -19 --single-thread -q --rm "$OUT/kernel-ai.img" -o "$OUT/kernel-ai.img.zst"
       - name: The build left the tree clean
         run: test -z "$(git status --porcelain)"
