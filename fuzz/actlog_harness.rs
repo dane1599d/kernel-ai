@@ -113,8 +113,11 @@ fn folded(record: &Record) -> bool {
 /// What `undo`, `undo N`, `log` and `log N` read of a log from disk: each
 /// answers for any log, and what it names is in the log.
 fn read_as_undo_does(log: &ActLog, ids: &[u64]) {
+    // The log holds the newest KEEP records, so its last id is the highest of
+    // theirs, whatever ids the records it dropped had.
     let last = log.last_id();
-    assert!(ids.iter().all(|id| *id <= last));
+    let kept = &ids[ids.len().saturating_sub(KEEP)..];
+    assert_eq!(kept.iter().copied().max().unwrap_or(0), last);
     for id in [log.newest_live(), log.undo_target()].into_iter().flatten() {
         assert!(id <= last);
         // What `undo` names is what it reverts: the entry `get` finds.

@@ -8,8 +8,11 @@
 # deskcore's client calls, queues, wire parsers and agent requests; and what
 # `pkg` and `updated` read from a repository and `fs`'s wire (ADR 0000 P8):
 # kaipkg's `.kpkg` reader, kaituf's TUF metadata and fsproto's requests and
-# replies, whose bodies are fuzz/pkg_harness.rs and fuzz/fsproto_harness.rs; and
-# kaimedia's PNG, JPEG, GIF and WebP decoders (P6 groundwork G8).
+# replies, whose bodies are fuzz/pkg_harness.rs and fuzz/fsproto_harness.rs;
+# kaimedia's PNG, JPEG, GIF and WebP decoders (P6 groundwork G8); and the
+# shell's records on disk, `kai-grants 1` and `actlog`, and an agent package's
+# manifest, whose bodies are fuzz/grants_harness.rs, fuzz/actlog_harness.rs and
+# fuzz/agent_harness.rs, seeded with their samples.
 # The targets are fuzz/fuzz_targets/*.rs, outside the workspace; their bodies
 # are fuzz/harness.rs, fuzz/surfabi_harness.rs, fuzz/look_harness.rs and
 # fuzz/media_harness.rs, which
@@ -67,7 +70,10 @@ jobs:
       - name: Seed the P8 corpora
         env:
           FUZZ_SEED_DIR: ${{ github.workspace }}/fuzz/corpus
-        run: cargo test -p kaipkg -p fsproto --test fuzz_harness write_fuzz_seeds -- --ignored
+        run: |
+          cargo test -p kaipkg -p fsproto --test fuzz_harness write_fuzz_seeds -- --ignored
+          cargo test -p kaigrants -p kaiagent --test hostile write_fuzz_seeds -- --ignored
+          cargo test -p shellcore --test actlog_hostile write_fuzz_seeds -- --ignored
       - name: Fuzz
         env:
           # A scheduled run has no inputs: every target, 300 s each.
