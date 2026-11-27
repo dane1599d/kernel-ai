@@ -96,7 +96,9 @@ fn switcher(_: usize) {
     }
 }
 
-/// One Ctrl+Alt+F12.
+/// One Ctrl+Alt+F12. A press that finds no holder showing and none taken from
+/// is ignored, and logged. One that finds the screen kept for an answer is
+/// ignored silently.
 pub fn switch() {
     input::end_lease();
     let mut state = STATE.lock();
@@ -111,6 +113,12 @@ pub fn switch() {
         drop(state);
         input::screen(true);
         log!("display: Ctrl+Alt+F12 gave the screen back to its holder");
+    } else if !state.taken_back {
+        // No holder shows and none was taken from: the press does nothing.
+        // Said once per press (a keypress, not a hot path), since a press that
+        // vanished hid a key race in the release boot.
+        drop(state);
+        log!("display: Ctrl+Alt+F12 with no holder showing the screen; ignored");
     }
 }
 
