@@ -73,7 +73,7 @@ pub fn check() -> Result<(), &'static str> {
 fn time(rect: Rect) -> Result<u64, &'static str> {
     let start = hpet::nanos();
     for _ in 0..FLUSHES {
-        display::flush(rect)?;
+        display::present(rect)?;
     }
     Ok((hpet::nanos() - start) / FLUSHES / 1000)
 }

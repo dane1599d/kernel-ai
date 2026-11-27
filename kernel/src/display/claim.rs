@@ -270,6 +270,28 @@ pub fn shows(slot: usize) -> bool {
     state.holder == Some(pid) && state.showing.is_some_and(|g| Kernel.alive(g))
 }
 
+/// DISPLAY_FLUSH's `rect` for the process in `slot`, onto a shadowed screen
+/// (`display::shadowed`): packed band by band, each band under this module's
+/// lock and only while `slot` still shows. Ctrl+Alt+F12 and
+/// [`take_for_answer`] take `showing` under the same lock before the console
+/// repaints, so a band either finishes before the console has the screen or is
+/// never packed: no window pixel lands over the console. A busy display is no
+/// error: the next present sends the whole screen.
+pub fn present(slot: usize, rect: gfxcore::Rect) -> Result<(), Error> {
+    let pid = process::identity(slot).pid;
+    let mut shown = true;
+    gfxcore::rect::each_band(super::pending(rect), super::BAND_ROWS, |band| {
+        let state = STATE.lock();
+        shown = state.holder == Some(pid) && state.showing.is_some_and(|g| Kernel.alive(g));
+        // Packed with the lock held: the switch waits for this band.
+        shown && super::pack_band(band).is_ok()
+    });
+    match shown {
+        true => Ok(()),
+        false => Err(Error::Permission),
+    }
+}
+
 /// The hardware cursor's hot spot, for DISPLAY_CURSOR's image.
 pub fn cursor() -> (u32, u32) {
     STATE.lock().cursor

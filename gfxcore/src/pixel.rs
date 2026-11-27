@@ -64,6 +64,23 @@ impl Format {
         (r & g == 0 && r & b == 0 && g & b == 0).then_some(format)
     }
 
+    /// R, G, B, X in memory: red in the low byte, `0x00BBGGRR`.
+    pub const RGBX: Self = Self {
+        red: Channel { size: 8, shift: 0 },
+        green: Channel { size: 8, shift: 8 },
+        blue: Channel { size: 8, shift: 16 },
+    };
+
+    /// How to pack a run of pixels in this format: a byte swap for RGBX, channel
+    /// by channel for anything else.
+    pub fn packer(self) -> Packer {
+        match self {
+            Self::NATIVE => Packer::Native,
+            Self::RGBX => Packer::Rgbx,
+            other => Packer::Any(other),
+        }
+    }
+
     /// Whether `0x00RRGGBB` already is this format's pixel.
     pub fn is_native(self) -> bool {
         self == Self::NATIVE
@@ -77,9 +94,36 @@ impl Format {
     }
 }
 
+/// [`Format::pack`], with the two common formats picked out once per run of
+/// pixels instead of per pixel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Packer {
+    Native,
+    Rgbx,
+    Any(Format),
+}
+
+impl Packer {
+    /// The pixel for `rgb` (`0x00RRGGBB`), as [`Format::pack`] gives it.
+    #[inline]
+    pub fn pack(self, rgb: u32) -> u32 {
+        match self {
+            Self::Native => rgb & 0xFF_FFFF,
+            Self::Rgbx => swap_red_blue(rgb),
+            Self::Any(format) => format.pack(rgb),
+        }
+    }
+}
+
+/// `0x00RRGGBB` as `0x00BBGGRR`.
+#[inline]
+pub fn swap_red_blue(rgb: u32) -> u32 {
+    ((rgb >> 16) & 0xFF) | (rgb & 0xFF00) | ((rgb & 0xFF) << 16)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::Format;
+    use super::{Format, Packer, swap_red_blue};
 
     /// Limine's masks for the byte order R, G, B, X in memory (little endian:
     /// red in the low byte).
@@ -162,6 +206,24 @@ mod tests {
         assert_eq!(f.pack(0xF8_0000), 0x1F << 11);
         assert_eq!(f.pack(0x00_00FC), 0x1F, "a blue of 0xFC is 31");
         assert_eq!(f.pack(0x00_0007), 0);
+    }
+
+    #[test]
+    fn each_packer_packs_as_its_format_does() {
+        assert_eq!(bgrx().packer(), Packer::Native);
+        assert_eq!(rgbx().packer(), Packer::Rgbx);
+        assert_eq!(rgbx(), Format::RGBX);
+        assert!(matches!(rgb10().packer(), Packer::Any(_)));
+        for format in [bgrx(), rgbx(), rgb10()] {
+            let packer = format.packer();
+            for rgb in (0..=0xFF_FFFFu32)
+                .step_by(0x1_0101 / 5 + 7)
+                .chain([0xFF12_3456])
+            {
+                assert_eq!(packer.pack(rgb), format.pack(rgb), "{format:?} {rgb:08x}");
+            }
+        }
+        assert_eq!(swap_red_blue(0x11_2233), 0x33_2211);
     }
 
     #[test]

@@ -103,6 +103,7 @@ impl Fb {
         // Squared distances in quarter pixels: inside, on the edge, outside.
         let (inner, outer) = ((4 * r - 2).pow(2), (4 * r + 2).pow(2));
         // The opaque and empty pixels, most of the disc's box, are packed once.
+        let native = self.format.is_native();
         let (packed, packed_bg) = (self.pack(color), self.pack(bg));
         for dy in -r..=r {
             for dx in -r..=r {
@@ -116,6 +117,7 @@ impl Fb {
                 let pixel = match coverage {
                     255 => packed,
                     0 => packed_bg,
+                    c if native => blend(c as u8, color, bg),
                     c => self.pack(blend(c as u8, color, bg)),
                 };
                 self.put(x as usize, y as usize, pixel);
