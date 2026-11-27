@@ -323,6 +323,35 @@ pub fn arm_writes<E>(
     }
 }
 
+/// What a BOOTREC_SET tells the fault path, which writes the record it was
+/// last told ([`set_writes`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Told {
+    /// The record being set, before it is written.
+    New,
+    /// The record before, again: the write failed.
+    Old,
+}
+
+/// BOOTREC_SET's steps, in its order: the fault path is told the new record
+/// *before* it is written, so a fault after the write never writes the
+/// record before over it (a commit's floors would fall back), and one before
+/// the write records the new one (a fault inside the call is not recorded).
+/// If the record's write fails, the fault path is told the old record again
+/// and the one-shot is not written. The first error, if any.
+pub fn set_writes<E>(
+    mut tell: impl FnMut(Told),
+    record: impl FnOnce() -> Result<(), E>,
+    one_shot: impl FnOnce() -> Result<(), E>,
+) -> Result<(), E> {
+    tell(Told::New);
+    if let Err(error) = record() {
+        tell(Told::Old);
+        return Err(error);
+    }
+    one_shot()
+}
+
 /// *stage*, before writing `slot`: it never boots until [`stage_end`].
 pub fn stage_begin(nv: &mut Nv, slot: Slot) {
     *nv.record.slot_mut(slot) = SlotState {

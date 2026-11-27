@@ -515,13 +515,26 @@ pub fn active_committed() -> bool {
 /// keeps them as what the fault path writes from.
 pub fn set(record: Record, one_shot: Option<Slot>) -> Result<(), efi::Error> {
     let _setting = SETTING.lock();
-    efi::set_variable(&KAI, RECORD, NV_BS_RT, &record.encode())?;
-    // The record is the firmware's now: the fault path writes from it even if
-    // the one-shot fails next, never from the record before (a commit's
-    // floors would fall back). The fault path deletes the one-shot whatever
+    // In [`bootslot::set_writes`]'s order: the fault path is told the record
+    // before it is written, so a fault just after the write never writes the
+    // record before back (a commit's floors would fall), and told the old one
+    // again if the write fails. The fault path deletes the one-shot whatever
     // BOOTED holds, so only the record is kept.
-    keep_booted(|nv| nv.record = record);
-    write_one_shot(one_shot)
+    let mut old = None;
+    bootslot::set_writes(
+        |told| match told {
+            bootslot::Told::New => {
+                old = keep_booted(|nv| core::mem::replace(&mut nv.record, record));
+            }
+            bootslot::Told::Old => {
+                if let Some(old) = old.take() {
+                    keep_booted(|nv| nv.record = old);
+                }
+            }
+        },
+        || efi::set_variable(&KAI, RECORD, NV_BS_RT, &record.encode()),
+        || write_one_shot(one_shot),
+    )
 }
 
 /// POWER_REBOOT's reset: once a BOOTREC_SET under way has written both its
@@ -553,10 +566,8 @@ fn hold_setting() {
 }
 
 /// Changes what the fault path writes from, if this boot keeps it.
-fn keep_booted(change: impl FnOnce(&mut Nv)) {
-    if let Some((nv, _)) = BOOTED.lock().as_mut() {
-        change(nv);
-    }
+fn keep_booted<T>(change: impl FnOnce(&mut Nv) -> T) -> Option<T> {
+    BOOTED.lock().as_mut().map(|(nv, _)| change(nv))
 }
 
 /// From the fault path: records the fault in this boot's slot and deletes the
