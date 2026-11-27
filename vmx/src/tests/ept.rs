@@ -210,6 +210,25 @@ fn an_ept_pointer_with_a_walk_length_entry_refuses_is_not_encoded() {
     );
 }
 
+/// #1547's review: `root` is a public field, so a struct literal skips
+/// `Eptp::new`'s check, and a root with low bits set encoded over the memory
+/// type, walk length and A/D bits (0x1007 would read back as WB, 5 levels).
+#[test]
+fn an_ept_pointer_with_a_root_that_is_not_an_address_is_not_encoded() {
+    let eptp = Eptp::new(0x1000).unwrap();
+    for root in [0x1007, 0x1800, 0x1001, 1 << 52, 1 << 63, u64::MAX] {
+        assert_eq!(
+            Eptp { root, ..eptp }.encode(),
+            Err(BadEntry::Address(root)),
+            "{root:#x}"
+        );
+    }
+    // The widest address a pointer holds, and the first page, are fine.
+    for root in [0, 0x1000, ADDRESS] {
+        assert!(Eptp { root, ..eptp }.encode().is_ok(), "{root:#x}");
+    }
+}
+
 /// #1492's review: `decode` checked neither the address against the CPU's
 /// MAXPHYADDR nor the pointer against EPT_VPID_CAP.
 #[test]
