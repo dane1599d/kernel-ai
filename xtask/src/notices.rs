@@ -10,8 +10,10 @@
 //! its version or a licence does; a PR that adds a crate of our own leaves it alone.
 //! `--check-sbom FILE` checks the release's CycloneDX SBOM against it: every crate
 //! of its Parts is a component, and every registry component's licence is one
-//! `deny.toml` allows (see [`sbom_problems`]). `--check` regenerates it and fails when the committed file differs; CI runs it,
-//! so only CI and whoever changes dependencies need cargo-about. `make_esp`
+//! `deny.toml` allows (see [`sbom_problems`]); it reads the committed file and
+//! runs no cargo-about, which the release's build runners do not have.
+//! `--check` regenerates it and fails when the committed file differs; CI runs
+//! it, so only CI and whoever changes dependencies need cargo-about. `make_esp`
 //! copies the file to the boot drive with [`image_line`] on top.
 
 use crate::licences;
@@ -33,8 +35,22 @@ const GRAPHS: [(&str, &str, &str); 3] = [
 ];
 
 pub fn main(args: &[String]) -> Result<(), String> {
-    let root = crate::workspace_root();
-    let text = render(&root)?;
+    dispatch(&crate::workspace_root(), args, render)
+}
+
+/// [`main`] with the notices made by `render`: only writing and `--check` make
+/// them (cargo-about); `--check-sbom` never does.
+fn dispatch(
+    root: &Path,
+    args: &[String],
+    render: impl FnOnce(&Path) -> Result<String, String>,
+) -> Result<(), String> {
+    if let [flag, sbom] = args
+        && flag == "--check-sbom"
+    {
+        return check_sbom(root, Path::new(sbom));
+    }
+    let text = render(root)?;
     let path = root.join(FILE);
     match args {
         [] => {
@@ -57,7 +73,6 @@ pub fn main(args: &[String]) -> Result<(), String> {
             println!("xtask: {FILE} is up to date");
             Ok(())
         }
-        [flag, sbom] if flag == "--check-sbom" => check_sbom(&root, Path::new(sbom)),
         _ => Err("usage: cargo xtask notices [--check | --check-sbom FILE]".into()),
     }
 }
@@ -85,8 +100,6 @@ fn stale(committed: &str, generated: &str) -> Option<Vec<String>> {
     Some(lines)
 }
 
-/// The OS's version: `version` under `[workspace.package]` in `root`'s
-/// `Cargo.toml`, the one every crate inherits (ADR 0009 D7).
 /// `--check-sbom`: reads the SBOM at `path` and fails naming every problem.
 fn check_sbom(root: &Path, path: &Path) -> Result<(), String> {
     let sbom = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -195,6 +208,8 @@ pub fn sbom_problems(
     Ok(problems)
 }
 
+/// The OS's version: `version` under `[workspace.package]` in `root`'s
+/// `Cargo.toml`, the one every crate inherits (ADR 0009 D7).
 pub fn workspace_version(root: &Path) -> Result<String, String> {
     let path = root.join("Cargo.toml");
     let toml =
@@ -536,8 +551,14 @@ mod tests {
         serde_json::json!({ "components": list }).to_string()
     }
 
-    const NOTICES: &str = "Parts\n\n- core and alloc (rust-src): MIT OR Apache-2.0. In the kernel.\n\
-- smoltcp 0.14.0: 0BSD.\n- spin 0.12.3: MIT.\n\nLicence texts\n- zzz 9.9.9: MIT.\n";
+    const NOTICES: &str = concat!(
+        "Parts\n\n",
+        "- core and alloc (rust-src): MIT OR Apache-2.0. In the kernel.\n",
+        "- smoltcp 0.14.0: 0BSD.\n",
+        "- spin 0.12.3: MIT.\n",
+        "\nLicence texts\n",
+        "- zzz 9.9.9: MIT.\n",
+    );
 
     #[test]
     fn parts_take_crate_lines_only_and_stop_at_the_licence_texts() {
@@ -594,13 +615,43 @@ mod tests {
     #[test]
     fn our_own_crates_and_a_crate_with_no_licence_are_told_apart() {
         let own = serde_json::json!({ "components": [
-            { "name": "kabi", "version": "0.1.0-dev", "purl": "pkg:cargo/kabi@0.1.0-dev?download_url=file://../kabi" },
+            {
+                "name": "kabi", "version": "0.1.0-dev",
+                "purl": "pkg:cargo/kabi@0.1.0-dev?download_url=file://../kabi",
+            },
             { "name": "smoltcp", "version": "0.14.0", "purl": "pkg:cargo/smoltcp@0.14.0" },
-            { "name": "spin", "version": "0.12.3", "purl": "pkg:cargo/spin@0.12.3", "licenses": [{ "license": { "id": "MIT" } }] },
+            {
+                "name": "spin", "version": "0.12.3", "purl": "pkg:cargo/spin@0.12.3",
+                "licenses": [{ "license": { "id": "MIT" } }],
+            },
         ]})
         .to_string();
         let problems = sbom_problems(NOTICES, &own, &deny()).unwrap();
         assert_eq!(problems, ["smoltcp 0.14.0 has no licence in the SBOM"]);
+    }
+
+    /// #1557's review: the release's build runners have no cargo-about, so
+    /// `--check-sbom` through `main`'s dispatch must never render the notices.
+    #[test]
+    fn check_sbom_runs_no_cargo_about() {
+        let root = crate::workspace_root();
+        let notices = fs::read_to_string(root.join(FILE)).unwrap();
+        let (crates, _) = parts_crates(&notices);
+        let components: Vec<(&str, &str, &str)> = crates
+            .iter()
+            .map(|(name, version)| (name.as_str(), version.as_str(), "MIT"))
+            .collect();
+        let dir = std::env::temp_dir().join(format!("kai-sbom-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let (good, short) = (dir.join("good.cdx.json"), dir.join("short.cdx.json"));
+        fs::write(&good, sbom(&components)).unwrap();
+        fs::write(&short, sbom(&components[1..])).unwrap();
+        let args = |path: &Path| ["--check-sbom".to_owned(), path.display().to_string()];
+        let never = |_: &Path| -> Result<String, String> { panic!("cargo-about ran") };
+        assert_eq!(dispatch(&root, &args(&good), never), Ok(()));
+        let err = dispatch(&root, &args(&short), never).unwrap_err();
+        assert!(err.contains("(1 problems)"), "{err}");
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
