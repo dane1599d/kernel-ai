@@ -247,6 +247,17 @@ impl ActLog {
     }
 
     fn keep(&mut self, record: Record) {
+        // An id names one record: `undo N` and `log N` find the first that has it, and
+        // a log that holds one twice is refused when it is read back (G24).
+        let id = |r: &Record| match r {
+            Record::Entry(e) => e.id,
+            Record::System(s) => s.id,
+        };
+        debug_assert!(
+            !self.records.iter().any(|r| id(r) == id(&record)),
+            "#{} is logged twice",
+            id(&record)
+        );
         if self.records.len() == KEEP {
             self.records.pop_front();
         }

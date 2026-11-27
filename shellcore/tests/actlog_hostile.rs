@@ -11,7 +11,7 @@ mod hostile;
 #[path = "../../fuzz/actlog_harness.rs"]
 mod harness;
 
-use shellcore::actlog::{ActLog, parse, parse_setting_aside};
+use shellcore::actlog::{ActLog, KEEP, parse, parse_setting_aside};
 
 const ALLOC_PER_BYTE: usize = 64;
 const ALLOC_FLOOR: usize = 256 * 1024;
@@ -92,4 +92,37 @@ fn a_log_with_an_id_used_twice_is_refused() {
         Err("an id is used twice"),
         "{text}"
     );
+}
+
+/// A log longer than the shell keeps whose oldest record has the highest id reads:
+/// what is kept is the newest records, and the log's last id is theirs (#1493's
+/// review: the harness held every id read, the dropped ones too, to it).
+#[test]
+fn a_long_log_whose_oldest_record_has_the_highest_id_reads() {
+    let system = |id: usize| format!("S {id} t=1792618860000000000 owner=kernel 2\nok\n");
+    let mut text = String::from("actlog 1\n");
+    text += &system(1000);
+    for id in 1..=KEEP {
+        text += &system(id);
+    }
+    let (records, _) = parse_setting_aside(&text).unwrap();
+    assert_eq!(records.len(), KEEP + 1);
+    harness::actlog(text.as_bytes());
+}
+
+/// Writes the `actlog` target's seeds, one file each, to
+/// `$FUZZ_SEED_DIR/actlog/`.
+#[test]
+#[ignore = "writes the fuzz corpus; run by the fuzz workflow"]
+fn write_fuzz_seeds() {
+    let dir = std::env::var("FUZZ_SEED_DIR").expect("FUZZ_SEED_DIR names the corpus folder");
+    let folder = std::path::Path::new(&dir).join("actlog");
+    std::fs::create_dir_all(&folder).unwrap();
+    for (n, bytes) in [harness::V1, harness::V2]
+        .map(|s| s.as_bytes().to_vec())
+        .into_iter()
+        .enumerate()
+    {
+        std::fs::write(folder.join(format!("seed-{n}")), bytes).unwrap();
+    }
 }

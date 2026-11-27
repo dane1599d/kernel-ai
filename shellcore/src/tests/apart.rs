@@ -307,7 +307,10 @@ fn an_unknown_outcomes_known_changes_are_undone_by_number_never_by_a_bare_undo()
     assert!(shell.eval("? use round robin").ok);
     let first = shell.log.last_id();
     let mut unknown = shell.log.get(first).expect("the run's entry").clone();
-    unknown.id = first + 1;
+    // Its own id, as the shell gives one: the next record must not take it too.
+    let id = shell.next_id;
+    shell.next_id += 1;
+    unknown.id = id;
     unknown.state = crate::actlog::State::Unknown;
     unknown.outcome = String::from("failed; notes_add may have run");
     shell.log.push(unknown);
@@ -317,7 +320,7 @@ fn an_unknown_outcomes_known_changes_are_undone_by_number_never_by_a_bare_undo()
         "{bare:?}"
     );
     assert_eq!(host.policy.get(), Some(policy::ROUND_ROBIN));
-    let by_id = shell.eval(&format!("undo {}", first + 1));
+    let by_id = shell.eval(&format!("undo {id}"));
     assert!(by_id.ok, "{by_id:?}");
     assert_eq!(host.policy.get(), Some(policy::INTERACTIVE));
 }
