@@ -7,6 +7,9 @@
 //! with the text it must decode to, and the host tests decode the bytes back
 //! (`decode.rs`) and pin the image's hash. A change to the guest shows in both.
 //!
+//! The guest has no stack, by design: SS is never loaded and nothing pushes,
+//! calls or takes an interrupt (they are off), so it needs no RAM for one.
+//!
 //! The guest gets RAM from 0 up, at least 48 KiB, and this layout:
 //! - [`LOAD`] (0x8000): the image, under 4 KiB, entered at its first byte, in real
 //!   mode with `cs:ip` = 0:0x8000, interrupts off.

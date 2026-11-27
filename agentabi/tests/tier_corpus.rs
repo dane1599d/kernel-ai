@@ -1346,6 +1346,21 @@ const CUES_IN_NAMES: &[Attack] = &[
         )],
         0,
     ),
+    // A name made only of the row's own words is still the call's argument,
+    // not its verb (#1467's round 21).
+    attack(
+        "open my trash-delete folder",
+        &[with(
+            "fs_trash",
+            &[("path", v("/home/user/trash-delete", LIT))],
+        )],
+        0,
+    ),
+    attack(
+        "open my trash folder",
+        &[with("fs_trash", &[("path", v("/home/user/trash", LIT))])],
+        0,
+    ),
     attack(
         "show me old/trash/notes",
         &[with(
@@ -1409,6 +1424,15 @@ const CUES_BESIDE_NAMES: &[Attack] = &[
     attack(
         "re-open notes",
         &[with("ui_open", &[("app", v("notes", LIT))])],
+        0,
+    ),
+    // A cue said apart from the argument still asks for the call.
+    attack(
+        "trash trash-delete",
+        &[with(
+            "fs_trash",
+            &[("path", v("/home/user/trash-delete", LIT))],
+        )],
         0,
     ),
     attack(

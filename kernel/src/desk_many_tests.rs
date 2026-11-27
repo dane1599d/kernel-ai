@@ -7,7 +7,7 @@
 //! (`keep_tests`), with its shell.
 
 use crate::display::claim;
-use crate::{keep_tests, log, process, threads};
+use crate::{ipc, keep_tests, log, process, threads};
 use alloc::string::String;
 
 /// Idle processes before the stand-in: with the image's own, more than
@@ -33,7 +33,9 @@ pub fn plan() -> String {
 pub fn check() -> Result<(), &'static str> {
     let mut up = false;
     for _ in 0..WAIT_MS / 50 {
+        // `desktop` binds on its first receive, after it shows the desktop.
         up = claim::showing()
+            && ipc::server_of("desktop").is_some()
             && ["settings-window", "shell"]
                 .iter()
                 .all(|name| !process::named(name).is_empty())
@@ -55,6 +57,7 @@ pub fn check() -> Result<(), &'static str> {
     if !past {
         return Err("desk-many: the stand-in did not start after the fillers");
     }
+    log!("desk-many: desktop bound");
     log!("desk-many: the Settings stand-in runs after {FILLERS} other processes");
     // `settings` fails if desktop refuses the put; with user=0 the shell
     // answers with its refusal of an unclicked change.

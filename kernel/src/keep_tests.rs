@@ -60,6 +60,12 @@ fn pid_of(name: &str) -> Result<u64, &'static str> {
 /// `service`'s answer to `request`, sent as process `pid` would.
 fn call_as(service: &str, pid: u64, request: &str) -> Result<String, &'static str> {
     let deadline = hpet::nanos() + CALL_MS * 1_000_000;
+    // A service binds its endpoint on its first receive, which can be after
+    // it is on screen and its processes exist. `ipc::call` (`call_from_unless`)
+    // waits for the bind; `call_as` does not, so a call made too early failed
+    // at once: wait here, and say so when it never binds.
+    ipc::wait_bound(service, deadline, || false)
+        .map_err(|_| "keep-running: a service never bound its endpoint")?;
     ipc::call_as(service, request.as_bytes(), pid, deadline, || false)
         .map(|reply| String::from_utf8_lossy(&reply).into_owned())
         .map_err(|_| "keep-running: a service did not reply")

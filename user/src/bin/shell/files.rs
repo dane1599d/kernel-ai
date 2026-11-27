@@ -472,6 +472,8 @@ pub const LOG: &str = "log";
 /// The standing rules' file: rule lines only, never grants, until `powerbox`
 /// owns `/system/grants`.
 pub const RULES: &str = "rules";
+/// A rules file refused at start, kept so `rules` can be written again.
+pub const RULES_REFUSED: &str = "rules.refused";
 /// The standing instructions' store (`kai-standing 1`, P3 task 11).
 pub const STANDING: &str = "standing";
 /// The apps kept running, never napped (`kai-keep 1`, P4).

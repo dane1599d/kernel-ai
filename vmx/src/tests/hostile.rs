@@ -87,8 +87,13 @@ fn random_ept_entries_and_pointers() {
                 }
             }
         }
-        if let Ok(eptp) = Eptp::decode(x) {
-            assert_eq!(eptp.encode(), x & !(1 << 7));
+        // Every capability bit, and a CPU with 40 physical address bits.
+        for (bits, cap) in [(52, u64::MAX), (40, u64::MAX), (36, 0)] {
+            if let Ok(eptp) = Eptp::decode(x, bits, cap) {
+                assert_eq!(eptp.encode(), Ok(x & !(1 << 7)));
+                assert_eq!(eptp.root >> bits, 0);
+                assert!(cap != 0);
+            }
         }
         let _ = Basic::decode(x);
     }

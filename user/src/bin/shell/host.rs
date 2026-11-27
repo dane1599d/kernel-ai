@@ -530,6 +530,12 @@ impl Host for System {
         }
     }
 
+    /// At start, before any line: its own action.
+    fn rules_set_aside(&self, text: &str) -> Result<(), String> {
+        self.state
+            .write(files::RULES_REFUSED, text, self.files.next_action())
+    }
+
     fn net_grants_read(&self) -> Result<Option<String>, String> {
         self.state.read(files::NETGRANTS)
     }

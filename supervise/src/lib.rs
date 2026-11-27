@@ -326,26 +326,42 @@ pub fn encode_may_run(name: &str) -> String {
     format!("{MAY_RUN} {name}")
 }
 
+/// Why [`withdraw_saving_first`] left the app running.
+#[derive(Debug, PartialEq, Eq)]
+pub enum WithdrawError<E> {
+    /// The cleared version could not be saved, so the version was put back and
+    /// the app was not ended: ending it would let a supervisor that dies later
+    /// restart the withdrawn version from the older saved state.
+    NotSaved(E),
+    /// The app could not be ended; the version was put back and saved again.
+    NotEnded(E),
+}
+
 /// Takes a package version back out in the order that survives a supervisor
 /// that dies between the steps: the cleared version is saved *before* the app
-/// is ended, so a restart never finds the withdrawn version recorded. If the
-/// kill fails, the version is put back and saved again. `clear` returns what
-/// it took out; `restore` puts it back.
+/// is ended, so a restart never finds the withdrawn version recorded. If that
+/// save fails, the version is put back and nothing is ended. If the kill
+/// fails, the version is put back and saved again; a failure of that second
+/// save is left to `save` to report, as the kill's error is the answer.
+/// `clear` returns what it took out; `restore` puts it back.
 pub fn withdraw_saving_first<C: ?Sized, V, E>(
     cx: &mut C,
     clear: impl FnOnce(&mut C) -> V,
     restore: impl FnOnce(&mut C, V),
-    save: impl Fn(&C),
+    save: impl Fn(&C) -> Result<(), E>,
     kill: impl FnOnce(&C) -> Result<(), E>,
-) -> Result<(), E> {
+) -> Result<(), WithdrawError<E>> {
     let taken = clear(cx);
-    save(cx);
+    if let Err(error) = save(cx) {
+        restore(cx, taken);
+        return Err(WithdrawError::NotSaved(error));
+    }
     match kill(cx) {
         Ok(()) => Ok(()),
         Err(error) => {
             restore(cx, taken);
-            save(cx);
-            Err(error)
+            let _ = save(cx);
+            Err(WithdrawError::NotEnded(error))
         }
     }
 }

@@ -35,13 +35,17 @@ pub struct TrustedSet {
 /// Whether `role`'s threshold of its `keys` signed `meta`. A role that falls
 /// short while some of its keys are of a type this client does not check is
 /// refused as [`Error::UnsupportedKey`].
+///
+/// The threshold counts keys, not key IDs: one public key listed under two
+/// IDs counts once, however many of its IDs carry a valid signature (TUF's
+/// threshold of keys compromised, `tests/attacks.rs`).
 pub fn verify<T>(
     meta: &Meta<T>,
     keys: &BTreeMap<String, Key>,
     role: &Role,
     name: &str,
 ) -> Result<(), Error> {
-    let mut valid = 0;
+    let mut signed: Vec<&Key> = Vec::new();
     let mut unsupported = None;
     for id in &role.keyids {
         let Some(key) = keys.get(id) else {
@@ -50,14 +54,16 @@ pub fn verify<T>(
         if let Key::Unsupported(kind) = key {
             unsupported = Some(kind);
         }
-        if meta
-            .sigs
-            .iter()
-            .any(|(k, sig)| k == id && key.verifies(&meta.canonical, sig))
+        if !signed.iter().any(|k| k.same_key(key))
+            && meta
+                .sigs
+                .iter()
+                .any(|(k, sig)| k == id && key.verifies(&meta.canonical, sig))
         {
-            valid += 1;
+            signed.push(key);
         }
     }
+    let valid = signed.len() as u64;
     match (valid >= role.threshold, unsupported) {
         (true, _) => Ok(()),
         (false, Some(kind)) => Err(Error::UnsupportedKey(alloc::format!(

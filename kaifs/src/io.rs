@@ -117,7 +117,11 @@ impl<D: BlockDev> Io<D> {
     /// Whether a block can be freed now, its volume's newest snapshot (or open
     /// action) being of generation `newest`.
     pub(crate) fn reusable(&self, ptr: &BlockPtr, newest: u64) -> bool {
-        ptr.flags & FLAG_SHARED == 0 && (ptr.birth > newest || self.faults.ignore_snapshots)
+        // A birth past this transaction is a lie no writer told (a mount that
+        // skipped `check` may hold one): never free on its word.
+        ptr.flags & FLAG_SHARED == 0
+            && ptr.birth <= self.txn
+            && (ptr.birth > newest || self.faults.ignore_snapshots)
     }
 
     /// A block of volume `vol` replaced in this transaction: freed if no snapshot

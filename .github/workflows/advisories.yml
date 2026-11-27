@@ -1,0 +1,32 @@
+name: Advisories
+
+# `cargo deny check advisories` alone, weekly on main and on demand (G54). The
+# gate in ci.yml runs it only on a pull request, so a RUSTSEC entry filed
+# against a pinned crate would show nothing until the next PR that touches a
+# dependency. A failure here is the signal: the run is red and GitHub mails the
+# workflow's last editor. It opens no issue and no PR, and changes nothing.
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  advisories:
+    name: RUSTSEC advisories against the pinned crates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: cargo-deny, the version deny.toml names (ADR 0009 D6)
+        run: cargo install --locked cargo-deny --version 0.20.2
+      # The advisories db is fetched fresh: that is what this job is for. The
+      # ignores in deny.toml, each with its review date, apply as on a PR.
+      - name: Check advisories
+        run: cargo deny check advisories

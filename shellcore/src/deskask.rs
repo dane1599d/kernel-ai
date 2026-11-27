@@ -360,6 +360,9 @@ impl Shell {
         // Don't and a lapse are no failure: only a run that failed is an
         // error row.
         let failed = !ran && !declined && !lapsed;
+        // An agent's step the shell refused (its Allow not checked) ran
+        // nothing: that is a no for it, not a run that failed.
+        let failed = failed && !(refused && matches!(asker, Asker::Agent(_)));
         self.desk_told(id, asker, ran, failed, line);
     }
 
@@ -398,10 +401,9 @@ impl Shell {
                 self.card_came_to(&app, id, &told);
             }
             Asker::Agent(agent) => {
-                // Only a run the person allowed and that then failed is the
-                // agent's failed step; every other "not run" (the agent's
-                // grants changed, a question answered elsewhere) stays one.
-                let failed = failed && line == crate::panel::FAILED;
+                // `failed` is a run the person allowed that then failed (its
+                // file changes not landing too); a question let go of unrun
+                // is told with `failed` false, whatever its words.
                 self.agent_told(agent, id, (ran, failed), line);
             }
         }

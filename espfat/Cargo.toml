@@ -1,0 +1,15 @@
+[package]
+name = "espfat"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# espfat reads files on the EFI system partition's FAT32 volume and replaces
+# their contents in a way that survives a power cut (ADR 0008 §12). It is our own
+# code, not fatfs 0.3.6: decision row 2026-11-26-espfat-own-fat32 says why.
+# `no_std` + `alloc`, with no dependencies.
+[lib]
+doctest = false
+
+[dependencies]

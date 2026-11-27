@@ -62,6 +62,16 @@ impl Key {
         })
     }
 
+    /// Whether `other` is this key: the same type and public key, whatever key
+    /// IDs list them. Keys that never verify are no key's twin.
+    pub fn same_key(&self, other: &Key) -> bool {
+        match (self, other) {
+            (Key::Ed25519(a), Key::Ed25519(b)) => a.as_ref() == b.as_ref(),
+            (Key::P256(a), Key::P256(b)) => a == b,
+            _ => false,
+        }
+    }
+
     /// Whether `sig` (hex, as the metadata holds it) is this key's signature of
     /// `message`.
     pub fn verifies(&self, message: &[u8], sig: &str) -> bool {

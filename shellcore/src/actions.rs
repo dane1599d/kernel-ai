@@ -620,7 +620,14 @@ impl Shell {
         }
         match &self.pending {
             Some(pending) if Some(pending.id) == id => self.answer_pending(text),
-            _ => Reply::err("nothing to confirm"),
+            _ => {
+                // An "Always allow" for a question no longer waiting: the node the
+                // trusted path minted for it is never kept.
+                if let Some((_, granted)) = read_answer(text.trim()) {
+                    self.revoke_unkept(granted.rule);
+                }
+                Reply::err("nothing to confirm")
+            }
         }
     }
 
@@ -725,12 +732,19 @@ impl Shell {
                 .host
                 .audit(&format!("script {id} confirmed, {rule}; running it")),
         }
-        let lead = match consent.strip_prefix("rule:") {
-            Some(rule) => format!(
+        let unsaved = self.rule_unsaved.take();
+        let lead = match (consent.strip_prefix("rule:"), unsaved) {
+            (Some(rule), None) => format!(
                 "Rule #{rule} added; `rules` lists it.
 "
             ),
-            None => String::new(),
+            // Kept for this boot, but never "added" as if a restart kept it.
+            (Some(rule), Some(why)) => format!(
+                "Rule #{rule} added for this boot: the rules were not saved ({why}), \
+                 so a restart may lose it; `rules` lists it.
+"
+            ),
+            (None, _) => String::new(),
         };
         let how = How {
             consent,
@@ -791,13 +805,16 @@ impl Shell {
             self.revoke_unkept(granted.rule);
             return Err(String::from(": no rule can cover it"));
         };
-        let made = (pending.id, self.host.now_ns());
+        let made = (pending.id, self.host.wall_ns());
         match self.rules.add(offer, always, granted.rule, made) {
-            Ok(rule) => {
+            Ok((rule, unkept)) => {
                 self.host
                     .audit(&format!("rule #{rule} added from menu {}", pending.id));
-                // A failure is audited; the rule holds for this boot.
-                let _ = self.save_rules();
+                // The same rule chosen again keeps its own node.
+                self.revoke_unkept(unkept);
+                // A failure is audited, and the reply says the rule holds for this
+                // boot only.
+                self.rule_unsaved = self.save_rules().err();
                 Ok(format!("rule:{rule}"))
             }
             Err(why) => {
