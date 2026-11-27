@@ -233,6 +233,13 @@ pub fn update(handle: Handle, restart_now: bool) -> Result<Staged, String> {
         record: record(handle)?,
         one_shot: Some(active),
     };
+    // From a trial, the other slot may be the only committed one: staging it
+    // would leave nothing to fall back to.
+    if !bootslot::may_stage(&nv.record, active) {
+        return Err(format!(
+            "refused: {active:?} is a trial and {other:?} is committed; staging {other:?} would leave nothing to fall back to"
+        ));
+    }
     let newest = nv
         .record
         .slot(active)

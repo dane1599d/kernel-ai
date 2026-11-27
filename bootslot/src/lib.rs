@@ -357,6 +357,16 @@ pub fn set_writes<E>(
     one_shot()
 }
 
+/// Whether a boot running in `running` may stage the other slot: from a
+/// committed slot, or from a trial when the other slot is not committed
+/// either (a fresh install's first update). Never over the committed slot a
+/// trial would fall back to: that would leave none.
+pub fn may_stage(record: &Record, running: Slot) -> bool {
+    running
+        .other()
+        .is_some_and(|other| record.slot(running).successful || !record.slot(other).successful)
+}
+
 /// *stage*, before writing `slot`: it never boots until [`stage_end`].
 pub fn stage_begin(nv: &mut Nv, slot: Slot) {
     *nv.record.slot_mut(slot) = SlotState {
