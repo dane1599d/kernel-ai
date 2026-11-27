@@ -180,6 +180,11 @@ fn row_ok(text: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
+/// The line a page of `net` or `rules` starts from: digits, nine at most.
+fn page_from(from: &str) -> bool {
+    !from.is_empty() && from.len() <= 9 && from.bytes().all(|b| b.is_ascii_digit())
+}
+
 /// `<app> <row>`, as `grants-revoke` and `grants-restore` take them.
 fn app_row(args: &str) -> bool {
     args.split_once(' ')
@@ -187,7 +192,8 @@ fn app_row(args: &str) -> bool {
 }
 
 /// What `request` is, or why it is not a request an app may send. A read is one
-/// of [`READS`], exactly, or `grants <app>`. A change is a verb of [`CHANGES`] with arguments that
+/// of [`READS`], exactly, `grants <app>`, or the next page of `net` or
+/// `rules` (`net <from>`). A change is a verb of [`CHANGES`] with arguments that
 /// fit that verb's grammar. Only printable ASCII is allowed, so no control,
 /// bidirectional or look-alike character reaches a log or a handler.
 pub fn classify(request: &str) -> Result<Kind, String> {
@@ -200,7 +206,12 @@ pub fn classify(request: &str) -> Result<Kind, String> {
     if !printable(request) {
         return Err(String::from("only printable ASCII"));
     }
-    if READS.contains(&request) || request.strip_prefix("grants ").is_some_and(app_ok) {
+    if READS.contains(&request)
+        || request.strip_prefix("grants ").is_some_and(app_ok)
+        || ["net ", "rules "]
+            .iter()
+            .any(|verb| request.strip_prefix(verb).is_some_and(page_from))
+    {
         return Ok(Kind::Read);
     }
     let (verb, args) = match request.split_once(' ') {

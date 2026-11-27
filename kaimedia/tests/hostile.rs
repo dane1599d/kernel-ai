@@ -12,6 +12,9 @@ mod harness;
 
 mod samples;
 
+#[path = "hostile/crafted.rs"]
+mod crafted;
+
 use harness::media_decode;
 use kaimedia::{Ceiling, Error, Format, Limits, decode, probe};
 

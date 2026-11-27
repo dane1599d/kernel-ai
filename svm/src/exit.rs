@@ -139,9 +139,20 @@ const NAMES: &[(ExitCode, &str)] = &[
     (ExitCode::INIT, "init"),
     (ExitCode::VINTR, "vintr"),
     (ExitCode::CR0_SEL_WRITE, "cr0-sel-write"),
+    (ExitCode::IDTR_READ, "idtr-read"),
+    (ExitCode::GDTR_READ, "gdtr-read"),
+    (ExitCode::LDTR_READ, "ldtr-read"),
+    (ExitCode::TR_READ, "tr-read"),
+    (ExitCode::IDTR_WRITE, "idtr-write"),
+    (ExitCode::GDTR_WRITE, "gdtr-write"),
+    (ExitCode::LDTR_WRITE, "ldtr-write"),
+    (ExitCode::TR_WRITE, "tr-write"),
     (ExitCode::RDTSC, "rdtsc"),
     (ExitCode::RDPMC, "rdpmc"),
+    (ExitCode::PUSHF, "pushf"),
+    (ExitCode::POPF, "popf"),
     (ExitCode::CPUID, "cpuid"),
+    (ExitCode::RSM, "rsm"),
     (ExitCode::IRET, "iret"),
     (ExitCode::SWINT, "swint"),
     (ExitCode::INVD, "invd"),
@@ -152,6 +163,7 @@ const NAMES: &[(ExitCode, &str)] = &[
     (ExitCode::IOIO, "ioio"),
     (ExitCode::MSR, "msr"),
     (ExitCode::TASK_SWITCH, "task-switch"),
+    (ExitCode::FERR_FREEZE, "ferr-freeze"),
     (ExitCode::SHUTDOWN, "shutdown"),
     (ExitCode::VMRUN, "vmrun"),
     (ExitCode::VMMCALL, "vmmcall"),
@@ -180,6 +192,10 @@ const NAMES: &[(ExitCode, &str)] = &[
     (ExitCode::BUSY, "busy"),
 ];
 
+/// EXITINFO1's reserved bits for an IOIO intercept (APM 15.10.2, figure
+/// 15-2: bits 1 and 15:13; the figure gives nothing above bit 31).
+const RESERVED: u64 = 1 << 1 | 0b111 << 13;
+
 /// An IOIO intercept's EXITINFO1 (APM 15.10.2): the port, direction, size and
 /// form of the access. EXITINFO2 holds the next instruction's RIP.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -202,8 +218,12 @@ pub struct Ioio {
 
 impl Ioio {
     /// Decodes EXITINFO1. None when no operand size bit, or more than one,
-    /// is set: a VMCB the CPU did not write.
+    /// is set, or a reserved bit (1 or 15:13): a VMCB the CPU did not
+    /// write.
     pub const fn decode(info1: u64) -> Option<Self> {
+        if info1 & RESERVED != 0 {
+            return None;
+        }
         let size = match (info1 >> 4) & 0b111 {
             0b001 => 1,
             0b010 => 2,
@@ -289,3 +309,9 @@ impl Npf {
         }
     }
 }
+
+mod dispatch;
+mod msr;
+
+pub use dispatch::*;
+pub use msr::{MSR_ALLOWED, msr_allowed};

@@ -326,6 +326,30 @@ pub fn encode_may_run(name: &str) -> String {
     format!("{MAY_RUN} {name}")
 }
 
+/// Takes a package version back out in the order that survives a supervisor
+/// that dies between the steps: the cleared version is saved *before* the app
+/// is ended, so a restart never finds the withdrawn version recorded. If the
+/// kill fails, the version is put back and saved again. `clear` returns what
+/// it took out; `restore` puts it back.
+pub fn withdraw_saving_first<C: ?Sized, V, E>(
+    cx: &mut C,
+    clear: impl FnOnce(&mut C) -> V,
+    restore: impl FnOnce(&mut C, V),
+    save: impl Fn(&C),
+    kill: impl FnOnce(&C) -> Result<(), E>,
+) -> Result<(), E> {
+    let taken = clear(cx);
+    save(cx);
+    match kill(cx) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            restore(cx, taken);
+            save(cx);
+            Err(error)
+        }
+    }
+}
+
 /// [`check_run_name`] for the service `run` names.
 pub fn check_run(
     run: Run,

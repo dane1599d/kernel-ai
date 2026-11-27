@@ -3,7 +3,7 @@
 //! asked.
 
 use crate::settings::{Kind, SettingsRequest};
-use crate::settings_ledger::{Ledger, NOT_BY_USER, Owed};
+use crate::settings_ledger::{Ledger, MAX_HELD, NO_ANSWER, NOT_BY_USER, Owed, SILENT_MS, TOO_MANY};
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -118,4 +118,47 @@ fn every_load_has_a_serial_of_its_own() {
     let load = || crate::load_core(&module, limits, None).unwrap().serial();
     let (a, b) = (load(), load());
     assert_ne!(a, b);
+}
+
+/// Lost answers used up desktop's room for good, and kept the app awake.
+#[test]
+fn a_request_nothing_answers_is_given_up_and_its_room_is_free_again() {
+    let mut ledger = Ledger::default();
+    assert!(ledger.expire(1_000).is_empty());
+    ledger.queue(1, (0..9).map(read).collect());
+    // Eight in flight, as desktop has room for; the ninth waits.
+    let first = ledger.outgoing(8);
+    assert_eq!(first.len(), 8);
+    assert_eq!(ledger.in_flight(), 8);
+    // Nothing is owed before the deadline.
+    assert!(ledger.expire(1_000 + SILENT_MS - 1).is_empty());
+    assert_eq!(ledger.in_flight(), 8);
+    let owed = ledger.expire(1_000 + SILENT_MS);
+    assert_eq!(owed.len(), 8);
+    assert!(
+        owed.iter()
+            .all(|o| o.outcome == Err(String::from(NO_ANSWER)))
+    );
+    assert_eq!(ledger.in_flight(), 0);
+    // The ninth goes now, and once answered nothing is left to keep awake.
+    let ninth = ledger.outgoing(8);
+    assert_eq!(ninth.len(), 1);
+    assert!(ledger.busy());
+    ledger.answered(ninth[0].wire, Ok(Vec::new())).unwrap();
+    assert!(!ledger.busy());
+    // The answer that comes late finds no ticket.
+    assert_eq!(ledger.answered(first[0].wire, Ok(Vec::new())), None);
+}
+
+#[test]
+fn requests_held_for_room_are_bounded() {
+    let mut ledger = Ledger::default();
+    let refused = ledger.queue(1, (0..MAX_HELD as u32 + 3).map(read).collect());
+    assert_eq!(refused.len(), 3);
+    assert!(
+        refused
+            .iter()
+            .all(|o| o.outcome == Err(String::from(TOO_MANY)))
+    );
+    assert_eq!(ledger.outgoing(usize::MAX).len(), MAX_HELD);
 }

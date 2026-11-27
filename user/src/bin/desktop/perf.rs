@@ -36,6 +36,8 @@ use kabi::perf::{OVER_BUDGET, REFERENCE, REFERENCE_WORDS};
 use termcore::style::Kind as Row;
 use user::{println, sys};
 
+/// Slowest frames a missed figure logs.
+const SLOWEST: usize = 8;
 /// Cold text pages: each starts from an empty atlas, as S05-1's did.
 const COLD_PAGES: usize = 10;
 /// Times the reference work runs; its median is the runner's speed.
@@ -410,8 +412,24 @@ fn line(name: &str, samples: &[u64], budget: u64, pick: Pick) -> String {
             ms(judged),
             ms(budget)
         ));
+        // Where the slow frames fell tells a steady cost (a run of them) from
+        // a stall (a few, far apart): the CI log keeps it for the next miss.
+        println!("desk-perf: {name}: {}", slowest(samples));
     }
     text
+}
+
+/// The [`SLOWEST`] longest of `samples`, as `frame number ms`, in frame order.
+fn slowest(samples: &[u64]) -> String {
+    let mut order: Vec<usize> = (0..samples.len()).collect();
+    order.sort_unstable_by_key(|&at| core::cmp::Reverse(samples[at]));
+    order.truncate(SLOWEST);
+    order.sort_unstable();
+    let frames: Vec<String> = order
+        .iter()
+        .map(|&at| format!("#{at} {}", ms(samples[at])))
+        .collect();
+    format!("the {} slowest frames: {}", frames.len(), frames.join(", "))
 }
 
 fn ms(ns: u64) -> String {

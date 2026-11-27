@@ -27,9 +27,11 @@ pub const SLOTS: [&str; 3] = ["kai-r", "kai-a", "kai-b"];
 pub const PARTITION_MIB: [u64; 4] = [64, 256, 1024, 1024];
 /// Volume ids, one per partition, fixed so the image is deterministic.
 const VOLUME_IDS: [u32; 4] = [0x4B41_4931, 0x4B41_4952, 0x4B41_4941, 0x4B41_4942];
-/// Seeds the disk's and the partitions' GUIDs. Unique per install later (the
-/// installer); CI keeps this fixed seed.
-const DISK_NAME: &str = "kernel-ai-slots";
+/// The slot disk's default image id, which seeds the disk's and partitions'
+/// GUIDs and `kai-data`'s volume id ([`gpt::unique`]). Every boot case and CI
+/// keep it, so their disks are byte-identical; `release-image --image-id`
+/// (later the installer) gives one image its own.
+pub const DISK_NAME: &str = "kernel-ai-slots";
 
 /// ADR 0008 section 3's `limine.conf`. `cmdline` is the dev and test words; an
 /// installed system's is empty. `slot=` names the slot, since Limine 12
@@ -170,6 +172,7 @@ fn plan(
     record: &str,
     data_mib: Option<u64>,
     room: Room,
+    image_id: &str,
 ) -> Result<Plan, String> {
     let boot = esp.join("boot");
     let mut esp_files = vec![
@@ -242,14 +245,14 @@ fn plan(
         .iter()
         .map(|&(kind, name, first, last)| diskmap::Spec {
             kind,
-            guid: diskmap::Guid(gpt::guid(&format!("{DISK_NAME} partition {name}"))),
+            guid: diskmap::Guid(gpt::unique(image_id, &format!("partition {name}"))),
             first,
             last,
             name,
         })
         .collect();
     let sectors = gpt::disk_sectors(first - gpt::FIRST_LBA);
-    let disk_guid = diskmap::Guid(gpt::guid(&format!("{DISK_NAME} disk")));
+    let disk_guid = diskmap::Guid(gpt::unique(image_id, "disk"));
     let gpt = diskmap::layout(sectors, disk_guid, &parts)
         .map_err(|e| format!("the slot disk does not lay out: {e:?}"))?;
     Ok(Plan {
@@ -320,7 +323,7 @@ fn copy_range(old: &Path, to: &mut fs::File, at: u64, len: u64) -> Result<(), St
 /// of `updated` has the slot it was writing as it left it, so a resumed download
 /// finds the chunks the first run wrote; `build` makes every boot's slots anew.
 pub fn build_keeping_b(esp: &Path, out: &Path, cmdline: &str, record: &str) -> Result<u64, String> {
-    let plan = plan(esp, cmdline, record, None, Room::Grow)?;
+    let plan = plan(esp, cmdline, record, None, Room::Grow, DISK_NAME)?;
     let same = fs::metadata(out).is_ok_and(|old| old.len() == plan.bytes());
     if !same {
         write(&plan, out, None)?;
@@ -335,7 +338,7 @@ pub fn build_keeping_b(esp: &Path, out: &Path, cmdline: &str, record: &str) -> R
 
 /// Writes the slot disk to `out`; its size.
 pub fn build(esp: &Path, out: &Path, cmdline: &str, record: &str) -> Result<u64, String> {
-    let plan = plan(esp, cmdline, record, None, Room::Grow)?;
+    let plan = plan(esp, cmdline, record, None, Room::Grow, DISK_NAME)?;
     write(&plan, out, None)?;
     Ok(plan.bytes())
 }
@@ -363,15 +366,30 @@ pub fn release_cmdline_ok(cmdline: &str) -> bool {
 /// then `kai-data` as partition 5, formatted with a fixed volume id, so every
 /// build of a commit writes the same bytes. `updated` never writes it: it
 /// writes only `kai-a` and `kai-b`. The disk is written a piece at a time and
-/// left sparse where the system allows, never held in memory. Its size.
-pub fn build_release(esp: &Path, out: &Path, record: &str, data_mib: u64) -> Result<u64, String> {
+/// left sparse where the system allows, never held in memory. `image_id`
+/// seeds its disk, partition and `kai-data` volume GUIDs ([`DISK_NAME`] for
+/// CI's). Its size.
+pub fn build_release(
+    esp: &Path,
+    out: &Path,
+    record: &str,
+    data_mib: u64,
+    image_id: &str,
+) -> Result<u64, String> {
     if !release_cmdline_ok(RELEASE_CMDLINE) {
         return Err("a release image may not carry a test word".into());
     }
-    let plan = plan(esp, RELEASE_CMDLINE, record, Some(data_mib), Room::Fixed)?;
+    let plan = plan(
+        esp,
+        RELEASE_CMDLINE,
+        record,
+        Some(data_mib),
+        Room::Fixed,
+        image_id,
+    )?;
     write(&plan, out, None)?;
     let (first, sectors) = plan.data.ok_or("the release disk has no kai-data")?;
-    let uuid = gpt::guid(&format!("{DISK_NAME} kai-data volume"));
+    let uuid = gpt::unique(image_id, "kai-data volume");
     crate::fs_tool::format_partition(out, first, sectors, uuid)?;
     Ok(plan.bytes())
 }
@@ -496,8 +514,8 @@ mod tests {
     fn the_release_disk_adds_a_kai_data_that_checks_and_builds_the_same_bytes_twice() {
         let esp = fake_esp("release-disk");
         let (one, two) = (esp.join("one.img"), esp.join("two.img"));
-        let len = build_release(&esp, &one, RECORD, 32).unwrap();
-        build_release(&esp, &two, RECORD, 32).unwrap();
+        let len = build_release(&esp, &one, RECORD, 32, DISK_NAME).unwrap();
+        build_release(&esp, &two, RECORD, 32, DISK_NAME).unwrap();
         assert_eq!(fs::metadata(&one).unwrap().len(), len);
         assert!(same(&one, &two, 0, len), "two builds differ");
         // Its first four partitions hold the slot disk's own bytes.
@@ -525,6 +543,60 @@ mod tests {
         fs::remove_dir_all(&esp).unwrap();
     }
 
+    /// G35 (ADR 0008 §1): an image id gives the disk and every partition GUIDs
+    /// of their own, the same id the same bytes, and no type GUID, partition
+    /// or slot byte moves.
+    #[test]
+    fn an_image_id_gives_its_own_guids_and_keeps_types_and_slots() {
+        let esp = fake_esp("image-id");
+        let (a, again, b) = (esp.join("a.img"), esp.join("a2.img"), esp.join("b.img"));
+        let len = build_release(&esp, &a, RECORD, 32, "install-a").unwrap();
+        build_release(&esp, &again, RECORD, 32, "install-a").unwrap();
+        build_release(&esp, &b, RECORD, 32, "install-b").unwrap();
+        assert!(same(&a, &again, 0, len), "one id built two different disks");
+        let table =
+            |disk: &Path| diskmap::read(&mut FileDisk(fs::File::open(disk).unwrap())).unwrap();
+        let (ta, tb) = (table(&a), table(&b));
+        assert_ne!(ta.disk_guid, tb.disk_guid);
+        assert_eq!(ta.partitions.len(), tb.partitions.len());
+        for (pa, pb) in ta.partitions.iter().zip(&tb.partitions) {
+            assert_ne!(pa.guid, pb.guid, "{}", pa.name);
+            assert_eq!((pa.kind, pa.first, pa.last), (pb.kind, pb.first, pb.last));
+            assert_eq!(pa.name, pb.name);
+            assert!(!diskmap::TYPES.contains(&pa.guid));
+        }
+        let guids: Vec<diskmap::Guid> = [&ta, &tb]
+            .iter()
+            .flat_map(|t| t.partitions.iter().map(|p| p.guid).chain([t.disk_guid]))
+            .collect();
+        for (i, g) in guids.iter().enumerate() {
+            assert!(
+                guids[i + 1..].iter().all(|other| other != g),
+                "a GUID repeats"
+            );
+        }
+        // The ESP and the slots hold the same bytes under either id.
+        let parts = &ta.partitions;
+        assert!(same(
+            &a,
+            &b,
+            parts[0].first * 512,
+            (parts[3].last + 1) * 512
+        ));
+        // CI's default id is today's fixed seed: its GUIDs come from the same
+        // labels as before per-image ids.
+        assert_eq!(
+            gpt::unique(DISK_NAME, "disk"),
+            gpt::guid("kernel-ai-slots disk")
+        );
+        assert_eq!(
+            gpt::unique(DISK_NAME, "partition kai-a"),
+            gpt::guid("kernel-ai-slots partition kai-a")
+        );
+        crate::fs_tool::main(&["check".into(), b.display().to_string()]).unwrap();
+        fs::remove_dir_all(&esp).unwrap();
+    }
+
     /// Bug-hunt-4 H4-16: the release disk's partitions are ADR 0008's whatever
     /// this build holds, so the slot image of a later, larger release still fits
     /// an install's `kai-a` and `kai-b`. With slots sized to this build, a
@@ -537,7 +609,7 @@ mod tests {
         let later = fake_esp("release-later");
         fs::write(later.join("boot/kernel"), vec![0x5A; 41 * mib]).unwrap();
         let out = now.join("release.img");
-        let len = build_release(&now, &out, RECORD, 32).unwrap();
+        let len = build_release(&now, &out, RECORD, 32, DISK_NAME).unwrap();
         let parts = partitions(&out);
         let sizes: Vec<u64> = parts.iter().map(|p| p.sectors() / 2048).collect();
         assert_eq!(sizes, [64, 256, 1024, 1024, 32]);

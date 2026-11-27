@@ -2,9 +2,10 @@
 //! writes them, and the kernel, which judges them. A figure over its budget
 //! adds a line `OVER BUDGET <figure> <value> ms (budget <p99|max> <b> ms)`.
 //!
-//! Shared runners are noisy, so the gate is best of two: a scene with a miss
-//! is measured once more in the same boot, and only a figure over its budget
-//! in both runs fails the case ([`still_over`]).
+//! Shared runners are noisy, so the gate is best of three: a scene with a miss
+//! is measured again in the same boot, a figure over in two runs a third time,
+//! and only a figure over its budget in every run fails the case
+//! ([`still_over`], applied to each pair).
 //!
 //! Each budget is set for a runner of baseline speed. Under KVM a figure is a
 //! miss only when it is over its budget times the runner's measured slowness,
@@ -204,7 +205,7 @@ pub fn times_baseline(p50_ns: u64) -> alloc::string::String {
     alloc::format!("{}.{}", tenths / 10, tenths % 10)
 }
 
-/// The figures over budget in both runs of one scene, by name.
+/// The figures over budget in both of two runs of one scene, by name.
 pub fn still_over<'a>(first: &[&'a str], second: &[&str]) -> Vec<&'a str> {
     first
         .iter()

@@ -94,7 +94,7 @@ impl Host for Stub {
     fn app_call(&self, _: &str, _: &str) -> Result<String, String> {
         Ok(alloc::format!("{}\n", livecore::call::REPLY_HEADER))
     }
-    fn appearance_read(&self) -> Option<String> {
+    fn appearance_read(&self) -> Result<Option<String>, String> {
         self.0.appearance_read()
     }
     fn appearance_write(&self, _: &str) -> Result<(), String> {

@@ -93,6 +93,8 @@ mod tokens;
 mod tune;
 mod userbuild;
 mod vbox;
+#[allow(dead_code)] // The hypervisor run loop's case boots it (P6 row 3).
+mod vmguest;
 mod wit;
 mod wit_tables;
 #[cfg(test)]
