@@ -269,6 +269,13 @@ pub trait Host {
     fn unix_seconds(&self) -> Option<u64> {
         None
     }
+    /// Nanoseconds since 1970 for a record's `made=` stamp: the wall clock, or
+    /// 0 (1970-01-01T00:00:00Z) where there is no date. Never `now_ns`, which
+    /// counts from boot and is for timeouts.
+    fn wall_ns(&self) -> u64 {
+        self.unix_seconds()
+            .map_or(0, |s| s.saturating_mul(1_000_000_000))
+    }
 
     /// Installed package `package`'s `kai-actions 1` answer, read by `pkg`
     /// from its stored artifact: an app's rows before it first runs.

@@ -211,6 +211,31 @@ fn always_lasts_a_restart_and_allow_does_not() {
     ));
 }
 
+/// bug-hunt-6 H6-17: a grant's `made=` is the wall clock, not the boot-relative
+/// `now_ns`, and 1970-01-01 where the firmware gave no date.
+#[test]
+fn a_saved_grant_is_stamped_with_the_wall_clock_not_the_boot_clock() {
+    for (wall, made) in [
+        (Some(1_794_637_800), "2026-11-14T06:30:00Z"),
+        (None, "1970-01-01T00:00:00Z"),
+    ] {
+        let host = FakeHost::new();
+        host.wall_clock.set(wall);
+        host.clock.set(312_000_000_000);
+        let mut shell = shell(&host);
+        assert_eq!(
+            shell.net_connect("weather", "maps.weather.example", CEILING),
+            NetConnect::Asked
+        );
+        let menu = card(&mut shell);
+        let once = host.mint(menu.id, menu.call());
+        let always = shell.eval_console(&format!("answer {} always-target once={once}", menu.id));
+        assert!(always.text.contains("(always)"), "{always:?}");
+        let disk = host.net_disk.borrow().clone().unwrap();
+        assert!(disk.contains(&format!("made={made}")), "{disk}");
+    }
+}
+
 /// bug-hunt-3 H3-24: the log read back after a restart has `_` for the
 /// spaces of `weather's network to …`; `undo` of an Always still takes the
 /// grant back, as its reply promised.
