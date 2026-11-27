@@ -9,210 +9,23 @@
 
 #[path = "../../testkit/hostile.rs"]
 mod hostile;
+#[path = "hostile/map.rs"]
+mod map;
 
 use hostile::XorShift;
 use kaifs::check::{Cache, check};
-use kaifs::format::{self, BlockPtr, KIND_NODE, PTR_BYTES, Superblock};
-use kaifs::fs::{HOME, SYSTEM, record_of};
+use kaifs::format::{BlockPtr, KIND_NODE};
+use kaifs::fs::{HOME, SYSTEM};
 use kaifs::ns_check::check_namespace;
 use kaifs::repair::repair;
 use kaifs::tree::{Child, Key, Node};
-use kaifs::vol::{K_SNAPSHOT, K_VOLUME, decode_snapshot, decode_volume, encode_snapshot};
-use kaifs::vol::{SnapKind, encode_volume};
-use kaifs::{BLOCK, Block, BlockDev, CsumKind, FileType, Fs, MemDisk, ROOT};
-use std::collections::{BTreeMap, BTreeSet};
+use kaifs::vol::SnapKind;
+use kaifs::{BLOCK, Block, CsumKind, FileType, Fs, MemDisk, ROOT};
+use map::{Holder, Map, What, block};
+use std::collections::BTreeSet;
 use std::rc::Rc;
 
 const BLOCKS: u64 = 2048;
-
-/// Where the pointer to a block lies.
-#[derive(Clone, Copy, Debug)]
-enum Holder {
-    /// The superblock's volume-table root, or its allocator head.
-    Volumes,
-    Alloc,
-    /// Child `index` of the branch at `node`.
-    Child {
-        node: u64,
-        index: usize,
-    },
-    /// Item `index` of the volume-table leaf at `node`: a live or snapshot root.
-    Entry {
-        node: u64,
-        index: usize,
-    },
-    /// Item `index` of the leaf at `node`: a DATA item's record.
-    Record {
-        node: u64,
-        index: usize,
-    },
-    /// The allocator block at `block`, whose next pointer it is.
-    Prev {
-        block: u64,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum What {
-    Node,
-    Alloc,
-    Record,
-}
-
-/// Every block the newest commit reaches, with the first place found that
-/// points to it.
-struct Map {
-    sb: Superblock,
-    blocks: BTreeMap<u64, (Holder, BlockPtr, What)>,
-}
-
-fn block(disk: &MemDisk, addr: u64) -> Block {
-    **disk.get(addr).expect("a block the image holds")
-}
-
-impl Map {
-    fn of(disk: &mut MemDisk) -> Map {
-        let sb = format::read_rings(disk).unwrap()[0];
-        let mut map = Map {
-            sb,
-            blocks: BTreeMap::new(),
-        };
-        map.tree(disk, Holder::Volumes, sb.volumes, true);
-        let (mut holder, mut ptr) = (Holder::Alloc, sb.alloc);
-        while !ptr.is_null() && !map.blocks.contains_key(&ptr.addr) {
-            map.blocks.insert(ptr.addr, (holder, ptr, What::Alloc));
-            let next = BlockPtr::decode_at(&block(disk, ptr.addr), 16).unwrap();
-            (holder, ptr) = (Holder::Prev { block: ptr.addr }, next);
-        }
-        map
-    }
-
-    fn tree(&mut self, disk: &MemDisk, holder: Holder, ptr: BlockPtr, table: bool) {
-        if ptr.is_null() || self.blocks.contains_key(&ptr.addr) {
-            return;
-        }
-        self.blocks.insert(ptr.addr, (holder, ptr, What::Node));
-        match Node::decode(&block(disk, ptr.addr)).unwrap() {
-            Node::Branch(_, children) => {
-                for (index, (_, child)) in children.into_iter().enumerate() {
-                    let Child::Clean(child) = child else {
-                        unreachable!("a node read from disk is clean");
-                    };
-                    let at = Holder::Child {
-                        node: ptr.addr,
-                        index,
-                    };
-                    self.tree(disk, at, child, table);
-                }
-            }
-            Node::Leaf(items) => {
-                for (index, (key, raw)) in items.into_iter().enumerate() {
-                    let node = ptr.addr;
-                    if table && key.kind == K_VOLUME {
-                        let root = decode_volume(key.oid, &raw).unwrap().live.root;
-                        self.tree(disk, Holder::Entry { node, index }, root, false);
-                    } else if table && key.kind == K_SNAPSHOT {
-                        let root = decode_snapshot(&raw).unwrap().root;
-                        self.tree(disk, Holder::Entry { node, index }, root, false);
-                    } else if let Some((record, _)) = record_of(&raw).filter(|_| !table) {
-                        let at = Holder::Record { node, index };
-                        self.blocks
-                            .entry(record.addr)
-                            .or_insert((at, record, What::Record));
-                    }
-                }
-            }
-        }
-    }
-
-    /// Signs the block at `addr` again after a change, and every block up to
-    /// the superblock.
-    fn sign(&mut self, disk: &mut MemDisk, addr: u64) {
-        let (holder, ptr, _) = self.blocks[&addr];
-        let mut bytes = Vec::with_capacity(ptr.blocks as usize * BLOCK);
-        for i in 0..u64::from(ptr.blocks) {
-            bytes.extend_from_slice(&block(disk, ptr.addr + i));
-        }
-        let ptr = BlockPtr {
-            csum: CsumKind::Seahash64.sum(&bytes),
-            ..ptr
-        };
-        self.point(disk, holder, ptr);
-    }
-
-    /// Makes `holder` name `ptr`, and signs its block again.
-    fn point(&mut self, disk: &mut MemDisk, holder: Holder, ptr: BlockPtr) {
-        let edit = |disk: &mut MemDisk, at: u64, f: &mut dyn FnMut(&mut Node)| {
-            let mut node = Node::decode(&block(disk, at)).unwrap();
-            f(&mut node);
-            disk.put(at, Rc::new(node.encode()));
-        };
-        let leaf_item = |node: &mut Node, index: usize| match node {
-            Node::Leaf(items) => (items[index].0, std::mem::take(&mut items[index].1)),
-            Node::Branch(..) => unreachable!("an item of a leaf"),
-        };
-        let up = match holder {
-            Holder::Volumes | Holder::Alloc => {
-                match holder {
-                    Holder::Volumes => self.sb.volumes = ptr,
-                    _ => self.sb.alloc = ptr,
-                }
-                let generation = self.sb.generation;
-                for slot in format::all_slots(disk.info().blocks) {
-                    let current = Superblock::decode(&block(disk, slot));
-                    if current.is_ok_and(|sb| sb.generation == generation) {
-                        disk.put(slot, Rc::new(self.sb.encode()));
-                    }
-                }
-                return;
-            }
-            Holder::Child { node, index } => {
-                edit(disk, node, &mut |n| {
-                    if let Node::Branch(_, children) = n {
-                        children[index].1 = Child::Clean(ptr);
-                    }
-                });
-                node
-            }
-            Holder::Entry { node, index } => {
-                edit(disk, node, &mut |n| {
-                    let (key, raw) = leaf_item(n, index);
-                    let raw = match key.kind {
-                        K_VOLUME => {
-                            let mut entry = decode_volume(key.oid, &raw).unwrap();
-                            entry.live.root = ptr;
-                            encode_volume(&entry)
-                        }
-                        _ => {
-                            let mut snap = decode_snapshot(&raw).unwrap();
-                            snap.root = ptr;
-                            encode_snapshot(&snap)
-                        }
-                    };
-                    if let Node::Leaf(items) = n {
-                        items[index].1 = raw;
-                    }
-                });
-                node
-            }
-            Holder::Record { node, index } => {
-                edit(disk, node, &mut |n| {
-                    if let Node::Leaf(items) = n {
-                        items[index].1[1..1 + PTR_BYTES].copy_from_slice(&ptr.encode());
-                    }
-                });
-                node
-            }
-            Holder::Prev { block: at } => {
-                let mut bytes = block(disk, at);
-                bytes[16..16 + PTR_BYTES].copy_from_slice(&ptr.encode());
-                disk.put(at, Rc::new(bytes));
-                at
-            }
-        };
-        self.sign(disk, up);
-    }
-}
 
 /// A disk with history in two volumes: folders, inline and record data,
 /// attributes, actions with their undo snapshots, the trash, and a named
@@ -456,4 +269,117 @@ fn a_tree_that_names_one_node_under_every_entry_is_refused_at_its_second_visit()
         map.point(&mut disk, Holder::Volumes, root);
         assert!(Fs::mount(disk).is_err());
     }
+}
+
+/// Home with a live tree two levels deep, a named snapshot of it, then one
+/// file changed: live nodes from after the snapshot hold pointers to nodes
+/// the snapshot shares. Returns the disk and the snapshot's generation.
+fn changed_after_a_snapshot() -> (MemDisk, u64) {
+    let mut fs = Fs::mkfs(MemDisk::new(BLOCKS), [5; 16], "births").unwrap();
+    fs.set_volume(HOME).unwrap();
+    let dir = fs.mkdir(ROOT, "d").unwrap();
+    for n in 0..200u32 {
+        let f = fs.create(dir, &format!("file-{n:03}")).unwrap();
+        fs.write_file(f, &[n as u8; 300]).unwrap();
+    }
+    let big = fs.create(dir, "big").unwrap();
+    fs.write_file(big, &[7; 9000]).unwrap();
+    fs.commit().unwrap();
+    fs.snapshot_as(SnapKind::Named, 0, 0).unwrap();
+    let snapshot = fs.commit().unwrap();
+    let f = fs.lookup(dir, "file-000").unwrap().unwrap().ino;
+    fs.write_file(f, b"changed after the snapshot").unwrap();
+    fs.write_file(big, &[8; 9000]).unwrap();
+    fs.commit().unwrap();
+    (fs.into_dev(), snapshot)
+}
+
+fn check_of(disk: MemDisk) -> Result<kaifs::check::Report, String> {
+    let mut fs = Fs::mount(disk).unwrap();
+    check(&mut fs, &mut Cache::default())
+}
+
+/// A writer frees a replaced block only when its pointer's birth is after the
+/// newest snapshot, so `check` must refuse a pointer from the future: a tree's
+/// root born after the tree's generation, a child or a record born after the
+/// node that holds it. The kaifs_image fuzz body (P6 G29) found the first: a
+/// live root's birth raised past the commit passed `check`, and the next write
+/// freed the block a named snapshot still read as its root.
+#[test]
+fn a_pointer_born_after_its_tree_or_its_holder_is_refused() {
+    let (base, snapshot) = changed_after_a_snapshot();
+    assert!(check_of(base.clone()).is_ok());
+    let map = Map::of(&mut base.clone());
+    let live = Fs::mount(base.clone()).unwrap().live_root_of(HOME).unwrap();
+    let committed = map.sb.generation;
+    let (holder, ptr, _) = map.blocks[&live.addr];
+    let mut disk = base.clone();
+    map.clone().point(
+        &mut disk,
+        holder,
+        BlockPtr {
+            birth: committed + 1,
+            ..ptr
+        },
+    );
+    let refused = check_of(disk).unwrap_err();
+    assert!(
+        refused.contains("a tree root newer than its tree"),
+        "{refused}"
+    );
+    // Holders written after the snapshot, so the snapshot does not read them.
+    let parent = |node: u64| map.blocks[&node].1.birth;
+    let after = |h: &Holder| match h {
+        Holder::Child { node, .. } | Holder::Record { node, .. } => parent(*node) > snapshot,
+        _ => false,
+    };
+    let child = map
+        .blocks
+        .values()
+        .find(|(h, ..)| after(h) && matches!(h, Holder::Child { .. }));
+    let record = map
+        .blocks
+        .values()
+        .find(|(h, ..)| after(h) && matches!(h, Holder::Record { .. }));
+    for (want, found) in [("a child newer", child), ("a record newer", record)] {
+        let &(holder, ptr, _) = found.expect("the sample has one");
+        let (Holder::Child { node, .. } | Holder::Record { node, .. }) = holder else {
+            unreachable!()
+        };
+        let mut disk = base.clone();
+        let birth = parent(node) + 1;
+        map.clone()
+            .point(&mut disk, holder, BlockPtr { birth, ..ptr });
+        let refused = check_of(disk).unwrap_err();
+        assert!(refused.contains(want), "{want}: {refused}");
+    }
+}
+
+/// The same move one level down passes every rule above: a live node written
+/// after the snapshot says a child it shares with the snapshot was born when
+/// the node was. A write that replaced the child would free it, under the
+/// snapshot, so `check` refuses one block reached with two births.
+#[test]
+fn a_block_two_trees_reach_with_two_births_is_refused() {
+    let (base, snapshot) = changed_after_a_snapshot();
+    let map = Map::of(&mut base.clone());
+    let (holder, ptr, _) = *map
+        .blocks
+        .values()
+        .find(|(h, p, w)| match h {
+            Holder::Child { node, .. } => {
+                *w == What::Node && p.birth <= snapshot && map.blocks[node].1.birth > snapshot
+            }
+            _ => false,
+        })
+        .expect("a live node after the snapshot over a node before it");
+    let Holder::Child { node, .. } = holder else {
+        unreachable!()
+    };
+    let mut disk = base.clone();
+    let birth = map.blocks[&node].1.birth;
+    map.clone()
+        .point(&mut disk, holder, BlockPtr { birth, ..ptr });
+    let refused = check_of(disk).unwrap_err();
+    assert!(refused.contains("reached with two births"), "{refused}");
 }
