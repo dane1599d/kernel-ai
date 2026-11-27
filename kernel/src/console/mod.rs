@@ -136,19 +136,29 @@ pub fn cell() -> (usize, usize) {
     )
 }
 
-/// Takes over a 32-bpp framebuffer. Returns false for other formats.
+/// Takes over a 32-bpp framebuffer. Returns false for other formats. Its pixels
+/// are packed by the red, green and blue masks Limine reports, and its text size
+/// takes the screen's physical size from its EDID, when it gives one.
 pub fn init(fb: &Framebuffer) -> bool {
-    crate::display::init_gop(fb).is_some_and(attach)
+    let size_mm = gfxcore::edid::size_mm(crate::display::edid_of(fb));
+    crate::display::init_gop(fb).is_some_and(|surface| attach_sized(surface, size_mm))
 }
 
-/// Draws on `surface` from now on, starting from a blank screen.
+/// Draws on `surface` from now on, starting from a blank screen. Its physical
+/// size is unknown: the text size goes by its width.
 pub fn attach(surface: Surface) -> bool {
+    attach_sized(surface, None)
+}
+
+/// [`attach`] for a screen of `size_mm` (width by height) millimetres, if known.
+fn attach_sized(surface: Surface, size_mm: Option<(u32, u32)>) -> bool {
     let (width, height) = (surface.width, surface.height);
     let screen = Fb {
         base: surface.base,
         stride: surface.stride,
+        format: surface.format,
     };
-    let mut layout = Layout::new(width, height);
+    let mut layout = Layout::new(width, height, size_mm);
     screen.fill(0, 0, width, height, theme::INK);
     status::paint_brand(screen, &layout);
     let _ = crate::display::flush(Rect::screen(width as u32, height as u32));

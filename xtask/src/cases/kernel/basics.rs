@@ -24,6 +24,12 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
         ..case("entropy-boots", "test=entropy-boots")
     },
     case("boot", "test"),
+    // P6 row 1 (ADR 0006): the nesting census. The kernel logs the VMX, SVM,
+    // NPT and NRIPS bits it sees; nesting-census.yml reads them per runner.
+    TestCase {
+        expect: &["nesting: vendor="],
+        ..case("nesting-census", "test")
+    },
     case("page-fault", "test=page-fault"),
     case("double-fault", "test=double-fault"),
     case("write-protect", "test=write-protect"),
@@ -151,6 +157,8 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
     // The graft: keys still echo while every vCPU computes in ring 3.
     TestCase {
         keys: &[KAI],
+        // The kernel reads the accel word to pick its TCG latency limit.
+        accel: true,
         ..case("compute-keys", "test=compute-keys")
     },
     // P1 tasks 14 and 15: PROC_STOP_ONCE, rules, and the supervisor's checks.

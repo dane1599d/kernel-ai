@@ -318,6 +318,14 @@ impl Host for FakeHost {
         Ok(())
     }
 
+    fn rules_set_aside(&self, text: &str) -> Result<(), String> {
+        if !self.rules_aside_ok.get() {
+            return Err(String::from("the disk did not answer"));
+        }
+        *self.rules_aside.borrow_mut() = Some(text.into());
+        Ok(())
+    }
+
     fn net_grants_read(&self) -> Result<Option<String>, String> {
         self.state_read("net_grants_read", &self.net_disk)
     }
@@ -622,8 +630,8 @@ impl Host for FakeHost {
         Ok(())
     }
 
-    fn restart_read(&self) -> Option<String> {
-        self.restart_file.borrow().clone()
+    fn restart_read(&self) -> Result<Option<String>, String> {
+        self.state_read("restart_read", &self.restart_file)
     }
 
     fn restart_write(&self, text: &str) -> Result<(), String> {
@@ -705,8 +713,8 @@ impl Host for FakeHost {
         })
     }
 
-    fn appearance_read(&self) -> Option<String> {
-        self.appearance.borrow().clone()
+    fn appearance_read(&self) -> Result<Option<String>, String> {
+        self.state_read("appearance_read", &self.appearance)
     }
 
     fn appearance_write(&self, text: &str) -> Result<(), String> {

@@ -47,15 +47,19 @@ pub(crate) fn scope(
         .filter(|w| !w.contains('/'))
         .collect();
     let words = words.join(" ");
-    let plain_words = plain(&words);
     let mut rows: Vec<String> = Vec::new();
     for row in agentabi::ROWS.iter().filter(|row| considered(row)) {
         // Named by a whole cue ("go" is not in "good"); negated as consent
         // reads the line ("never move").
+        // A joined name ("do-not-delete") is the name's words, not the
+        // row's: its cue names no row and its "not" negates none, as consent
+        // reads it (bug-hunt-6 H6-3).
+        let row_words = outside_names(&words, row);
+        let plain_words = plain(&row_words);
         let Some(cue) = row.cues.iter().find(|cue| names(&plain_words, cue)) else {
             continue;
         };
-        let negated = agentabi::consent::named_in(&words, row) == Some(true);
+        let negated = agentabi::consent::named_in(&row_words, row) == Some(true);
         if negated {
             return Err(format!(
                 "\"{cue}\" is said not to happen; say only what the goal does"
@@ -132,6 +136,66 @@ fn plain(text: &str) -> String {
         out.push(' ');
     }
     out
+}
+
+/// Parts of a joined word that only negate ("do-not", "don't", "never-ever"
+/// as [`plain`] splits them): such a word is no name, so it stays.
+const NEGATING_PARTS: &[&str] = &[
+    "do", "does", "did", "don", "doesn", "didn", "t", "nt", "not", "never", "ever", "no", "dont",
+    "cannot", "can", "won", "wo", "shouldn", "mustn",
+];
+
+/// Words before a joined word that make it a name, not a verb: "my
+/// do-not-delete folder". So does any possessive ("Bob's").
+const NAME_LEADS: &[&str] = &[
+    "my", "the", "a", "an", "this", "that", "these", "those", "our", "your", "his", "her", "their",
+    "its",
+];
+
+/// `words` without the names joined by `-`, `.` or `_` that hold a word none
+/// of `row`'s cues has: "do-not-delete" goes for `fs_trash`, "re-sort" or a
+/// cue's own "round-robin" stays, and so does a word made only of negation
+/// ("do-not move anything" still says not to; #1467's round 20).
+///
+/// A word of negation and the row's own cues stays too, unless a determiner
+/// before it makes it a name: "dont-delete the finals" says not to, "my
+/// do-not-delete folder" is a folder. A word that goes leaves its punctuation,
+/// so "todo.txt," still ends its clause (#1467's round 21).
+fn outside_names(words: &str, row: &Action) -> String {
+    let own = |part: &str| {
+        part == "re"
+            || row.cues.iter().any(|cue| {
+                plain(cue)
+                    .split(' ')
+                    .any(|w| !w.is_empty() && part.starts_with(w))
+            })
+    };
+    let negating = |part: &str| NEGATING_PARTS.contains(&part);
+    let mut kept: Vec<&str> = Vec::new();
+    let mut before = String::new();
+    for raw in words.split_whitespace() {
+        let word = raw.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+        let plain = plain(word);
+        let parts: Vec<&str> = plain.split(' ').filter(|p| !p.is_empty()).collect();
+        let named = NAME_LEADS.contains(&before.as_str())
+            || before.ends_with("'s")
+            || before.ends_with("\u{2019}s");
+        let stays = !word.contains(['-', '.', '_'])
+            || parts.iter().all(|p| own(p))
+            || parts.iter().all(|p| negating(p))
+            || (!named
+                && parts.iter().any(|p| negating(p))
+                && parts.iter().all(|p| negating(p) || own(p)));
+        before = word.to_ascii_lowercase();
+        if stays {
+            kept.push(raw);
+            continue;
+        }
+        let at = raw.find(word).unwrap_or(0);
+        let (lead, trail) = (&raw[..at], &raw[at + word.len()..]);
+        kept.extend([lead, trail].into_iter().filter(|p| !p.is_empty()));
+    }
+    kept.join(" ")
 }
 
 /// Whether cue `cue` is words of `words` ([`plain`]'s form), whole, or with a

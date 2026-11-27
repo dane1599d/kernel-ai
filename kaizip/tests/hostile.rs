@@ -1,6 +1,11 @@
 //! Hostile archives, written byte by byte: every one is refused whole, with
 //! why, before a byte of it is extracted, or stopped as it is extracted.
 
+#[path = "../../testkit/hostile.rs"]
+mod hostile;
+#[path = "hostile/zip.rs"]
+mod zip;
+
 mod kit;
 
 use kaizip::{Archive, Error, Limits, Tree};
@@ -116,6 +121,19 @@ fn links_devices_and_encrypted_entries_are_refused_by_name() {
         !message.contains('\n') && !message.contains('\u{202e}'),
         "{message}"
     );
+    // #1452's review: line and paragraph separators, the Arabic letter mark,
+    // zero-width characters and a backslash are escaped too, so the text `\n`
+    // and a real newline read differently.
+    let entry = Raw {
+        flags: 1,
+        name: "a\u{2028}b\u{2029}c\u{61c}d\u{200b}e\u{feff}f\\n g"
+            .as_bytes()
+            .to_vec(),
+        ..Raw::stored("x", b"xxxxxxxxxxxx")
+    };
+    let got = open(&kit::archive(&[entry]));
+    let shown = r"a\u{2028}b\u{2029}c\u{61c}d\u{200b}e\u{feff}f\\n g";
+    assert_eq!(got, Err(Error::Encrypted { name: shown.into() }));
     let link = Raw {
         mode: Some(0o120_777),
         name: b"a\x1b[2Jb".to_vec(),
@@ -278,4 +296,118 @@ fn what_is_not_a_zip_is_refused() {
     // An empty archive is an empty folder.
     let tree = open(&kit::archive(&[])).unwrap();
     assert!(tree.files.is_empty() && tree.folders.is_empty());
+}
+
+/// What the `zip_open` and `zip_extract` bodies may hold at once: no more
+/// than the largest file [`zip::LIMITS`] lets through (117 KiB measured),
+/// since extraction streams and the body keeps no file's bytes.
+const ZIP_PEAK: usize = 1 << 20;
+
+/// The `zip_open` and `zip_extract` fuzz bodies (P6 G27) on mutations and
+/// truncations of good archives, bombs and names that escape: each returns,
+/// keeps the ceilings, extracts only under its root, and holds no more than
+/// [`ZIP_PEAK`] at once.
+#[test]
+fn the_zip_bodies_keep_the_ceilings_and_the_root_on_hostile_archives() {
+    use kaizip::Maker;
+    let mut maker = Maker::new(Cursor::new(Vec::new()), Limits::default());
+    maker.folder("docs").unwrap();
+    maker
+        .file(
+            "docs/a.txt",
+            &mut Cursor::new(b"some text, some text".repeat(20)),
+        )
+        .unwrap();
+    maker
+        .file("b.bin", &mut Cursor::new([0u8, 1, 2, 255]))
+        .unwrap();
+    let made = maker.finish().unwrap().into_inner();
+    let raw = kit::archive(&[
+        Raw::folder("x/"),
+        Raw::stored("x/y.txt", b"stored bytes"),
+        Raw::deflated("x/z/w.txt", &b"deflated ".repeat(50)),
+    ]);
+    // A file near the small limits' largest, which streams out in pieces.
+    let mut rng = hostile::XorShift::new(0x27);
+    let noise: Vec<u8> = (0..900 << 10).map(|_| rng.next() as u8).collect();
+    let large = kit::archive(&[Raw::stored("noise.bin", &noise)]);
+    // A deflate bomb past the small limits' ratio and size.
+    let bomb = kit::archive(&[Raw::deflated("zeros", &vec![0; 3 << 20])]);
+    // Under their size, past their ratio: refused by the ratio alone.
+    let zeros = vec![0u8; 1 << 20];
+    let ratio = kit::archive(&[Raw::deflated("zeros", &zeros)]);
+    // A bomb that says it is small: it opens, under the ratio's floor, and
+    // is stopped as it is extracted, past the size it said. Its pair says
+    // more than it holds, and is stopped short.
+    let lying = kit::archive(&[
+        Raw {
+            size: 1000,
+            ..Raw::deflated("says-less", &zeros[..200 << 10])
+        },
+        Raw {
+            size: 5000,
+            ..Raw::deflated("says-more", &zeros[..100])
+        },
+    ]);
+    let says_more = kit::archive(&[Raw {
+        size: 5000,
+        ..Raw::deflated("says-more", &zeros[..100])
+    }]);
+    // A central directory said to start past the end of the archive.
+    let mut past_end = raw.clone();
+    let eocd = past_end.len() - 22;
+    assert_eq!(&past_end[eocd..eocd + 4], b"PK\x05\x06");
+    let at = (past_end.len() as u32 + 100).to_le_bytes();
+    past_end[eocd + 16..eocd + 20].copy_from_slice(&at);
+    let opened = |data: &[u8]| Archive::open(Cursor::new(data), zip::LIMITS).map(|_| ());
+    assert!(matches!(opened(&ratio), Err(Error::Ratio { .. })));
+    assert!(matches!(opened(&past_end), Err(Error::NotZip(_))));
+    for liar in [&lying, &says_more] {
+        let mut archive = Archive::open(Cursor::new(&liar[..]), zip::LIMITS).unwrap();
+        let got = archive.extract(&mut Tree::default());
+        assert!(matches!(got, Err(Error::Damaged { .. })), "{got:?}");
+    }
+    let escapes = kit::archive(&[
+        Raw::stored("../up", b"x"),
+        Raw::stored("a/../../up", b"x"),
+        Raw::stored("/abs", b"x"),
+        Raw::stored("c:\\win", b"x"),
+    ]);
+    for good in [&made, &raw, &large] {
+        assert!(zip::zip_open(good).is_some(), "a good archive opens");
+    }
+    for refused in [&bomb, &escapes, &ratio, &past_end] {
+        assert!(
+            zip::zip_open(refused).is_none(),
+            "a hostile archive is refused"
+        );
+    }
+    let mut most = 0;
+    let mut run = |data: &[u8]| {
+        let ((), peak) = hostile::peak_alloc(|| {
+            zip::zip_open(data);
+            zip::zip_extract(data);
+        });
+        assert!(peak <= ZIP_PEAK, "{peak} bytes at once");
+        most = most.max(peak);
+    };
+    let cases = if cfg!(debug_assertions) { 1_000 } else { 5_000 };
+    for (seed, sample) in [
+        (0x27_0001, &made),
+        (0x27_0002, &raw),
+        (0x27_0003, &bomb),
+        (0x27_0004, &escapes),
+        (0x27_0006, &ratio),
+        (0x27_0007, &lying),
+        (0x27_0008, &past_end),
+    ] {
+        run(sample);
+        hostile::fuzz(sample, seed, cases, &mut run);
+        hostile::truncations(sample, |_, bytes| run(bytes));
+    }
+    // The large file a few times only: each case reads all of it.
+    run(&large);
+    hostile::fuzz(&large, 0x27_0005, 50, &mut run);
+    run(&[]);
+    eprintln!("zip bodies: at most {most} bytes at once");
 }

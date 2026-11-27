@@ -239,9 +239,11 @@ pub trait Host {
     fn power_reboot(&self) -> Result<(), String> {
         Err(String::from("this host cannot restart the computer"))
     }
-    /// The user's appearance as `kai-appearance 1` text (P4 task 8).
-    fn appearance_read(&self) -> Option<String> {
-        None
+    /// The user's appearance as `kai-appearance 1` text (P4 task 8): `None`
+    /// with no file, and why not when it could not be read (a failed read is no
+    /// proof the file is absent, so nothing is written over it).
+    fn appearance_read(&self) -> Result<Option<String>, String> {
+        Ok(None)
     }
     /// Saves the appearance and has `desktop` draw with it.
     fn appearance_write(&self, _text: &str) -> Result<(), String> {
@@ -266,6 +268,13 @@ pub trait Host {
     /// where the firmware gave no date.
     fn unix_seconds(&self) -> Option<u64> {
         None
+    }
+    /// Nanoseconds since 1970 for a record's `made=` stamp: the wall clock, or
+    /// 0 (1970-01-01T00:00:00Z) where there is no date. Never `now_ns`, which
+    /// counts from boot and is for timeouts.
+    fn wall_ns(&self) -> u64 {
+        self.unix_seconds()
+            .map_or(0, |s| s.saturating_mul(1_000_000_000))
     }
 
     /// Installed package `package`'s `kai-actions 1` answer, read by `pkg`
@@ -415,6 +424,11 @@ pub trait Host {
     fn rules_write(&self, _text: &str) -> Result<(), String> {
         Ok(())
     }
+    /// Keeps a rules file refused at start as `/system/state/rules.refused`, so
+    /// `rules` may be written again; an error leaves `rules` unwritten all run.
+    fn rules_set_aside(&self, _text: &str) -> Result<(), String> {
+        Err(String::from("this host keeps no refused file"))
+    }
     /// The keep-running list as `/system/state/keep` holds it, and why not
     /// when it could not be read.
     fn keep_read(&self) -> Result<Option<String>, String> {
@@ -428,9 +442,10 @@ pub trait Host {
         Err(String::from("apps cannot be kept running here"))
     }
     /// The restart window as `/system/state/restart/window` holds it
-    /// (`kai-updates 1`), which `updated` follows.
-    fn restart_read(&self) -> Option<String> {
-        None
+    /// (`kai-updates 1`), which `updated` follows: `None` with no file, and why
+    /// not when it could not be read.
+    fn restart_read(&self) -> Result<Option<String>, String> {
+        Ok(None)
     }
     fn restart_write(&self, _text: &str) -> Result<(), String> {
         Err(String::from("there is no /system/state here"))

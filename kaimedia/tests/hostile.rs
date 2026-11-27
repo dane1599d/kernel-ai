@@ -12,6 +12,20 @@ mod harness;
 
 mod samples;
 
+// Hand-built inputs: what they share, then a file for each format.
+#[path = "hostile/ceilings.rs"]
+mod ceilings;
+#[path = "hostile/crafted.rs"]
+mod crafted;
+#[path = "hostile/gif.rs"]
+mod gif;
+#[path = "hostile/jpeg.rs"]
+mod jpeg;
+#[path = "hostile/png.rs"]
+mod png;
+#[path = "hostile/webp.rs"]
+mod webp;
+
 use harness::media_decode;
 use kaimedia::{Ceiling, Error, Format, Limits, decode, probe};
 

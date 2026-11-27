@@ -170,3 +170,58 @@ fn a_refused_yes_on_a_panel_lines_card_is_not_reported_done() {
     let told = shell.take_card_result();
     assert!(matches!(&told, Some((false, _))), "{told:?}");
 }
+
+/// #1344's review: a rules file refused whole was refused again at every start,
+/// so no rule saved on any later boot. It is kept as `rules.refused`, and rules
+/// save again.
+#[test]
+fn a_refused_rules_file_is_kept_aside_and_rules_save_again() {
+    let bad = "kai-grants 1\nrule 1 action=set_policy target=a target=b from=prompt:3 made=2026-11-02T10:20:00Z\n";
+    let host = FakeHost::new();
+    host.rules_aside_ok.set(true);
+    *host.rules_disk.borrow_mut() = Some(String::from(bad));
+    host.calls.borrow_mut().push_back(call(STOP_BUILD3));
+    host.procs.borrow_mut().push(String::from("build-3"));
+    let mut shell = shell(&host);
+    assert_eq!(host.rules_aside.borrow().as_deref(), Some(bad));
+    shell.eval("stop build-3");
+    let once = host.mint(1, "process_stop(\"build-3\")");
+    let added = shell.eval(&format!("answer 1 always-kind once={once}"));
+    assert!(
+        added.text.starts_with("Rule #1 added; `rules` lists it."),
+        "{added:?}"
+    );
+    let saved = host.rules_disk.borrow().clone().unwrap_or_default();
+    assert!(saved.contains("action=process_stop"), "{saved:?}");
+}
+
+/// #1344's review: an "Always allow" whose rule was not saved said "added" as if
+/// a restart kept it.
+#[test]
+fn an_always_whose_rule_was_not_saved_says_it_holds_for_this_boot() {
+    let bad = "kai-grants 1\nrule 1 action=set_policy target=a target=b from=prompt:3 made=2026-11-02T10:20:00Z\n";
+    let (host, mut shell) = booted(bad, vec![call(STOP_BUILD3)]);
+    host.procs.borrow_mut().push(String::from("build-3"));
+    shell.eval("stop build-3");
+    let once = host.mint(1, "process_stop(\"build-3\")");
+    let added = shell.eval(&format!("answer 1 always-kind once={once}"));
+    assert!(
+        added
+            .text
+            .starts_with("Rule #1 added for this boot: the rules were not saved (")
+            && added
+                .text
+                .contains("so a restart may lose it; `rules` lists it."),
+        "{added:?}"
+    );
+}
+
+/// #1344's review: an "Always allow" for a question no longer waiting kept the
+/// node the trusted path minted for it until a reboot.
+#[test]
+fn an_always_for_a_question_not_waiting_revokes_its_node() {
+    let (host, mut shell) = with_calls(vec![]);
+    let answered = shell.eval("answer 4 always-kind once=1 rule=6");
+    assert!(answered.text.contains("nothing to confirm"), "{answered:?}");
+    assert_eq!(*host.revoked.borrow(), [6]);
+}

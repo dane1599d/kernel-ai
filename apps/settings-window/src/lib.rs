@@ -118,6 +118,8 @@ enum Pending {
     Read(Read),
     /// Put the answer on a page as the rows of this app.
     Rows(String),
+    /// A long list's later page: the answer so far, and the page to come.
+    More(Read, Vec<u8>),
     /// Show the change.
     Change(Applied),
 }
@@ -248,23 +250,16 @@ impl SettingsWindow {
         };
         let (_, what) = self.pending.remove(at);
         match (what, outcome) {
-            (_, Err(why)) => log(&alloc::format!("settings: refused: {why}")),
-            (Pending::Read(read), Ok(answer)) => match read.apply(&mut self.settings, &answer) {
-                Ok(apps) => {
-                    // What each page was given, for the log: the window is
-                    // private to the agent, so a case reads it here.
-                    log(&alloc::format!(
-                        "settings: {}",
-                        read.summary(&self.settings, apps.len())
-                    ));
-                    // Only `grants` names apps to ask for; another read's answer
-                    // must not empty the queue.
-                    if read == Read::Grants {
-                        self.to_ask = apps;
-                    }
+            (what, Err(why)) => {
+                // A list that could not be read is not an empty one.
+                if let Pending::Read(read) | Pending::More(read, _) = what {
+                    self.settings
+                        .set_unread(read == Read::Net, read == Read::Rules);
                 }
-                Err(why) => log(&alloc::format!("settings: {}: {why}", read.request())),
-            },
+                log(&alloc::format!("settings: refused: {why}"));
+            }
+            (Pending::More(read, have), Ok(answer)) => self.page_of(read, have, answer),
+            (Pending::Read(read), Ok(answer)) => self.page_of(read, Vec::new(), answer),
             (Pending::Rows(app), Ok(answer)) => {
                 match replies::apply_rows(&mut self.settings, &app, &answer) {
                     Ok(()) => log(&alloc::format!(
@@ -274,7 +269,12 @@ impl SettingsWindow {
                     Err(why) => log(&alloc::format!("settings: grants {app}: {why}")),
                 }
             }
-            (Pending::Change(then), Ok(_)) => {
+            (Pending::Change(then), Ok(answer)) => {
+                // Its ok text is kept (#1344's review): a removal the shell could
+                // not save holds for this boot only, and the log says so.
+                if let Some(note) = replies::change_note(&answer) {
+                    log(&note);
+                }
                 // What the shell kept is read again, so the page shows its word
                 // for it and not only what was asked.
                 let again = then.read_back();
@@ -306,6 +306,55 @@ impl SettingsWindow {
         // comes.
         self.ask_rows();
         self.present_logged();
+    }
+
+    /// A read's answer, or one page of it: `net` and `rules` end in `more <n>`
+    /// when lines are left, and the next page is asked for; the whole is put
+    /// on the pages when the last one comes.
+    fn page_of(&mut self, read: Read, mut have: Vec<u8>, answer: Vec<u8>) {
+        let paged = matches!(read, Read::Net | Read::Rules);
+        if let Some((body, next)) = replies::split_more(&answer).filter(|_| paged) {
+            have.extend_from_slice(body);
+            have.push(b'\n');
+            if have.len() > replies::MAX_ANSWER {
+                self.settings
+                    .set_unread(read == Read::Net, read == Read::Rules);
+                log(&alloc::format!(
+                    "settings: {}: the answer is too large",
+                    read.request()
+                ));
+                return;
+            }
+            let ticket = send(&alloc::format!("{} {next}", read.request()));
+            self.wait_for(ticket, Pending::More(read, have));
+            return;
+        }
+        have.extend_from_slice(&answer);
+        self.put(read, &have);
+    }
+
+    /// Puts a read's whole answer on the pages.
+    fn put(&mut self, read: Read, answer: &[u8]) {
+        match read.apply(&mut self.settings, answer) {
+            Ok(apps) => {
+                // What each page was given, for the log: the window is
+                // private to the agent, so a case reads it here.
+                log(&alloc::format!(
+                    "settings: {}",
+                    read.summary(&self.settings, apps.len())
+                ));
+                // Only `grants` names apps to ask for; another read's answer
+                // must not empty the queue.
+                if read == Read::Grants {
+                    self.to_ask = apps;
+                }
+            }
+            Err(why) => {
+                self.settings
+                    .set_unread(read == Read::Net, read == Read::Rules);
+                log(&alloc::format!("settings: {}: {why}", read.request()));
+            }
+        }
     }
 
     /// `settings_open`: shows a page, by the word the agent uses for it.
@@ -411,5 +460,38 @@ mod tests {
             assert!(why.contains(page_word(page)), "{why}");
         }
         assert!(why.contains("network"), "{why}");
+    }
+
+    /// The answer to `net` in pages: the second is asked for when the first
+    /// ends in `more`, and the lists of both are put on the page together.
+    #[test]
+    fn a_list_in_pages_is_asked_for_again_and_shown_whole() {
+        let mut app = SettingsWindow::new(0);
+        app.pending.push((7, Pending::Read(Read::Net)));
+        let first = b"#1 weather a.example always\n#2 weather b.example always\nmore 2".to_vec();
+        app.on_reply(7, Ok(first));
+        assert!(app.settings.net.is_empty(), "not shown until the last page");
+        assert!(matches!(
+            app.pending.last(),
+            Some((_, Pending::More(Read::Net, _)))
+        ));
+        let last = b"#3 weather c.example session".to_vec();
+        let ticket = app.pending.last().unwrap().0;
+        app.on_reply(ticket, Ok(last));
+        let ids: Vec<u32> = app.settings.net.iter().map(|n| n.id).collect();
+        assert_eq!(ids, [1, 2, 3]);
+        assert!(!app.settings.net_unread);
+    }
+
+    /// A refused read is not an empty list: the page says it could not be read.
+    #[test]
+    fn a_refused_list_is_unread_not_empty() {
+        let mut app = SettingsWindow::new(0);
+        app.pending.push((7, Pending::Read(Read::Net)));
+        app.on_reply(7, Err(String::from("too long")));
+        assert!(app.settings.net_unread && !app.settings.rules_unread);
+        app.pending.push((8, Pending::Read(Read::Net)));
+        app.on_reply(8, Ok(b"#1 weather a.example always".to_vec()));
+        assert!(!app.settings.net_unread && app.settings.net.len() == 1);
     }
 }

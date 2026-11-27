@@ -8,7 +8,9 @@
 //!
 //! Since P2 they are kept in `/system/state/rules` as `kai-grants 1` rule lines
 //! (ADR 0001 D8), until `powerbox` owns `/system/grants`. The file is read as
-//! hostile and refused whole on any bad line. A rule read back is a record with
+//! hostile: a record for an action this shell does not have is set aside on its
+//! own, and any other bad line refuses the whole file, which the shell then
+//! keeps as `rules.refused` and starts with none. A rule read back is a record with
 //! no grant node: only the trusted path makes one, on the keystroke. So until
 //! "Always allow" is chosen again, it waives no ask whose owner checks the rule
 //! itself (the stops), and the shell's own asks only.
@@ -119,14 +121,21 @@ impl Rules {
     /// Writes the rule an "Always allow" answer chose: for the whole action, or
     /// (`for_target`) for the offer's target only, made by menu `prompt` at
     /// `made_ns`. The same rule twice is one rule; chosen again, a rule read back
-    /// from disk takes the new node.
+    /// from disk takes the new node. With the rule's id, the new node when it was
+    /// not kept, which the caller revokes: a rule chosen again that has its node.
     pub fn add(
         &mut self,
         offer: &Offer,
         for_target: bool,
         grant: Option<u32>,
         (prompt, made_ns): (u64, u64),
-    ) -> Result<u64, &'static str> {
+    ) -> Result<(u64, Option<u32>), &'static str> {
+        // Only an OS row's rule is written, so every rule written reads back
+        // (`restore` keeps only those).
+        if agentabi::find(&agentabi::ROWS, offer.action).is_none_or(|row| row.name != offer.action)
+        {
+            return Err("a rule is kept only for an OS row");
+        }
         let target = match (for_target, &offer.target, offer.kind) {
             (true, Some(target), _) if !keepable_target(target) => {
                 return Err("a rule cannot be kept for that target");
@@ -142,8 +151,9 @@ impl Rules {
         {
             if rule.restored {
                 (rule.grant, rule.restored) = (grant, false);
+                return Ok((rule.id, None));
             }
-            return Ok(rule.id);
+            return Ok((rule.id, grant.filter(|g| rule.grant != Some(*g))));
         }
         if self.list.len() >= MAX_RULES {
             return Err("there are too many rules; remove one with rules_remove");
@@ -158,7 +168,7 @@ impl Rules {
             made_ns,
             restored: false,
         });
-        Ok(self.next)
+        Ok((self.next, None))
     }
 
     /// The rules as `/system/state/rules` keeps them.
@@ -277,16 +287,16 @@ mod tests {
         let mut rules = Rules::default();
         let build = offer(Some("build-3"), true);
         assert_eq!(rules.covering(&build), None);
-        assert_eq!(rules.add(&build, true, None, (0, 0)), Ok(1));
+        assert_eq!(rules.add(&build, true, None, (0, 0)), Ok((1, None)));
         assert_eq!(rules.covering(&build), Some(1));
         assert_eq!(rules.covering(&offer(Some("llm"), true)), None);
-        assert_eq!(rules.add(&build, false, None, (0, 0)), Ok(2));
+        assert_eq!(rules.add(&build, false, None, (0, 0)), Ok((2, None)));
         assert_eq!(rules.covering(&offer(Some("llm"), true)), Some(2));
         // A per-host ask is not waived by a rule for the whole action.
         assert_eq!(rules.covering(&offer(Some("llm"), false)), None);
         assert_eq!(
             rules.add(&build, true, None, (0, 0)),
-            Ok(1),
+            Ok((1, None)),
             "the same rule twice is one"
         );
         assert_eq!(rules.list(), "#1 service_stop \"build-3\"\n#2 service_stop");
@@ -360,9 +370,9 @@ rule 2 action=set_policy target=- from=prompt:213 made=1970-01-01T00:00:00Z
                 .contains("#1 service_stop \"build-3\" (asks again")
         );
         // Chosen again, it takes the new node, under the same number.
-        assert_eq!(back.add(&build, true, Some(9), (300, 0)), Ok(1));
+        assert_eq!(back.add(&build, true, Some(9), (300, 0)), Ok((1, None)));
         assert_eq!(back.covering(&build), Some(1));
-        assert_eq!(back.add(&policy, false, None, (301, 0)), Ok(2));
+        assert_eq!(back.add(&policy, false, None, (301, 0)), Ok((2, None)));
     }
 
     #[test]
@@ -414,7 +424,7 @@ rule 3 action=set_policy target=- from=prompt:5 made=2026-11-02T10:22:00Z
             target: None,
             kind: true,
         };
-        assert_eq!(rules.add(&offer, false, None, (6, 0)), Ok(4));
+        assert_eq!(rules.add(&offer, false, None, (6, 0)), Ok((4, None)));
     }
 
     /// #9, #15: a target with a space, an `=`, or that is `-` does not read
@@ -440,5 +450,37 @@ rule 3 action=set_policy target=- from=prompt:5 made=2026-11-02T10:22:00Z
             assert!(!keepable_target(target), "{target:?}");
         }
         assert!(keepable_target("build-3"));
+    }
+}
+
+#[cfg(test)]
+mod chosen_again {
+    use super::*;
+
+    /// #1344's review: the same rule chosen again, with its own node, dropped
+    /// the new node unrevoked; it is handed back for the caller to revoke.
+    #[test]
+    fn a_rule_chosen_again_hands_back_the_node_it_does_not_keep() {
+        let mut rules = Rules::default();
+        let stop = Offer {
+            action: "service_stop",
+            target: Some(String::from("build-3")),
+            kind: true,
+        };
+        assert_eq!(rules.add(&stop, false, Some(5), (1, 0)), Ok((1, None)));
+        assert_eq!(rules.add(&stop, false, Some(6), (2, 0)), Ok((1, Some(6))));
+        assert_eq!(rules.add(&stop, false, Some(5), (3, 0)), Ok((1, None)));
+    }
+
+    /// An app's row writes no rule: a rule written always reads back.
+    #[test]
+    fn a_rule_is_written_only_for_an_os_row() {
+        let mut rules = Rules::default();
+        let app = Offer {
+            action: "notes_clear",
+            target: None,
+            kind: true,
+        };
+        assert!(rules.add(&app, false, None, (1, 0)).is_err());
     }
 }

@@ -35,13 +35,22 @@ impl Shell {
                         .audit(&format!("a rule on disk was set aside: {why}"));
                 }
             }
-            Err(why) => {
-                self.host.audit(&format!(
-                    "the rules on disk were refused ({why}); starting with none, \
-                     and the file is not written over"
-                ));
-                self.unread.push(RULES);
-            }
+            // Kept under another name, so the rules made from now on can be
+            // saved: refused once, a file would be refused at every start and no
+            // rule would ever save again.
+            Err(why) => match self.host.rules_set_aside(&text) {
+                Ok(()) => self.host.audit(&format!(
+                    "the rules on disk were refused ({why}); they are kept as \
+                     rules.refused, and the shell starts with none"
+                )),
+                Err(not) => {
+                    self.host.audit(&format!(
+                        "the rules on disk were refused ({why}) and could not be kept \
+                         aside ({not}); starting with none, and the file is not written over"
+                    ));
+                    self.unread.push(RULES);
+                }
+            },
         }
         self
     }
@@ -68,11 +77,13 @@ impl Shell {
         }
     }
 
-    /// Why `what`'s file may not be written: it could not be read at start.
+    /// Why `what`'s file may not be written: it could not be read at start, or
+    /// was refused and could not be kept aside.
     pub(crate) fn not_unread(&self, what: &str) -> Result<(), String> {
         match self.unread.contains(&what) {
             true => Err(format!(
-                "the {what} on disk could not be read at start, so it is not written over"
+                "the {what} on disk could not be read at start, or was refused, so it \
+                 is not written over"
             )),
             false => Ok(()),
         }

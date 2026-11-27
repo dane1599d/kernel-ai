@@ -5,6 +5,8 @@
 
 #[path = "../../testkit/hostile.rs"]
 mod hostile;
+#[path = "hostile/image.rs"]
+mod image;
 
 use hostile::{XorShift, fuzz, sweep_fields};
 use kaifs::format::{self, BlockPtr, FLAG_SEALED, KIND_NODE, KIND_RECORD, PTR_BYTES, Superblock};
@@ -489,4 +491,62 @@ fn mutated_info_cbor_never_panics_and_what_decodes_round_trips() {
     let mut maps = vec![0x82, 0x01, 0xBB];
     maps.extend_from_slice(&[0x7F; 8]);
     total(&maps);
+}
+
+/// What the `kaifs_image` body may hold at once: the disk itself, in memory,
+/// and no more than its size again (1.2 times it, measured).
+const IMAGE_PEAK: usize = 2 * image::IMAGE_BYTES;
+
+/// Edits for the `kaifs_image` body: one to four of them, to a block the
+/// newest commit reaches, to any block, or a raw value, mostly near the front
+/// of a block where a node's header and items lie; one in eight unsigned.
+fn image_edits(rng: &mut XorShift) -> Vec<u8> {
+    let mut data = vec![image::EDITS | [0, image::FLIP][usize::from(rng.below(8) == 0)]];
+    for _ in 0..1 + rng.below(4) {
+        let target = match rng.below(8) {
+            0 => image::VALUE,
+            1 => 0x80 | rng.below(0x80) as u8,
+            _ => rng.below(0x80) as u8,
+        };
+        let at = [rng.below(256), rng.below(BLOCK)][rng.below(2)] as u16;
+        let len = 1 + rng.below(16);
+        data.push(target);
+        data.extend_from_slice(&at.to_le_bytes());
+        data.push(len as u8);
+        for _ in 0..len {
+            data.push([0, 0xFF, 1, rng.next() as u8][rng.below(4)]);
+        }
+    }
+    data
+}
+
+/// The `kaifs_image` fuzz body (P6 G29) on hostile images, signed and not:
+/// every reader answers or refuses, never panics, never holds more than
+/// [`IMAGE_PEAK`] at once, and a check that passes is never wrong.
+#[test]
+fn the_kaifs_image_body_answers_or_refuses_hostile_images_within_their_size() {
+    let seeds = image::seeds();
+    let mut most = 0;
+    let mut run = |data: &[u8]| {
+        let ((), peak) = hostile::peak_alloc(|| image::kaifs_image(data));
+        assert!(peak <= IMAGE_PEAK, "{peak} bytes at once");
+        most = most.max(peak);
+    };
+    for seed in &seeds {
+        run(seed);
+    }
+    run(&[]);
+    run(&[image::EDITS]);
+    let cases = if cfg!(debug_assertions) { 300 } else { 3_000 };
+    let mut rng = XorShift::new(0x29_0001);
+    for _ in 0..cases {
+        run(&image_edits(&mut rng));
+    }
+    // Raw disks: the sample mutated, with its slots signed again and not.
+    for flag in [0, image::FLIP] {
+        let mut raw = seeds[0].clone();
+        raw[0] = flag;
+        fuzz(&raw, 0x29_0002 + u64::from(flag), cases / 10, &mut run);
+    }
+    eprintln!("kaifs_image: at most {most} bytes at once");
 }

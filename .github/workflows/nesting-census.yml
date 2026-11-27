@@ -1,0 +1,181 @@
+# The nesting census (P6 row 1, ADR 0006 step 1; first run as spike S06-1, run
+# 45734622772): what each GitHub runner type we use offers a guest hypervisor.
+# By workflow_dispatch only, and never a gate. Run it again when the runner pool
+# may have changed, or before choosing runners for an SVM or VMX case.
+#
+# Each Linux run prints the host CPU's vendor and model, /dev/kvm, and
+# kvm_amd/kvm_intel `nested`, then boots the `nesting-census` case under KVM
+# (-cpu max) and under TCG; the kernel logs `nesting: vendor=... vmx= svm= npt=
+# nrips= ...` from CPUID 1 and 0x8000_000A (cpufeat::Nesting). macOS runs print
+# the host facts only. The summary job tabulates every run.
+name: nesting census
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nesting-census-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  qemu:
+    name: QEMU in the cache
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/qemu
+
+  prebuild:
+    name: Build the boot artifacts once
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.build.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for live components
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: qemu
+          save-if: false
+      - id: build
+        run: |
+          cargo xtask build --spikes --out "$RUNNER_TEMP/prebuilt"
+          echo "sha=$(sha256sum "$RUNNER_TEMP/prebuilt/manifest.txt" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: prebuilt
+          path: ${{ runner.temp }}/prebuilt
+          retention-days: 3
+    timeout-minutes: 30
+
+  linux:
+    name: census (ubuntu-24.04, run ${{ matrix.run }})
+    runs-on: ubuntu-24.04
+    needs: [qemu, prebuild]
+    strategy:
+      fail-fast: false
+      matrix:
+        run: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host facts
+        run: |
+          mkdir -p census
+          f=census/host.txt
+          {
+            echo "runner=ubuntu-24.04"
+            echo "run=${{ matrix.run }}"
+            echo "vendor=$(grep -m1 '^vendor_id' /proc/cpuinfo | cut -d: -f2 | xargs)"
+            echo "model=$(grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2 | xargs)"
+            echo "nproc=$(nproc)"
+            echo "dev_kvm=$([ -e /dev/kvm ] && echo yes || echo no)"
+            for m in kvm_amd kvm_intel; do
+              p=/sys/module/$m/parameters/nested
+              echo "${m}_nested=$([ -r $p ] && cat $p || echo absent)"
+            done
+            echo "host_flags=$(grep -m1 '^flags' /proc/cpuinfo | grep -o -w -E 'svm|vmx|npt|nrip_save|decodeassists|avic|ept' | sort -u | xargs echo)"
+          } | tee "$f"
+      - uses: ./.github/actions/qemu
+      - name: Allow KVM for the runner user
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install pinned toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Install the WebAssembly target for live components
+        run: rustup target add wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: qemu
+          save-if: false
+      - name: Fetch the locked crates
+        run: cargo fetch --locked
+      - uses: actions/download-artifact@v4
+        with:
+          name: prebuilt
+          path: ${{ runner.temp }}/prebuilt
+      - name: Boot nesting-census under KVM and TCG
+        env:
+          XTASK_CASE: nesting-census
+          PREBUILT_SHA: ${{ needs.prebuild.outputs.sha }}
+        run: |
+          for accel in kvm tcg; do
+            log="census/boot-$accel.log"
+            cargo xtask test --accel $accel --timeout 300 \
+              --prebuilt "$RUNNER_TEMP/prebuilt" --prebuilt-sha "$PREBUILT_SHA" 2>&1 | tee "$log" || true
+            line=$(grep -o 'nesting: vendor=.*' "$log" | head -1 | tr -d '\r')
+            echo "${accel}_guest=${line:-none}" | tee -a census/host.txt
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: census-linux-${{ matrix.run }}
+          path: census/host.txt
+    timeout-minutes: 45
+
+  macos:
+    name: census (macos-latest, run ${{ matrix.run }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        run: [1, 2]
+    steps:
+      - name: Host facts
+        run: |
+          mkdir -p census
+          {
+            echo "runner=macos-latest"
+            echo "run=${{ matrix.run }}"
+            echo "vendor=$(sysctl -n machdep.cpu.vendor 2>/dev/null || uname -m)"
+            echo "model=$(sysctl -n machdep.cpu.brand_string)"
+            echo "nproc=$(sysctl -n hw.ncpu)"
+            echo "dev_kvm=no"
+            echo "kvm_amd_nested=absent"
+            echo "kvm_intel_nested=absent"
+            echo "hv_support=$(sysctl -n kern.hv_support 2>/dev/null || echo unknown)"
+            echo "host_flags=$(sysctl -n machdep.cpu.features 2>/dev/null | tr ' ' '\n' | grep -i -w -E 'vmx|svm' | xargs echo)"
+            echo "kvm_guest=not booted"
+            echo "tcg_guest=not booted"
+          } | tee census/host.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: census-macos-${{ matrix.run }}
+          path: census/host.txt
+
+  summary:
+    name: summary
+    needs: [linux, macos]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: census-*
+          path: all
+      - name: Tabulate
+        run: |
+          get() { grep -m1 "^$1=" "$2" | cut -d= -f2-; }
+          guest() { echo "$1" | grep -o -E "(vmx|svm|npt|nrips)=[01]" | tr '\n' ' '; }
+          {
+            echo "| runner | run | vendor | model | /dev/kvm | kvm_amd nested | kvm_intel nested | host flags | KVM guest | TCG guest |"
+            echo "|---|---|---|---|---|---|---|---|---|---|"
+            for f in $(ls all/*/host.txt | sort -V); do
+              echo "| $(get runner $f) | $(get run $f) | $(get vendor $f) | $(get model $f) | $(get dev_kvm $f) | $(get kvm_amd_nested $f) | $(get kvm_intel_nested $f) | $(get host_flags $f) | $(guest "$(get kvm_guest $f)") | $(guest "$(get tcg_guest $f)") |"
+            done
+            echo
+            echo "Raw guest lines:"
+            echo '```'
+            for f in $(ls all/*/host.txt | sort -V); do
+              echo "$(get runner $f) $(get run $f) kvm: $(get kvm_guest $f)"
+              echo "$(get runner $f) $(get run $f) tcg: $(get tcg_guest $f)"
+            done
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"

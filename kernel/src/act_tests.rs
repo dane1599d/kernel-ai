@@ -667,24 +667,22 @@ fn rule() -> Result<(), &'static str> {
         allowed.granted,
     ))?;
     allow::end(&allowed);
-    let added =
-        "ok Rule #1 added; `rules` lists it.\nDone: process spin-a stopped (1) (was running)";
+    // This boot has no /system/state, so no rule is saved: the add and the
+    // removal each say they hold for this boot, and why, whole (#1344's review:
+    // a check of the ends alone let any save error pass).
+    let added = "ok Rule #1 added for this boot: the rules were not saved \
+        (no /system/state here), so a restart may lose it; `rules` lists it.\n\
+        Done: process spin-a stopped (1) (was running)";
     let ruled = "ok Done: process spin-b stopped (1) (was running)";
-    let removed = "ok Removed rule #1 (process_stop); it asks again";
+    let removed = "ok Removed rule #1 (process_stop) for this boot: the rules were not \
+        saved (no /system/state here), so it may come back after a restart";
     for (got, want) in [
         (reply, added),
         (reply_to("stop spin-b")?, ruled),
         (reply_to("rules")?, "ok #1 process_stop"),
         (reply_to("rules_remove 1")?, removed),
     ] {
-        // A boot with no /system/state saves no rules: the removal holds for
-        // this boot, and its ok reply says a restart may bring it back.
-        let unsaved = want == removed
-            && got.starts_with(
-                "ok Removed rule #1 (process_stop) for this boot: the rules were not saved",
-            )
-            && got.ends_with("so it may come back after a restart");
-        if got != want && !unsaved {
+        if got != want {
             log!("act-rule: wanted {want:?}, got {got:?}");
             return Err("act-rule: a line got the wrong answer");
         }

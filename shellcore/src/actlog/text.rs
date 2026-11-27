@@ -151,6 +151,17 @@ pub fn parse_setting_aside(text: &str) -> Result<(Vec<Record>, Vec<u64>), ParseE
     };
     let mut records: Vec<Record> = Vec::new();
     let mut aside: Vec<u64> = Vec::new();
+    // Entries and system records share one counter, so an id names one
+    // record. Read twice, `undo` would name the newer and revert the older,
+    // whose changes are not the ones it named.
+    let mut ids: Vec<u64> = Vec::new();
+    let mut once = |reader: &Reader, id: u64| match ids.contains(&id) {
+        true => reader.fail("an id is used twice"),
+        false => {
+            ids.push(id);
+            Ok(())
+        }
+    };
     while !reader.rest.is_empty() {
         if records.len() == MAX_RECORDS {
             return reader.fail("too many records");
@@ -163,12 +174,17 @@ pub fn parse_setting_aside(text: &str) -> Result<(Vec<Record>, Vec<u64>), ParseE
             "E" | "U" => {
                 let mut put_aside = false;
                 let entry = reader.entry(tag, body, &mut put_aside)?;
+                once(&reader, entry.id)?;
                 if put_aside {
                     aside.push(entry.id);
                 }
                 records.push(Record::Entry(entry));
             }
-            "S" => records.push(Record::System(reader.system(body)?)),
+            "S" => {
+                let system = reader.system(body)?;
+                once(&reader, system.id)?;
+                records.push(Record::System(system));
+            }
             "R" | "O" | "C" => {
                 let len = length(body).ok_or_else(|| reader.error("a bad text length"))?;
                 let text = reader.text(len)?;

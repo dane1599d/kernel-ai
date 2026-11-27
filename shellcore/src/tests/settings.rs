@@ -98,7 +98,7 @@ fn a_profile_set_by_click_is_logged_as_the_click_and_undoes() {
 fn a_time_zone_by_click_saves_and_undoes() {
     let host = host();
     let mut shell = shell(&host);
-    let zone = |host: &FakeHost| crate::appearance::current(host).time_zone_min;
+    let zone = |host: &FakeHost| crate::appearance::current(host).unwrap().time_zone_min;
     let words = shell
         .settings(SETTINGS_APP, "appearance-set time_zone +02:00", true)
         .unwrap();
@@ -117,7 +117,7 @@ fn a_time_zone_by_click_saves_and_undoes() {
 fn appearance_set_by_click_saves_the_setting_is_logged_as_the_click_and_undoes() {
     let host = host();
     let mut shell = shell(&host);
-    let theme = |host: &FakeHost| crate::appearance::current(host).theme;
+    let theme = |host: &FakeHost| crate::appearance::current(host).unwrap().theme;
     let words = shell
         .settings(SETTINGS_APP, "appearance-set theme light", true)
         .unwrap();
@@ -133,7 +133,7 @@ fn appearance_set_by_click_saves_the_setting_is_logged_as_the_click_and_undoes()
             .settings(SETTINGS_APP, "appearance-set legible on", true)
             .is_ok()
     );
-    assert!(crate::appearance::current(host.as_ref()).legible);
+    assert!(crate::appearance::current(host.as_ref()).unwrap().legible);
     // look's refusal is the answer, and nothing is saved for it.
     let saved = host.appearance.borrow().clone();
     let refused = shell.settings(SETTINGS_APP, "appearance-set theme neon", true);
@@ -153,7 +153,7 @@ fn appearance_set_by_click_saves_the_setting_is_logged_as_the_click_and_undoes()
     assert_eq!(theme(&host), "light");
     // Undo takes back the newest change, legible, and leaves the theme.
     assert!(shell.eval("undo").text.starts_with("Undone: "));
-    assert!(!crate::appearance::current(host.as_ref()).legible);
+    assert!(!crate::appearance::current(host.as_ref()).unwrap().legible);
     assert_eq!(theme(&host), "light");
 }
 
@@ -167,10 +167,16 @@ fn undo_of_a_theme_change_says_the_theme_before_and_the_log_lists_it() {
         .settings(SETTINGS_APP, "appearance-set theme light", true)
         .unwrap();
     assert_eq!(shell.eval("undo"), ok("Undone: theme dark (was light)"));
-    assert_eq!(crate::appearance::current(host.as_ref()).theme, "dark");
+    assert_eq!(
+        crate::appearance::current(host.as_ref()).unwrap().theme,
+        "dark"
+    );
     assert!(shell.eval("log").text.contains("undo of #"));
     assert_eq!(shell.eval("undo"), ok("Undone: theme light (was dark)"));
-    assert_eq!(crate::appearance::current(host.as_ref()).theme, "light");
+    assert_eq!(
+        crate::appearance::current(host.as_ref()).unwrap().theme,
+        "light"
+    );
 }
 
 #[test]
@@ -544,4 +550,77 @@ fn a_saved_kept_app_that_takes_the_switch_unanswered_stays_kept() {
         later.settings(crate::settings::SETTINGS_APP, "keep-running on notes", true),
         Ok(String::from("notes keep-running is on already"))
     );
+}
+
+/// Turned off while still waiting at boot, a kept app is dropped from the
+/// retries and the file: it was answered "off already" and kept running.
+/// With `again`, the supervisor cannot reach it for the `keep off` either.
+fn off_while_waiting(again: bool) {
+    let host = host_with_keep("kai-keep 1\nnotes\n");
+    host.keep_fails.set(if again { 2 } else { 1 });
+    let mut shell = shell(&host);
+    let said = shell.settings(SETTINGS_APP, "keep-running off notes", true);
+    assert_eq!(said, Ok(String::from("notes keep-running off")));
+    assert_eq!(
+        shell.settings(SETTINGS_APP, "file apps", false),
+        Ok(String::new())
+    );
+    assert_eq!(*host.keep_file.borrow(), Some(String::from("kai-keep 1\n")));
+    host.clock.set(host.clock.get() + 1_000_000_000);
+    shell.retry_keep();
+    assert!(
+        !host.kept.borrow().contains(&(String::from("notes"), true)),
+        "{:?}",
+        host.kept.borrow()
+    );
+}
+
+#[test]
+fn a_kept_app_still_waiting_at_boot_can_be_turned_off() {
+    off_while_waiting(false);
+}
+
+#[test]
+fn a_waiting_app_turned_off_stays_off_when_the_supervisor_cannot_reach_it_either() {
+    off_while_waiting(true);
+}
+
+/// Settings' `rules` pages too: 32 rules of long targets, each marked as
+/// asking again, are more than one answer holds.
+#[test]
+fn settings_rules_pages_every_rule_within_one_answer() {
+    let host = host();
+    let target = "t".repeat(90);
+    let mut saved = String::from("kai-grants 1\n");
+    for n in 1..=32 {
+        saved += &format!(
+            "rule {n} action=service_stop target={target}{n} from=prompt:3 made=1970-01-01T00:00:00Z\n"
+        );
+    }
+    *host.rules_disk.borrow_mut() = Some(saved);
+    let mut shell = shell(&host);
+    let mut listed = 0;
+    let mut skip = 0;
+    loop {
+        let request = if skip == 0 {
+            String::from("rules")
+        } else {
+            format!("rules {skip}")
+        };
+        let page = shell.settings(SETTINGS_APP, &request, false).unwrap();
+        assert!(page.len() <= crate::settings::MAX_ANSWER, "{}", page.len());
+        let lines: Vec<&str> = page.lines().collect();
+        match lines.last().and_then(|l| l.strip_prefix("more ")) {
+            Some(n) => {
+                listed += lines.len() - 1;
+                skip = n.parse().unwrap();
+            }
+            None => {
+                listed += lines.len();
+                break;
+            }
+        }
+    }
+    assert_eq!(listed, 32);
+    assert!(skip > 0, "it took more than one page");
 }

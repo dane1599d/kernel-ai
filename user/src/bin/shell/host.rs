@@ -472,8 +472,8 @@ impl Host for System {
         }
     }
 
-    fn restart_read(&self) -> Option<String> {
-        self.state.read(files::RESTART).ok().flatten()
+    fn restart_read(&self) -> Result<Option<String>, String> {
+        self.state.read(files::RESTART)
     }
 
     /// As the keep-running list is: with the line's files, if it changed any.
@@ -491,8 +491,8 @@ impl Host for System {
         supervise(&supervise::keep::encode(app, on))
     }
 
-    fn appearance_read(&self) -> Option<String> {
-        self.state.read(files::APPEARANCE).ok().flatten()
+    fn appearance_read(&self) -> Result<Option<String>, String> {
+        self.state.read(files::APPEARANCE)
     }
 
     /// Saved with the line's files, as the rules are; then `desktop` paints in
@@ -528,6 +528,12 @@ impl Host for System {
                 .state
                 .write(files::RULES, text, self.files.next_action()),
         }
+    }
+
+    /// At start, before any line: its own action.
+    fn rules_set_aside(&self, text: &str) -> Result<(), String> {
+        self.state
+            .write(files::RULES_REFUSED, text, self.files.next_action())
     }
 
     fn net_grants_read(&self) -> Result<Option<String>, String> {

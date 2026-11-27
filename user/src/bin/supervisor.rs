@@ -681,21 +681,41 @@ fn withdraw_package(services: &mut [Service], withdraw: supervise::Run, caller: 
         return String::from("ok");
     }
     let name = service.spec.name.clone();
-    if let Some(pid) = service.pid {
-        service.withdrawn = true;
-        if let Err(error) = sys::kill(pid) {
+    // Saved cleared before the app is ended: a supervisor that dies in
+    // between must not restart the withdrawn version. A failed save puts the
+    // version back and leaves the app running; a failed kill puts it back and
+    // saves it again.
+    let pid = service.pid;
+    service.withdrawn = pid.is_some();
+    let withdrawn = supervise::withdraw_saving_first(
+        &mut *services,
+        |services| services[index].record.version.take(),
+        |services, version| services[index].record.version = version,
+        try_save,
+        |services| match services[index].pid {
+            Some(pid) => sys::kill(pid).map(drop),
+            None => Ok(()),
+        },
+    );
+    let service = &mut services[index];
+    match withdrawn {
+        Ok(()) => {}
+        Err(supervise::WithdrawError::NotSaved(error)) => {
             service.withdrawn = false;
-            println!("cannot end {name} (pid {pid}): {error:?}");
+            println!("{name} keeps running: cannot save it withdrawn: {error:?}");
+            return format!("err cannot save it: {error:?}");
+        }
+        Err(supervise::WithdrawError::NotEnded(error)) => {
+            service.withdrawn = false;
+            println!("cannot end {name} (pid {}): {error:?}", pid.unwrap_or(0));
             return format!("err cannot end it: {error:?}");
         }
     }
-    service.record.version = None;
     service.start_at_ms = None;
     println!(
         "{name} ends: pkg took package version {} back out",
         withdraw.version
     );
-    save(services);
     String::from("ok")
 }
 
@@ -823,9 +843,15 @@ fn on_exit(services: &mut [Service], exit: &ExitRecord) {
 }
 
 fn save(services: &[Service]) {
+    let _ = try_save(services);
+}
+
+/// [`save`], with the kernel's refusal for a caller that must not go on
+/// without the save (a withdraw). The refusal is printed either way.
+fn try_save(services: &[Service]) -> Result<(), kabi::Error> {
     let records: Vec<Record> = services.iter().map(|s| s.record.clone()).collect();
     let state = supervise::encode(&records);
-    if let Err(error) = sys::state_save(state.as_bytes()) {
-        println!("cannot save state: {error:?}");
-    }
+    sys::state_save(state.as_bytes())
+        .map(drop)
+        .inspect_err(|error| println!("cannot save state: {error:?}"))
 }

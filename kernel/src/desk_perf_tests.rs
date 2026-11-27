@@ -12,14 +12,18 @@
 //!   full composites with both open (Kai Desk PR 10).
 //!
 //! A gate under KVM: each miss is one `OVER BUDGET <figure> <value> ms
-//! (budget ...)` line. Shared runners are noisy, so it is best of two
-//! ([`kabi::perf`]): a scene with a miss is measured once more in this boot,
-//! both runs' lines are logged, and only a figure over its budget in both
-//! fails the case. Each budget is for a runner of baseline speed, so the case
+//! (budget ...)` line. Shared runners are noisy, so it is best of three
+//! ([`kabi::perf`]): a scene with a miss is measured again in this boot, a
+//! figure over in two runs a third time, every run's lines are logged, and
+//! only a figure over its budget in all of them fails the case. Each budget is for a runner of baseline speed, so the case
 //! judges a figure against its budget times the runner's measured slowness
 //! (below), never less than the budget ([`kabi::perf::misses_scaled`]);
 //! `desktop`'s own `OVER` lines use the bare budgets. Before a second run the
 //! reference is timed again and both runs are judged by the larger median.
+//! (g) is also judged against (a) from the same boot: its budget is the larger
+//! of that and [`kabi::perf::COMPOSITE_TIMES_HUNDREDTHS`] of (a)'s p50
+//! ([`kabi::perf::composite_budget`]), since the reference undersells the
+//! composite on some CPU classes.
 //! Under TCG the figures are recorded and not judged, with fewer frames.
 //!
 //! First `desktop` times `kabi::perf`'s fixed reference work. Under KVM a
@@ -161,9 +165,26 @@ fn scale(reference: u64) -> String {
 /// reference median), each `desktop` miss within it logged as such. Each
 /// figure is also logged with the ratio and itself over the ratio, so main's
 /// runs show how well the reference predicts it.
-fn judged<'a>(what: &str, run: &str, reply: &'a str, reference: u64) -> Vec<&'a str> {
+fn judged<'a>(
+    what: &str,
+    run: &str,
+    reply: &'a str,
+    reference: u64,
+    composite: Option<u64>,
+) -> Vec<&'a str> {
     use kabi::perf::{hundredths_text, per_baseline, ratio_hundredths};
     for figure in kabi::perf::figures(reply) {
+        if let Some(a) = composite.filter(|_| figure.name.starts_with(kabi::perf::COMPOSITE_FIGURE))
+        {
+            log!(
+                "desk-perf: {what}, {run}: {}: judged at {} ms, the larger of {} ms for the runner and {} times (a)'s p50 {} ms",
+                figure.name,
+                hundredths_text(kabi::perf::composite_budget(figure.budget, reference, a)),
+                hundredths_text(kabi::perf::scaled_budget(figure.budget, reference)),
+                hundredths_text(kabi::perf::COMPOSITE_TIMES_HUNDREDTHS),
+                hundredths_text(a)
+            );
+        }
         log!(
             "desk-perf: ratio: {what}, {run}: {}: {} {} ms at {}x, {} ms per baseline",
             figure.name,
@@ -173,13 +194,16 @@ fn judged<'a>(what: &str, run: &str, reply: &'a str, reference: u64) -> Vec<&'a 
             hundredths_text(per_baseline(figure.value, reference))
         );
     }
-    let over = kabi::perf::misses_scaled(reply, reference);
+    let over = kabi::perf::misses_judged(reply, reference, composite);
     for miss in kabi::perf::misses(reply) {
         if !over.contains(&miss) {
-            log!(
-                "desk-perf: {what}, {run}: within budget scaled {}x for the runner: {miss}",
-                scale(reference)
-            );
+            match composite.filter(|_| miss.starts_with(kabi::perf::COMPOSITE_FIGURE)) {
+                Some(_) => log!("desk-perf: {what}, {run}: within its judged budget: {miss}"),
+                None => log!(
+                    "desk-perf: {what}, {run}: within budget scaled {}x for the runner: {miss}",
+                    scale(reference)
+                ),
+            }
         }
     }
     for miss in &over {
@@ -188,13 +212,14 @@ fn judged<'a>(what: &str, run: &str, reply: &'a str, reference: u64) -> Vec<&'a 
     over
 }
 
-/// One scene's figures, best of two when `gated`: a run with a miss (against
-/// the scaled budgets) is run once more, and the figures over budget in both
-/// are returned. Before the second run the reference work is timed again, and
-/// both runs are judged by the larger median.
+/// One scene's figures, best of three when `gated`: a run with a miss (against
+/// the scaled budgets) is run once more, and a figure over budget in both is
+/// run a third time; those over in all three are returned. Before the second run the reference work is timed again, and
+/// both runs are judged by the larger median. `composite` is (a)'s p50, for (g).
 fn scene(
     gated: bool,
     reference: u64,
+    composite: Option<u64>,
     what: &str,
     mut run: impl FnMut() -> Result<Vec<u8>, &'static str>,
 ) -> Result<Vec<String>, &'static str> {
@@ -203,11 +228,11 @@ fn scene(
     if !gated {
         return Ok(Vec::new());
     }
-    let over = judged(what, "first run", &first, reference);
+    let over = judged(what, "first run", &first, reference, composite);
     if over.is_empty() {
         return Ok(Vec::new());
     }
-    log!("desk-perf: {what}: measured once more, best of two");
+    log!("desk-perf: {what}: measured once more, best of three");
     let remeasured = reference_ns()?;
     let judging = kabi::perf::judging_reference(reference, remeasured);
     log!(
@@ -216,15 +241,33 @@ fn scene(
     );
     let over = match judging == reference {
         true => over,
-        false => judged(what, "first run, judged again", &first, judging),
+        false => judged(what, "first run, judged again", &first, judging, composite),
     };
     if over.is_empty() {
         return Ok(Vec::new());
     }
     let second = run()?;
     let second = String::from_utf8_lossy(&second);
-    let again = judged(what, "second run", &second, judging);
-    Ok(kabi::perf::still_over(&over, &again)
+    let again = judged(what, "second run", &second, judging, composite);
+    let over = kabi::perf::still_over(&over, &again);
+    if over.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Two misses in a row can both be a stall on the runner (main's runs show
+    // a few frames of 25 to 50 ms, and with n=300 four of them make the p99),
+    // where a real slowdown moves every run. A third run settles it; the
+    // budget is the same.
+    log!("desk-perf: {what}: over in two runs, measured a third time, best of three");
+    let remeasured = reference_ns()?;
+    let judging = kabi::perf::judging_reference(judging, remeasured);
+    log!(
+        "desk-perf: {what}: the reference work again: {remeasured} ns; judged at {}x",
+        scale(judging)
+    );
+    let third = run()?;
+    let third = String::from_utf8_lossy(&third);
+    let last = judged(what, "third run", &third, judging, composite);
+    Ok(kabi::perf::still_over(&over, &last)
         .into_iter()
         .map(String::from)
         .collect())
@@ -311,12 +354,29 @@ pub fn check() -> Result<(), &'static str> {
     }
     let frames = if kvm { KVM_FRAMES } else { TCG_FRAMES };
     let request = format!("perf scenes {frames}");
-    let mut misses = scene(gated, reference, "(a)-(c)", || perf(&request))?;
+    // (a)'s p50, the larger over its runs: what (g) is also judged against.
+    let mut composite = None::<u64>;
+    let scenes = || {
+        let reply = perf(&request)?;
+        let p50 = kabi::perf::p50(
+            &String::from_utf8_lossy(&reply),
+            kabi::perf::COMPOSITE_REFERENCE,
+        );
+        composite = composite.max(p50);
+        Ok(reply)
+    };
+    let mut misses = scene(gated, reference, None, "(a)-(c)", scenes)?;
     crate::claim_tests::type_keys(&CTRL_SPACE);
     threads::sleep_ms(SETTLE_MS);
-    misses.extend(scene(gated, reference, "(e)", keys)?);
-    misses.extend(scene(gated, reference, "(f)", loaded_drag(gated))?);
-    misses.extend(scene(gated, reference, "(g)", open_scene(frames))?);
+    misses.extend(scene(gated, reference, None, "(e)", keys)?);
+    misses.extend(scene(gated, reference, None, "(f)", loaded_drag(gated))?);
+    misses.extend(scene(
+        gated,
+        reference,
+        composite,
+        "(g)",
+        open_scene(frames),
+    )?);
     log!("desk-perf: the figures are in");
     if !kvm {
         log!("desk-perf: recorded without KVM, not judged");
@@ -332,10 +392,10 @@ pub fn check() -> Result<(), &'static str> {
         return Ok(());
     }
     for miss in &misses {
-        log!("desk-perf: OVER BUDGET in both runs: {miss}");
+        log!("desk-perf: OVER BUDGET in every run: {miss}");
     }
     log!(
-        "desk-perf: judged under KVM: {} figures over budget in both runs",
+        "desk-perf: judged under KVM: {} figures over budget in every run",
         misses.len()
     );
     match misses.is_empty() {

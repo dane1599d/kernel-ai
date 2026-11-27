@@ -602,3 +602,81 @@ fn a_seventeenth_goal_is_refused_before_the_ask_and_set_once_one_ends() {
     let set = set.expect("a card once a goal ended");
     assert!(set.text.starts_with("Goal 17 set"), "{set:?}");
 }
+
+/// A joined folder name is the name's words (#1467 review): its "delete"
+/// names no row and its "not" negates none, so "sort the files in my
+/// do-not-delete folder" is a goal that lists files, with no trash or remove
+/// in it and no refusal.
+#[test]
+fn a_cue_inside_a_folder_name_adds_no_row() {
+    let scope = crate::goalscope::scope("sort the files in my do-not-delete folder", |_| Ok(()));
+    assert_eq!(
+        scope.map(|scope| scope.rows),
+        Ok(alloc::vec!["fs_list".to_string()])
+    );
+    // A delete said outside a name is still read, and its negation too.
+    let scope = crate::goalscope::scope("sort notes/q3 and never delete anything", |_| Ok(()));
+    assert!(scope.is_err(), "{scope:?}");
+    // A joined word of only negation is no name: it still says not to
+    // (#1467's round 20).
+    for line in [
+        "sort notes/q3 and do-not move anything",
+        "sort notes/q3 and don't-ever move anything",
+    ] {
+        let scope = crate::goalscope::scope(line, |_| Ok(()));
+        assert!(scope.is_err(), "{line}: {scope:?}");
+    }
+}
+
+/// A dropped name leaves its punctuation (#1467's round 21): "todo.txt," still
+/// ends the "don't" clause, so the move after it is asked for.
+#[test]
+fn a_dropped_name_keeps_its_clause_break() {
+    let scope = crate::goalscope::scope(
+        "sort notes/q3: don't touch todo.txt, move the rest into notes/old",
+        |_| Ok(()),
+    );
+    assert!(
+        scope
+            .as_ref()
+            .is_ok_and(|scope| scope.rows.iter().any(|r| r == "fs_move")),
+        "{scope:?}"
+    );
+}
+
+/// A negation joined to the cue is no name (#1467's round 21): "dont-delete
+/// the finals" still says not to, unless a determiner or a possessive makes
+/// it a folder's name.
+#[test]
+fn a_negation_joined_to_the_cue_still_refuses_a_goal() {
+    for line in [
+        "trash the drafts in notes/q3, dont-delete the finals",
+        "sort notes/q3, never-move the finals",
+        "sort notes/q3 and do-not-move anything",
+    ] {
+        let scope = crate::goalscope::scope(line, |_| Ok(()));
+        assert!(scope.is_err(), "{line}: {scope:?}");
+    }
+    for line in [
+        "sort the files in my do-not-delete folder",
+        "sort the files in Bob's dont-delete folder",
+    ] {
+        let scope = crate::goalscope::scope(line, |_| Ok(()));
+        assert_eq!(
+            scope.map(|scope| scope.rows),
+            Ok(alloc::vec!["fs_list".to_string()]),
+            "{line}"
+        );
+    }
+}
+
+/// A quoted negation still refuses the goal (#1467 review): its cue is read
+/// even inside the quotes.
+#[test]
+fn a_quoted_negation_still_refuses_a_goal() {
+    let scope = crate::goalscope::scope(
+        "sort the files in notes/ by topic, \"never move anything\"",
+        |_| Ok(()),
+    );
+    assert!(scope.is_err(), "{scope:?}");
+}

@@ -69,6 +69,7 @@ mod startup;
 pub use models::MODELS_APP;
 pub use netask::Connect as NetConnect;
 mod packages;
+mod paging;
 mod panel;
 mod pkg;
 mod power;
@@ -381,6 +382,8 @@ pub struct Shell {
     /// The state files read once at start that could not be read: never
     /// written over this run ([`Shell::read_at_start`]).
     unread: Vec<&'static str>,
+    /// Why the rule an "Always allow" just added was not saved, for its reply.
+    rule_unsaved: Option<String>,
     /// The ONCE of the menu answer now running, kept for the call's owner to
     /// check: the shell does not spend it (P1 task 14).
     owner_once: Option<u64>,
@@ -492,6 +495,7 @@ impl Shell {
             saved_log: None,
             unread: Vec::new(),
             owner_once: None,
+            rule_unsaved: None,
             steered: None,
             person_line: false,
             c_entry: None,

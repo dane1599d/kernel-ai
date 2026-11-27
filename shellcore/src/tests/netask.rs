@@ -211,6 +211,31 @@ fn always_lasts_a_restart_and_allow_does_not() {
     ));
 }
 
+/// bug-hunt-6 H6-17: a grant's `made=` is the wall clock, not the boot-relative
+/// `now_ns`, and 1970-01-01 where the firmware gave no date.
+#[test]
+fn a_saved_grant_is_stamped_with_the_wall_clock_not_the_boot_clock() {
+    for (wall, made) in [
+        (Some(1_794_637_800), "2026-11-14T06:30:00Z"),
+        (None, "1970-01-01T00:00:00Z"),
+    ] {
+        let host = FakeHost::new();
+        host.wall_clock.set(wall);
+        host.clock.set(312_000_000_000);
+        let mut shell = shell(&host);
+        assert_eq!(
+            shell.net_connect("weather", "maps.weather.example", CEILING),
+            NetConnect::Asked
+        );
+        let menu = card(&mut shell);
+        let once = host.mint(menu.id, menu.call());
+        let always = shell.eval_console(&format!("answer {} always-target once={once}", menu.id));
+        assert!(always.text.contains("(always)"), "{always:?}");
+        let disk = host.net_disk.borrow().clone().unwrap();
+        assert!(disk.contains(&format!("made={made}")), "{disk}");
+    }
+}
+
 /// bug-hunt-3 H3-24: the log read back after a restart has `_` for the
 /// spaces of `weather's network to …`; `undo` of an Always still takes the
 /// grant back, as its reply promised.
@@ -678,4 +703,51 @@ fn a_put_back_picks_the_kept_grant_by_its_app_and_host_not_its_id_alone() {
         ("maps", TILES)
     );
     assert_eq!(shell.net_connect("maps", TILES, MAPS), NetConnect::Asked);
+}
+
+/// Settings' `net` reads a page at a time: past what one answer holds, the
+/// reply was an error, and the page said no app may reach a host.
+#[test]
+fn settings_net_pages_every_grant_within_one_answer() {
+    let host = FakeHost::new();
+    let mut shell = shell(&host);
+    for i in 0..120 {
+        allowed(
+            &host,
+            &mut shell,
+            "weather",
+            &format!("h{i}.weather.example"),
+            CEILING,
+        );
+    }
+    let mut listed = Vec::new();
+    let mut skip = 0;
+    loop {
+        let request = if skip == 0 {
+            String::from("net")
+        } else {
+            format!("net {skip}")
+        };
+        let page = shell.settings(SETTINGS_APP, &request, false).unwrap();
+        assert!(page.len() <= crate::settings::MAX_ANSWER, "{}", page.len());
+        let mut lines: Vec<&str> = page.lines().collect();
+        let more = lines.last().and_then(|l| l.strip_prefix("more "));
+        let next = more.map(|n| n.parse::<usize>().unwrap());
+        if next.is_some() {
+            lines.pop();
+        }
+        listed.extend(lines.iter().map(|l| l.to_string()));
+        match next {
+            Some(n) => {
+                assert!(n > skip, "the next page moves on");
+                skip = n;
+            }
+            None => break,
+        }
+    }
+    assert_eq!(listed.len(), 120);
+    assert!(skip > 0, "it took more than one page");
+    assert!(listed[0].starts_with("#1 weather h0.weather.example"));
+    assert!(listed[119].contains("h119.weather.example"));
+    assert!(shell.settings(SETTINGS_APP, "net x", false).is_err());
 }

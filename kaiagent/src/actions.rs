@@ -101,7 +101,9 @@ fn entry(word: &str, rows: &[Action]) -> Result<Pattern, Refusal> {
         if !plain(group) {
             return Err(shape());
         }
-        if !agentabi::is_reserved(group) {
+        // Its first word says whose it is, as a row's does: `process_stop_*` and
+        // `fs_nosuch_*` are OS groups, held to the registry, not a package's.
+        if !agentabi::is_reserved(first_word(group)) {
             // A package's group: its name's `-` is `_` in its rows (ADR 0011), and the
             // name rule is the package rules' own.
             kaipkg::header::valid_name(&group.replace('_', "-")).map_err(|_| shape())?;
