@@ -8,9 +8,18 @@
 //! which it delivers the next frames itself: 50-62 µs of a frame's 52-98 µs
 //! under KVM (P5-S2's profile). A batch of buffers and one kick lets one exit
 //! fill them all.
+//!
+//! Even one kick a batch was a VM exit for every poll that handed a buffer
+//! back: 331 k of them per GiB, about 46 µs each, 92% of a download's time
+//! with the TSC as the clock (G67). So with VIRTIO_F_EVENT_IDX a batch is
+//! kicked only when the device asked to hear of it, read from its
+//! `avail_event` in wrapping arithmetic ([`netcore::kick::need_event`]), which
+//! `VirtQueue::should_notify` gets wrong at the 16-bit wrap.
 
+use crate::virtio::split::SplitTransport;
 use bitflags::bitflags;
 use core::fmt;
+use core::sync::atomic::{AtomicU64, Ordering, fence};
 use virtio_drivers::queue::VirtQueue;
 use virtio_drivers::transport::Transport;
 use virtio_drivers::{Error, Hal};
@@ -32,14 +41,50 @@ const TRANSMIT: u16 = 1;
 /// `virtio_net_hdr` with VERSION_1: 12 bytes, all zero on a send.
 pub const HEADER: usize = 12;
 
+/// Kicks of the receive and the transmit queue since boot.
+static RX_KICKS: AtomicU64 = AtomicU64::new(0);
+static TX_KICKS: AtomicU64 = AtomicU64::new(0);
+
+/// How many times the card was kicked for receive buffers and for frames to
+/// send since boot.
+pub fn kicks() -> (u64, u64) {
+    (
+        RX_KICKS.load(Ordering::Relaxed),
+        TX_KICKS.load(Ordering::Relaxed),
+    )
+}
+
+/// A transport that can read the device's `avail_event` for a queue.
+pub trait AvailEvent {
+    fn avail_event(&self, queue: u16) -> Option<u16>;
+}
+
+impl AvailEvent for SplitTransport {
+    fn avail_event(&self, queue: u16) -> Option<u16> {
+        SplitTransport::avail_event(self, queue)
+    }
+}
+
+/// One queue's available index as this driver keeps it, for the kick check.
+#[derive(Default)]
+struct Kick {
+    /// Buffers added since the last check.
+    added: usize,
+    /// The available index now: one up for each buffer added.
+    avail: u16,
+    /// The available index at the last check.
+    checked: u16,
+}
+
 pub struct VirtioNet<H: Hal, T: Transport, const SIZE: usize> {
     transport: T,
     rx: VirtQueue<H, SIZE>,
     tx: VirtQueue<H, SIZE>,
     mac: [u8; 6],
-    /// Receive buffers and frames to send added since each queue's last kick.
-    unkicked: usize,
-    unkicked_tx: usize,
+    /// Whether the device takes VIRTIO_F_EVENT_IDX.
+    event_idx: bool,
+    rx_kick: Kick,
+    tx_kick: Kick,
 }
 
 impl<H: Hal, T: Transport, const SIZE: usize> fmt::Debug for VirtioNet<H, T, SIZE> {
@@ -48,7 +93,7 @@ impl<H: Hal, T: Transport, const SIZE: usize> fmt::Debug for VirtioNet<H, T, SIZ
     }
 }
 
-impl<H: Hal, T: Transport, const SIZE: usize> VirtioNet<H, T, SIZE> {
+impl<H: Hal, T: Transport + AvailEvent, const SIZE: usize> VirtioNet<H, T, SIZE> {
     /// Negotiates VERSION_1 and MAC, and sets up both queues; Unsupported when
     /// the device lacks either.
     pub fn new(mut transport: T) -> Result<Self, Error> {
@@ -73,8 +118,9 @@ impl<H: Hal, T: Transport, const SIZE: usize> VirtioNet<H, T, SIZE> {
             rx,
             tx,
             mac,
-            unkicked: 0,
-            unkicked_tx: 0,
+            event_idx,
+            rx_kick: Kick::default(),
+            tx_kick: Kick::default(),
         })
     }
 
@@ -107,22 +153,17 @@ impl<H: Hal, T: Transport, const SIZE: usize> VirtioNet<H, T, SIZE> {
     pub unsafe fn add_receive(&mut self, buffer: &mut [u8]) -> Result<u16, Error> {
         // SAFETY: the caller keeps `buffer` for the device until it is popped.
         let token = unsafe { self.rx.add(&[], &mut [buffer])? };
-        self.unkicked += 1;
+        self.rx_kick.added += 1;
+        self.rx_kick.avail = self.rx_kick.avail.wrapping_add(1);
         Ok(token)
     }
 
-    /// Kicks the device for the receive buffers added since the last kick: one
-    /// exit for the whole batch. How many there were. Always, when any were
-    /// added: `VirtQueue::should_notify` compares the 16-bit ring indexes
-    /// without their wrap (`avail_idx >= avail_event + 1`), so once a batch
-    /// crosses 65,536 adds it says no, the device never hears, and receiving
-    /// stops (P5-S2, run 41896431110).
+    /// Kicks the device for the receive buffers added since the last check,
+    /// one exit for the whole batch, when it asked to hear of one of them
+    /// ([`notify`]). How many there were.
     pub fn kick_receive(&mut self) -> usize {
-        let added = core::mem::take(&mut self.unkicked);
-        if added != 0 {
-            self.transport.notify(RECEIVE);
-        }
-        added
+        let event_idx = self.event_idx;
+        notify(&mut self.transport, &mut self.rx_kick, RECEIVE, event_idx)
     }
 
     /// The token of the next filled receive buffer, if any. The fence orders
@@ -169,18 +210,16 @@ impl<H: Hal, T: Transport, const SIZE: usize> VirtioNet<H, T, SIZE> {
     pub unsafe fn transmit_begin(&mut self, buffer: &[u8]) -> Result<u16, Error> {
         // SAFETY: the caller keeps `buffer` for the device until it is popped.
         let token = unsafe { self.tx.add(&[buffer], &mut [])? };
-        self.unkicked_tx += 1;
+        self.tx_kick.added += 1;
+        self.tx_kick.avail = self.tx_kick.avail.wrapping_add(1);
         Ok(token)
     }
 
-    /// Kicks the device for the frames queued since the last kick, always
-    /// when there are any, for the wrap [`Self::kick_receive`] describes.
+    /// Kicks the device for the frames queued since the last check, as
+    /// [`Self::kick_receive`] does.
     pub fn kick_transmit(&mut self) -> usize {
-        let added = core::mem::take(&mut self.unkicked_tx);
-        if added != 0 {
-            self.transport.notify(TRANSMIT);
-        }
-        added
+        let event_idx = self.event_idx;
+        notify(&mut self.transport, &mut self.tx_kick, TRANSMIT, event_idx)
     }
 
     /// The token of the next sent buffer, if any.
@@ -197,4 +236,39 @@ impl<H: Hal, T: Transport, const SIZE: usize> VirtioNet<H, T, SIZE> {
         unsafe { self.tx.pop_used(token, &[buffer], &mut [])? };
         Ok(())
     }
+}
+
+/// Notifies the device of `queue`'s buffers added since the last check when
+/// it asked to hear of one of them, or always without EVENT_IDX or its
+/// `avail_event`. How many were added.
+///
+/// The fence orders `VirtQueue::add`'s store of the available index before
+/// the load of `avail_event`. The device stores `avail_event`, then reads the
+/// available index again before it waits (VirtIO 1.2, 2.7.10), so either it
+/// sees these buffers or this sees its word, never neither.
+fn notify<T: Transport + AvailEvent>(
+    transport: &mut T,
+    kick: &mut Kick,
+    queue: u16,
+    event_idx: bool,
+) -> usize {
+    let added = core::mem::take(&mut kick.added);
+    if added == 0 {
+        return 0;
+    }
+    let old = core::mem::replace(&mut kick.checked, kick.avail);
+    fence(Ordering::SeqCst);
+    let asked = match transport.avail_event(queue) {
+        Some(event) if event_idx => netcore::kick::need_event(event, kick.avail, old),
+        _ => true,
+    };
+    if asked {
+        transport.notify(queue);
+        match queue {
+            RECEIVE => &RX_KICKS,
+            _ => &TX_KICKS,
+        }
+        .fetch_add(1, Ordering::Relaxed);
+    }
+    added
 }

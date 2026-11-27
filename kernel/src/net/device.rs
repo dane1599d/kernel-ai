@@ -2,9 +2,10 @@
 //!
 //! - **Receive:** the card holds [`QUEUE_SIZE`] buffers. One handed back after
 //!   its frame is read waits in a stash, and the stash goes back to the card in
-//!   one batch with one kick after each poll ([`NicDevice::refill`]). A kick for
-//!   each buffer cost a VM exit per frame under KVM, 50-62 µs of 52-98
-//!   (spike P5-S2).
+//!   one batch after each poll ([`NicDevice::refill`]), kicked only when the
+//!   card asked to hear of it. A kick for each buffer cost a VM exit per frame
+//!   under KVM, 50-62 µs of 52-98 (spike P5-S2), and one for each poll still
+//!   92% of a download's time (G67).
 //! - **Send:** a frame is queued without waiting for the card and kicked with
 //!   the rest of its poll's frames; sent buffers are reclaimed before each
 //!   send.
@@ -15,7 +16,7 @@ use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::time::Instant;
 
@@ -25,6 +26,14 @@ const FRAME_MTU: usize = 1514;
 /// Set once the card filled a receive buffer it was never given, so that is
 /// logged once, not on every poll after.
 static STALLED: AtomicBool = AtomicBool::new(false);
+
+/// Frames received since boot.
+static RECEIVED: AtomicU64 = AtomicU64::new(0);
+
+/// How many frames the card received since boot.
+pub fn received() -> u64 {
+    RECEIVED.load(Ordering::Relaxed)
+}
 
 /// A received frame: its buffer, and where the frame lies in it.
 type Received = (Vec<u8>, usize, usize);
@@ -87,7 +96,10 @@ impl Card {
         };
         // SAFETY: `buffer` is the one `add_receive` got for `token`.
         match unsafe { self.nic.receive_complete(token, &mut buffer) } {
-            Ok((header, len)) => Some((buffer, header, len)),
+            Ok((header, len)) => {
+                RECEIVED.fetch_add(1, Ordering::Relaxed);
+                Some((buffer, header, len))
+            }
             Err(error) => {
                 log!("net: receive error {error:?}");
                 self.stash.push(buffer);
@@ -97,7 +109,7 @@ impl Card {
     }
 
     /// Gives the card every stashed receive buffer, then kicks it once for
-    /// them and once for the frames queued to send.
+    /// them and once for the frames queued to send, each when the card asked.
     fn refill(&mut self) {
         while let Some(mut buffer) = self.stash.pop() {
             // SAFETY: the buffer is kept in `rx` until the card gives its token back.

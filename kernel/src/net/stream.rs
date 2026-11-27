@@ -192,17 +192,29 @@ fn start(
     Ok(net.sockets.add(socket))
 }
 
-/// Runs `f` on `owner`'s stream `id` with the interface just polled; Revoked
-/// once its grant was ([`on_revoke`]).
+/// Runs `f` on `owner`'s stream `id` with the interface just polled, and
+/// polls it again after; Revoked once its grant was ([`on_revoke`]).
 fn with<R>(
     owner: u64,
     id: u64,
     f: impl FnOnce(&mut tcp::Socket, &mut bool) -> R,
 ) -> Result<R, Error> {
+    with_polls(owner, id, true, f)
+}
+
+/// [`with`], polling before `f` only when `before` says to.
+fn with_polls<R>(
+    owner: u64,
+    id: u64,
+    before: bool,
+    f: impl FnOnce(&mut tcp::Socket, &mut bool) -> R,
+) -> Result<R, Error> {
     crate::threads::ready::not_in_ready(&"the network");
     let mut guard = NET.lock();
     let net = guard.as_mut().ok_or(Error::Unavailable)?;
-    net.poll();
+    if before {
+        net.poll();
+    }
     let mut streams = STREAMS.lock();
     let stream = index(id)
         .and_then(|at| streams.open.get_mut(at)?.as_mut())
@@ -281,9 +293,14 @@ pub fn send(owner: u64, id: u64, data: &[u8]) -> Result<usize, Error> {
 
 /// NET_RECV: up to `out.len()` (at most [`MAX_CALL`]) bytes received; 0 once
 /// the peer closed and everything was read; Busy while none has come yet.
+///
+/// One poll, after the read: it sends the window the read opened and takes in
+/// the frames the next read gets. A poll before it too was a second kick of
+/// the card each call, a VM exit under KVM (G67); the frames it would have
+/// taken in wait for that next read, or wake a NET_POLL.
 pub fn recv(owner: u64, id: u64, out: &mut [u8]) -> Result<usize, Error> {
     let cap = out.len().min(MAX_CALL);
-    with(owner, id, |socket, connected| {
+    with_polls(owner, id, false, |socket, connected| {
         match socket.recv_slice(&mut out[..cap]) {
             Ok(0) | Err(tcp::RecvError::InvalidState) if *connected && !socket.may_recv() => Ok(0),
             Ok(0) => Err(Error::Busy),
