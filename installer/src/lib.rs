@@ -31,7 +31,7 @@ mod current;
 mod data;
 
 pub use apply::{Disk, IoError, Window, apply};
-pub use current::{Current, Found, current};
+pub use current::{Current, Found, HEAD, TAIL, current};
 pub use data::{FOLDERS, format_data};
 
 use alloc::format;
@@ -109,9 +109,13 @@ pub enum Error {
     /// The target has the running disk's GUID: it is the running disk, or
     /// another disk written from the same image (which shares its GUIDs).
     RunningDisk,
-    /// The target is not the size the plan was made for, or its table is not
-    /// the one the plan was made over (and the user agreed to wipe).
+    /// The target is not the size the plan was made for, or it no longer
+    /// holds what the plan was made over ([`Plan::wipes`], which the user
+    /// agreed to wipe).
     Target,
+    /// The target fails to read ([`Current::ReadFails`]), so what it holds
+    /// cannot be shown or checked.
+    TargetUnreadable,
     /// A copy did not read back as it should; nothing past it was written.
     Verify(&'static str),
     /// `diskmap` refused the layout.
@@ -275,6 +279,9 @@ pub fn plan(target: Target<'_>, source: Source<'_>, current: &Current) -> Result
         return Err(Error::BadId);
     }
     let sectors = target.sectors;
+    if *current == Current::ReadFails {
+        return Err(Error::TargetUnreadable);
+    }
     if matches!(current, Current::Gpt(t) if t.disk_guid == source.table.disk_guid) {
         return Err(Error::RunningDisk);
     }
