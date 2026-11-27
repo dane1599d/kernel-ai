@@ -18,7 +18,7 @@ pub(crate) struct Landing {
     /// What those changes said in the line's "Done" line.
     lost: Vec<String>,
     /// The last line's result for the panel and the desk.
-    line: Option<String>,
+    pub(crate) line: Option<String>,
     /// The note's own lines in the last reply, which the panel's history
     /// leaves out of what the line said.
     said_note: Vec<String>,

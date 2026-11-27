@@ -10,6 +10,7 @@
 //!                               err busy: <why>                 (not taken now)
 //! agent-step wait <entry>       ok waiting #<entry>
 //!                               ok ran #<entry>: <line>
+//!                               err failed #<entry>: <line>     (allowed, then failed)
 //!                               err not run #<entry>: <line>    (a no)
 //!                               err unknown step #<entry>       (a no)
 //! ```

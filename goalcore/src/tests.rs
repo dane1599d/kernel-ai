@@ -1184,7 +1184,9 @@ fn a_question_waits_for_an_answer_and_is_no_step() {
         goal.clarify("again?"),
         Err(Refusal::NotActive(State::Waiting))
     );
+    goal.plan(2, "the plan from before the question");
     goal.answered().unwrap();
+    assert!(goal.next.is_empty(), "{}", goal.next);
     assert_eq!((goal.state, goal.waiting.is_none()), (State::Active, true));
     assert_eq!(goal.answered(), Err(Refusal::NothingWaiting));
     // A step that asks is a different wait, and counts as another.
