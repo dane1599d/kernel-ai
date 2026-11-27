@@ -1,0 +1,114 @@
+# The release image, built three ways (S09-1): on two fresh runners (`build`,
+# runners a and b) and offline from the source tarball (`source`, then
+# `offline`, with `--network none`). Not run on its own: release.yml calls it and
+# then checks the three are one image, and repro.yml (P6 G50) calls it every
+# Monday and names what differs. One copy of the jobs, so the weekly check builds
+# exactly what a release builds.
+#
+# Artifacts, for the caller's later jobs: `build-a` and `build-b`
+# (kernel-ai.img.zst, NOTICES.txt, build.log), `source`
+# (kernel-ai-source.tar.zst; release.yml names the asset with its version) and
+# `offline` (offline.img.zst, NOTICES.txt, offline.log).
+name: Release images
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Where the release build reads its crates, and the offline rebuild mounts the
+  # vendored ones, so panic locations and line tables match (decisions.md, S09-1).
+  REGISTRY_SRC: /home/runner/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f
+
+# bash -eo pipefail: a step piped through tee fails when its command does.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Build the release image (runner ${{ matrix.runner }})
+    timeout-minutes: 90
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        runner: [a, b]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # Outputs go outside the checkout: an untracked file would mark the build
+      # -dirty and change the image.
+      - run: mkdir -p "$RUNNER_TEMP/out" && echo "OUT=$RUNNER_TEMP/out" >> "$GITHUB_ENV"
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: rustup target add wasm32-unknown-unknown
+      - run: cargo xtask release-image --out "$OUT/kernel-ai.img" | tee "$OUT/build.log"
+      # The image is gigabytes, most of them kai-data's free space: it travels
+      # compressed, and the same zstd on the same bytes writes the same file.
+      - run: zstd -19 --single-thread -q --rm "$OUT/kernel-ai.img" -o "$OUT/kernel-ai.img.zst"
+      - name: The build left the tree clean
+        run: test -z "$(git status --porcelain)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: build-${{ matrix.runner }}
+          path: |
+            ${{ env.OUT }}/kernel-ai.img.zst
+            ${{ env.OUT }}/NOTICES.txt
+            ${{ env.OUT }}/build.log
+
+  source:
+    name: Source tarball
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: rustup target add wasm32-unknown-unknown
+      - name: Sources, every crate vendored (build-std's too), Limine, and the commit
+        run: |
+          out="$RUNNER_TEMP/out" && mkdir -p "$out"
+          cargo xtask limine
+          git rev-parse --short=12 HEAD > COMMIT
+          sysroot=$(rustc --print sysroot)
+          mkdir -p .cargo-offline
+          cargo vendor --locked --versioned-dirs \
+            --sync "$sysroot/lib/rustlib/src/rust/library/Cargo.toml" vendor > .cargo-offline/config.toml
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+            --exclude=./target --exclude=./.git -cf - . target/limine-*/ \
+            | zstd -19 --single-thread -q -o "$out/kernel-ai-source.tar.zst"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: source
+          path: ${{ runner.temp }}/out/kernel-ai-source.tar.zst
+
+  offline:
+    name: Rebuild from the source tarball, offline
+    needs: source
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: source
+      - name: Unpack, and install the pinned toolchain for the container to borrow
+        run: |
+          mkdir src && zstd -dc kernel-ai-source.tar.zst | tar -xf - -C src
+          cd src && (rustup show active-toolchain || rustup toolchain install)
+          rustup target add wasm32-unknown-unknown
+      - name: Build with --network none, crates at the release build's registry path
+        run: |
+          ws=/home/runner/work/kernel-ai/kernel-ai
+          mkdir -p home/.cargo && cp -r ~/.cargo/bin home/.cargo/bin
+          sed "s|directory = \"vendor\"|directory = \"$REGISTRY_SRC\"|" src/.cargo-offline/config.toml > home/.cargo/config.toml
+          docker pull -q buildpack-deps:noble
+          docker run --rm --network none -u "$(id -u):$(id -g)" \
+            -e HOME=/home/runner -e CARGO_HOME=/home/runner/.cargo -e RUSTUP_HOME=/home/runner/.rustup \
+            -e PATH=/home/runner/.cargo/bin:/usr/bin:/bin -e CARGO_NET_OFFLINE=true \
+            -v "$PWD/home/.cargo:/home/runner/.cargo" -v "$HOME/.rustup:/home/runner/.rustup" \
+            -v "$PWD/src:$ws" -v "$PWD/src/vendor:$REGISTRY_SRC:ro" -w "$ws" buildpack-deps:noble \
+            cargo xtask release-image --out offline.img | tee offline.log
+          zstd -19 --single-thread -q --rm src/offline.img -o src/offline.img.zst
+          mkdir out && mv src/offline.img.zst src/NOTICES.txt offline.log out/
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: offline
+          path: out/
