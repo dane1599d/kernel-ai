@@ -15,9 +15,12 @@
 //! (budget ...)` line. Shared runners are noisy, so it is best of three
 //! ([`kabi::perf`]): a scene with a miss is measured again in this boot, a
 //! figure over in two runs a third time, every run's lines are logged, and
-//! only a figure over its budget in all of them fails the case. Each budget is for a runner of baseline speed, so the case
-//! judges a figure against its budget times the runner's measured slowness
-//! (below), never less than the budget ([`kabi::perf::misses_scaled`]);
+//! only a figure over its budget in all of them fails the case. Each budget
+//! is for a runner of baseline speed, so the case judges a figure against its
+//! budget times the runner's measured slowness (below), never less than the
+//! budget ([`kabi::perf::misses_scaled`]). `desktop` logs the slowest frames of
+//! each figure that misses (`the 8 slowest frames (1/2): #n ms, ...`), where a
+//! steady cost shows as a run of them and a stall as a few far apart;
 //! `desktop`'s own `OVER` lines use the bare budgets. Before a second run the
 //! reference is timed again and both runs are judged by the larger median.
 //! (g) is also judged against (a) from the same boot: its budget is the larger
@@ -214,8 +217,9 @@ fn judged<'a>(
 
 /// One scene's figures, best of three when `gated`: a run with a miss (against
 /// the scaled budgets) is run once more, and a figure over budget in both is
-/// run a third time; those over in all three are returned. Before the second run the reference work is timed again, and
-/// both runs are judged by the larger median. `composite` is (a)'s p50, for (g).
+/// run a third time; those over in all three are returned. Before the second
+/// run the reference work is timed again, and both runs are judged by the
+/// larger median. `composite` is (a)'s p50, for (g).
 fn scene(
     gated: bool,
     reference: u64,

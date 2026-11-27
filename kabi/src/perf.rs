@@ -14,8 +14,10 @@
 //! of 14.8 ms. The scale is capped at the slow factor ([`SCALE_CAP_NS`]).
 //! Before a scene's second run the reference is measured again, and both runs
 //! are judged by the larger of the two medians ([`judging_reference`]), so
-//! a runner that slows within the boot is seen. `desktop` still writes its `OVER BUDGET` lines against the bare
-//! budgets, so the logs show both.
+//! a runner that slows within the boot is seen. `desktop` still writes its
+//! `OVER BUDGET` lines against the bare budgets, so the logs show both. After
+//! each such line it logs the figure's slowest frames, four to a line:
+//! `desk-perf: <name>: the 8 slowest frames (1/2): #<n> <ms>, ...`.
 //!
 //! A runner can be slow for a whole boot, not only noisy, and then no budget
 //! can be met. So under KVM the kernel first has `desktop` time a fixed
