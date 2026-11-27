@@ -168,32 +168,54 @@ pub fn boot_from_slots(
     cmdline: &str,
     record: &str,
     keep_b: bool,
+    boot: BootDisk,
 ) -> Result<(), String> {
     let out = target_dir.join(SLOTS_IMAGE);
+    let sector = if boot.four_k { 4096 } else { 512 };
     let bytes = match keep_b {
+        true if boot.four_k => return Err("a 4Kn slot disk does not keep slot B".into()),
         true => crate::image::slots::build_keeping_b(esp, &out, cmdline, record)?,
-        false => crate::image::slots::build(esp, &out, cmdline, record)?,
+        false => crate::image::slots::build(esp, &out, cmdline, record, sector)?,
     };
-    println!("xtask: slot disk {SLOTS_IMAGE}, {} MiB", bytes >> 20);
-    boot_from_disk(args, SLOTS_IMAGE)
+    let on = if boot.nvme { "NVMe" } else { "virtio-blk" };
+    println!(
+        "xtask: slot disk {SLOTS_IMAGE}, {} MiB, {sector}-byte sectors on {on}",
+        bytes >> 20
+    );
+    boot_from_disk_on(args, SLOTS_IMAGE, boot)
+}
+
+/// The boot disk's device (G58): virtio-blk or NVMe, of 512-byte or 4 KiB blocks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BootDisk {
+    pub nvme: bool,
+    pub four_k: bool,
+}
+
+impl BootDisk {
+    /// The `-device` for the drive `slots`, serial `kai-boot`, booted first.
+    fn device(self) -> String {
+        let kind = if self.nvme { "nvme" } else { "virtio-blk-pci" };
+        let blocks = [crate::disk::BLOCKS_4K, ""][usize::from(!self.four_k)];
+        format!("{kind},drive=slots,serial=kai-boot,bootindex=0{blocks}")
+    }
 }
 
 /// Boots from the disk image `name` (relative to `target/`, or absolute) in
 /// place of the directory ESP, on virtio-blk, so the kernel reaches the slots
 /// (`updated`'s SLOT_* calls) as an installed system reaches its one disk.
 pub fn boot_from_disk(args: &mut Vec<String>, name: &str) -> Result<(), String> {
+    boot_from_disk_on(args, name, BootDisk::default())
+}
+
+/// [`boot_from_disk`] on the device `boot` names.
+pub fn boot_from_disk_on(args: &mut Vec<String>, name: &str, boot: BootDisk) -> Result<(), String> {
     let at = args
         .iter()
         .position(|arg| arg == ESP_DRIVE)
         .ok_or("no directory ESP drive to replace")?;
     args[at] = format!("if=none,id=slots,format=raw,file={name}");
-    args.splice(
-        at + 1..at + 1,
-        [
-            "-device".to_string(),
-            "virtio-blk-pci,drive=slots,serial=kai-boot,bootindex=0".to_string(),
-        ],
-    );
+    args.splice(at + 1..at + 1, ["-device".to_string(), boot.device()]);
     Ok(())
 }
 
