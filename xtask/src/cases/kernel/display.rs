@@ -57,6 +57,7 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
             "desk-ask: an ask after keys with desktop was answered only on the console",
             "display: the answer came; the screen went back to its holder",
             "desk-ask: with the console showing already, the ask kept the screen until its answer",
+            "desk-ask: a screen handed back just before an ask went back after its answer",
             "desk-ask: the restarted desktop got the keys, with no lease left over",
         ],
         ..case("desk-ask", "test=desk-ask")
