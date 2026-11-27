@@ -158,9 +158,15 @@ pub struct Machine<'a> {
 
 impl Machine<'_> {
     /// The slot an update is written into: the other system slot, or in R the one
-    /// the caller named.
+    /// the caller named. From a trial, never the committed other slot: it is
+    /// what the trial falls back to ([`bootslot::may_stage`]).
     pub fn slot(&self) -> Result<Slot, Refused> {
         match (self.running, self.into) {
+            (running @ (Slot::A | Slot::B), _) if !bootslot::may_stage(self.record, running) => {
+                Err(Refused::Slot(
+                    "a trial slot never stages over the committed slot it falls back to",
+                ))
+            }
             (Slot::A, _) => Ok(Slot::B),
             (Slot::B, _) => Ok(Slot::A),
             (Slot::R, Some(slot @ (Slot::A | Slot::B))) => Ok(slot),

@@ -106,9 +106,11 @@ pub struct Record {
     /// The kernel never runs [`boot`] (the firmware picks the slot), so the
     /// mark a boot that came up and was then reset leaves can spare the try of
     /// the next boot, if that one dies before *up*. R clears it whenever it
-    /// reads it, so it never loops, but it can spare one try in R after each
-    /// *up*: a trial of `TRIES` tries boots at most `2 * TRIES - 1` times
-    /// (`tests/model.rs` walks every way there).
+    /// reads it, and every arm clears it, so a mark never outlives the arm of
+    /// the slot whose *up* set it (a rollback or a stage cannot carry it to a
+    /// fresh trial). It can still spare one try in R after each *up*: a trial
+    /// of `TRIES` tries boots at most `2 * TRIES - 1` times (`tests/model.rs`
+    /// walks every way there).
     pub came_up: bool,
 }
 
@@ -286,10 +288,13 @@ pub fn boot(nv: &mut Nv) -> Slot {
     slot
 }
 
-/// Asks for `slot` on the next boot, and records that its boot has not finished.
+/// Asks for `slot` on the next boot, and records that its boot has not
+/// finished: it has not come up, whatever an earlier boot left in
+/// [`Record::came_up`].
 fn arm(nv: &mut Nv, slot: Slot) {
     nv.one_shot = Some(slot);
     nv.record.armed = Some(slot);
+    nv.record.came_up = false;
 }
 
 /// Whether R, arming `next` from a record that had `armed`, writes the
@@ -321,6 +326,45 @@ pub fn arm_writes<E>(
         record()?;
         one_shot()
     }
+}
+
+/// What a BOOTREC_SET tells the fault path, which writes the record it was
+/// last told ([`set_writes`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Told {
+    /// The record being set, before it is written.
+    New,
+    /// The record before, again: the write failed.
+    Old,
+}
+
+/// BOOTREC_SET's steps, in its order: the fault path is told the new record
+/// *before* it is written, so a fault after the write never writes the
+/// record before over it (a commit's floors would fall back), and one before
+/// the write records the new one (a fault inside the call is not recorded).
+/// If the record's write fails, the fault path is told the old record again
+/// and the one-shot is not written. The first error, if any.
+pub fn set_writes<E>(
+    mut tell: impl FnMut(Told),
+    record: impl FnOnce() -> Result<(), E>,
+    one_shot: impl FnOnce() -> Result<(), E>,
+) -> Result<(), E> {
+    tell(Told::New);
+    if let Err(error) = record() {
+        tell(Told::Old);
+        return Err(error);
+    }
+    one_shot()
+}
+
+/// Whether a boot running in `running` may stage the other slot: from a
+/// committed slot, or from a trial when the other slot is not committed
+/// either (a fresh install's first update). Never over the committed slot a
+/// trial would fall back to: that would leave none.
+pub fn may_stage(record: &Record, running: Slot) -> bool {
+    running
+        .other()
+        .is_some_and(|other| record.slot(running).successful || !record.slot(other).successful)
 }
 
 /// *stage*, before writing `slot`: it never boots until [`stage_end`].
@@ -366,6 +410,12 @@ pub fn up(nv: &mut Nv, slot: Slot) {
         state.tries = state.tries.saturating_sub(1);
         if state.tries > 0 {
             arm(nv, slot);
+        } else {
+            // No boot after this one, but R judges this one: `armed` names
+            // the slot `came_up` speaks for. A fault whose power was cut
+            // between its writes can leave the one-shot of a slot the record
+            // does not name as armed.
+            nv.record.armed = Some(slot);
         }
         // This boot spent its try here: a fault from now on spends none in R.
         nv.record.came_up = true;

@@ -218,6 +218,9 @@ pub fn lever_done() -> bool {
 static LEVER_DONE: AtomicBool = AtomicBool::new(false);
 /// Probation committed this boot's slot (and logged it).
 static COMMITTED: AtomicBool = AtomicBool::new(false);
+/// *Up*'s record write failed: the firmware still holds the try this boot
+/// spent, so [`set`] never arms this slot again while it is a trial.
+static UP_LOST: AtomicBool = AtomicBool::new(false);
 
 fn lever(test: bool) {
     let Some(slot) = this_slot() else {
@@ -309,15 +312,29 @@ fn lever(test: bool) {
         }
         Action::Restart | Action::Panic | Action::EfiFault => {}
     }
+    // The fault path is told *up*'s record before it is written, as
+    // BOOTREC_SET tells it ([`bootslot::set_writes`]): a fault after the
+    // write must not put the record before back, which would give the try
+    // back to a trial whose one-shot is still set.
+    *BOOTED.lock() = Some((nv, slot));
     if test {
         finish(&nv, write(&before, &nv));
     }
-    // A normal boot writes the one-shot that *up* armed and keeps running.
-    if let Err(error) = write(&before, &nv) {
-        log!("slots: SetVariable failed: {error:?}");
+    // A normal boot writes the one-shot that *up* armed and keeps running:
+    // [`write`]'s two writes, apart so a lost record is known.
+    match write_record(&before, &nv) {
+        Err(error) => {
+            log!("slots: SetVariable failed: {error:?}");
+            UP_LOST.store(true, Ordering::SeqCst);
+        }
+        Ok(()) if nv.one_shot != before.one_shot => {
+            if let Err(error) = write_one_shot(nv.one_shot) {
+                log!("slots: SetVariable failed: {error:?}");
+            }
+        }
+        Ok(()) => {}
     }
     let trial = !nv.record.slot(slot).successful;
-    *BOOTED.lock() = Some((nv, slot));
     // A trial slot runs on probation until it commits (ADR 0008 §5).
     if trial && let Err(why) = threads::spawn("probation", probation, slot as usize) {
         log!(
@@ -515,13 +532,35 @@ pub fn active_committed() -> bool {
 /// keeps them as what the fault path writes from.
 pub fn set(record: Record, one_shot: Option<Slot>) -> Result<(), efi::Error> {
     let _setting = SETTING.lock();
-    efi::set_variable(&KAI, RECORD, NV_BS_RT, &record.encode())?;
-    // The record is the firmware's now: the fault path writes from it even if
-    // the one-shot fails next, never from the record before (a commit's
-    // floors would fall back). The fault path deletes the one-shot whatever
+    // A boot whose *up* the firmware never stored has not spent its try
+    // there: arming its slot again as a trial would give the try back.
+    if UP_LOST.load(Ordering::SeqCst)
+        && let Some(next) = one_shot
+        && this_slot() == Some(next)
+        && !record.slot(next).successful
+    {
+        return Err(efi::Error::Unavailable);
+    }
+    // In [`bootslot::set_writes`]'s order: the fault path is told the record
+    // before it is written, so a fault just after the write never writes the
+    // record before back (a commit's floors would fall), and told the old one
+    // again if the write fails. The fault path deletes the one-shot whatever
     // BOOTED holds, so only the record is kept.
-    keep_booted(|nv| nv.record = record);
-    write_one_shot(one_shot)
+    let mut old = None;
+    bootslot::set_writes(
+        |told| match told {
+            bootslot::Told::New => {
+                old = keep_booted(|nv| core::mem::replace(&mut nv.record, record));
+            }
+            bootslot::Told::Old => {
+                if let Some(old) = old.take() {
+                    keep_booted(|nv| nv.record = old);
+                }
+            }
+        },
+        || efi::set_variable(&KAI, RECORD, NV_BS_RT, &record.encode()),
+        || write_one_shot(one_shot),
+    )
 }
 
 /// POWER_REBOOT's reset: once a BOOTREC_SET under way has written both its
@@ -553,10 +592,8 @@ fn hold_setting() {
 }
 
 /// Changes what the fault path writes from, if this boot keeps it.
-fn keep_booted(change: impl FnOnce(&mut Nv)) {
-    if let Some((nv, _)) = BOOTED.lock().as_mut() {
-        change(nv);
-    }
+fn keep_booted<T>(change: impl FnOnce(&mut Nv) -> T) -> Option<T> {
+    BOOTED.lock().as_mut().map(|(nv, _)| change(nv))
 }
 
 /// From the fault path: records the fault in this boot's slot and deletes the
