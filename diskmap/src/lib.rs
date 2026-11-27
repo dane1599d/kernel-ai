@@ -297,6 +297,8 @@ pub fn last_usable(sectors: u64) -> u64 {
 /// Every partition type GUID this crate names. They are fixed for good: the
 /// kernel and the firmware find partitions by them. The disk's own GUID and
 /// each partition's are unique per image (ADR 0008 §1), and never one of these.
+/// A new `*_TYPE` constant goes here too; `every_type_constant_is_in_types`
+/// fails until it does.
 pub const TYPES: [Guid; 6] = [
     ESP_TYPE,
     KAI_DATA_TYPE,
