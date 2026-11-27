@@ -41,12 +41,7 @@ pub(crate) fn scope(
     listed: impl Fn(&str) -> Result<(), String>,
 ) -> Result<goalcore::Scope, String> {
     // A folder's path is where the goal works, not what it does: its words
-    // ("notes/q3") name no action.
-    let words: Vec<&str> = line
-        .split_whitespace()
-        .filter(|w| !w.contains('/'))
-        .collect();
-    let words = words.join(" ");
+    // ("notes/q3") name no action: `outside_names` drops it.
     let mut rows: Vec<String> = Vec::new();
     for row in agentabi::ROWS.iter().filter(|row| considered(row)) {
         // Named by a whole cue ("go" is not in "good"); negated as consent
@@ -54,7 +49,7 @@ pub(crate) fn scope(
         // A joined name ("do-not-delete") is the name's words, not the
         // row's: its cue names no row and its "not" negates none, as consent
         // reads it (bug-hunt-6 H6-3).
-        let row_words = outside_names(&words, row);
+        let row_words = outside_names(line, row);
         let plain_words = plain(&row_words);
         let Some(cue) = row.cues.iter().find(|cue| names(&plain_words, cue)) else {
             continue;
@@ -72,6 +67,11 @@ pub(crate) fn scope(
             ));
         }
         rows.push(row.name.to_string());
+    }
+    if let Some(path) = negated_path(line) {
+        return Err(format!(
+            "\"{path}\" is said not to be touched; name only the folders the goal works in"
+        ));
     }
     let folders = folders(line)?;
     for folder in &folders {
@@ -160,7 +160,16 @@ const NAME_LEADS: &[&str] = &[
 /// A word of negation and the row's own cues stays too, unless a determiner
 /// before it makes it a name: "dont-delete the finals" says not to, "my
 /// do-not-delete folder" is a folder. A word that goes leaves its punctuation,
-/// so "todo.txt," still ends its clause (#1467's round 21).
+/// so "todo.txt," still ends its clause (#1467's round 21). A folder's path
+/// ("notes/q3") goes the same way, and is no determiner: "my notes/q3,
+/// dont-delete the finals" still says not to (#1556's review). A word that
+/// ends its clause leads nothing: "keep this: dont-delete the finals" says not
+/// to (#1577's review).
+///
+/// A determiner makes a joined word a name also where it describes: "trash
+/// all but the do-not-delete ones" reads "do-not-delete" as the files' name,
+/// so its "not" negates nothing and the goal holds `fs_trash`, which its card
+/// shows before it starts.
 fn outside_names(words: &str, row: &Action) -> String {
     let own = |part: &str| {
         part == "re"
@@ -174,6 +183,19 @@ fn outside_names(words: &str, row: &Action) -> String {
     let mut kept: Vec<&str> = Vec::new();
     let mut before = String::new();
     for raw in words.split_whitespace() {
+        // A path goes whole, leaving only the clause or sentence mark after it.
+        if raw.contains('/') {
+            let ends = raw.trim_end_matches(|c: char| ",;:!?.)\"'".contains(c));
+            let mark = &raw[ends.len()..];
+            before = match mark.is_empty() {
+                true => raw.to_ascii_lowercase(),
+                false => String::new(),
+            };
+            if !mark.is_empty() {
+                kept.push(mark);
+            }
+            continue;
+        }
         let word = raw.trim_matches(|c: char| !c.is_ascii_alphanumeric());
         let plain = plain(word);
         let parts: Vec<&str> = plain.split(' ').filter(|p| !p.is_empty()).collect();
@@ -186,7 +208,11 @@ fn outside_names(words: &str, row: &Action) -> String {
             || (!named
                 && parts.iter().any(|p| negating(p))
                 && parts.iter().all(|p| negating(p) || own(p)));
-        before = word.to_ascii_lowercase();
+        // A clause mark after the word ends what it could lead.
+        before = match raw.ends_with(|c: char| ",;:!?.".contains(c)) {
+            true => String::new(),
+            false => word.to_ascii_lowercase(),
+        };
         if stays {
             kept.push(raw);
             continue;
@@ -196,6 +222,39 @@ fn outside_names(words: &str, row: &Action) -> String {
         kept.extend([lead, trail].into_iter().filter(|p| !p.is_empty()));
     }
     kept.join(" ")
+}
+
+/// Words that say a folder after them in its clause is not to be touched.
+/// Not "no" or "without", which describe files ("move the files with no tag
+/// into notes/untagged").
+const KEEP_OFF: &[&str] = &["dont", "don't", "not", "never", "avoid", "except"];
+
+/// The first path written in `line` after a word of [`KEEP_OFF`] in its
+/// clause: "don't touch notes/q3, delete the drafts in notes/old" says not to
+/// touch notes/q3, so no goal may hold it (#1577's review). A clause ends at
+/// `,` `;` `:` `.` `!` or `?`.
+fn negated_path(line: &str) -> Option<String> {
+    let line = line
+        .replace(['\u{2018}', '\u{2019}'], "'")
+        .to_ascii_lowercase();
+    for clause in line.split(|c: char| ",;:!?".contains(c)) {
+        let mut off = false;
+        for raw in clause.split_whitespace() {
+            let word = raw.trim_matches(|c: char| "\"'()".contains(c));
+            if word.contains('/') {
+                if off {
+                    return Some(word.trim_end_matches('.').to_string());
+                }
+                continue;
+            }
+            let word = word.trim_end_matches('.');
+            off |= KEEP_OFF.contains(&word);
+            if raw.ends_with('.') {
+                off = false;
+            }
+        }
+    }
+    None
 }
 
 /// Whether cue `cue` is words of `words` ([`plain`]'s form), whole, or with a

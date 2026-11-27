@@ -26,13 +26,17 @@ const VOLUME_ID: u32 = 0x4B41_4931;
 const DISK_NAME: &str = "kernel-ai";
 
 /// An `--image-id` seed, checked: 1 to 64 printable ASCII characters with no
-/// space, so it reads back the same from any log line it is printed in.
+/// space, so it reads back the same from any log line it is printed in, and
+/// not starting with `-`, so a flag after a bare `--image-id` is never taken
+/// for its seed.
 pub fn image_id(seed: &str) -> Result<&str, String> {
-    let fits = (1..=64).contains(&seed.len()) && seed.bytes().all(|b| b.is_ascii_graphic());
+    let fits = (1..=64).contains(&seed.len())
+        && seed.bytes().all(|b| b.is_ascii_graphic())
+        && !seed.starts_with('-');
     match fits {
         true => Ok(seed),
         false => Err(format!(
-            "--image-id expects 1 to 64 printable ASCII characters with no space, got {seed:?}"
+            "--image-id expects 1 to 64 printable ASCII characters with no space, not starting with -, got {seed:?}"
         )),
     }
 }

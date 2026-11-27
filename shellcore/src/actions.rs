@@ -827,7 +827,7 @@ impl Shell {
     /// Revokes the rule node the trusted path minted for an "Always allow"
     /// answer the shell did not keep: no rule holds its handle, so nothing
     /// else would, and it would hold a kernel rule slot until a reboot (#11).
-    fn revoke_unkept(&self, rule: Option<u32>) {
+    pub(crate) fn revoke_unkept(&self, rule: Option<u32>) {
         if let Some(Err(why)) = rule.map(|h| self.host.revoke_rule(h)) {
             self.host
                 .audit(&format!("an unkept rule's node was not revoked: {why}"));

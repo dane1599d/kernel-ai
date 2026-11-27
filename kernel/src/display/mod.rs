@@ -19,7 +19,7 @@ use alloc::boxed::Box;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, Ordering};
 use gfxcore::Rect;
-use gfxcore::pixel::Format;
+use gfxcore::pixel::{Format, Packer};
 use gpu::Gpu;
 use limine::framebuffer::Framebuffer;
 use spin::Mutex;
@@ -57,6 +57,14 @@ struct Display {
     /// The screen's size in mm from its EDID, (0, 0) when unknown (GOP gives
     /// none, and virtio-gpu's is made up).
     size_mm: (u32, u32),
+    /// A GOP framebuffer whose pixels are not `0x00RRGGBB` (RGBX, 10 bits a
+    /// channel) cannot be drawn in by its clients: they get this back buffer in
+    /// `0x00RRGGBB` instead, and [`present`] packs what they flush into the
+    /// framebuffer. Made on the first claim, since GOP is set up before there is
+    /// a heap; the console draws on the framebuffer itself, packing as it goes.
+    shadow: Option<Surface>,
+    /// Whether [`surface`] tried to make the shadow: it is tried once.
+    shadow_tried: bool,
 }
 
 // SAFETY: the device state is used only under the DISPLAY mutex, by one CPU at a
@@ -66,6 +74,23 @@ unsafe impl Send for Display {}
 static DISPLAY: Mutex<Option<Display>> = Mutex::new(None);
 /// A flush found the display busy: the next one sends the whole screen.
 static BEHIND: AtomicBool = AtomicBool::new(false);
+/// [`surface`] made a shadow: see [`shadowed`].
+static SHADOWED: AtomicBool = AtomicBool::new(false);
+/// Test-only: [`surface`] makes a shadow even over a `0x00RRGGBB` framebuffer,
+/// so a boot on QEMU's GOP (which is) runs the shadow path.
+static FORCE_SHADOW: AtomicBool = AtomicBool::new(false);
+
+/// Makes the next [`surface`] shadow the framebuffer whatever its format. For a
+/// boot case only (`test=display-claim`): call it before the first claim.
+pub fn force_shadow() {
+    FORCE_SHADOW.store(true, Ordering::Relaxed);
+}
+
+/// The framebuffer or virtio-gpu scanout itself, which a shadow is packed onto.
+/// For a boot case that looks at what reached the screen.
+pub fn screen() -> Option<Surface> {
+    DISPLAY.lock().as_ref().map(|display| display.surface)
+}
 
 /// The pixel format Limine reports for `fb`: its red, green and blue sizes and
 /// shifts. Masks that make no pixel (none reported, or overlapping) leave the
@@ -91,10 +116,16 @@ pub fn edid_of(fb: &Framebuffer) -> &[u8] {
     // SAFETY: `Framebuffer` is `repr(C)`, 64 bytes long (checked above), and
     // its `edid_size` and `edid` are the 7th and 8th words, as Limine fills them.
     let (size, edid) = unsafe { (words.add(SIZE_AT).read(), words.add(SIZE_AT + 1).read()) };
+    // An EDID is 128 bytes a block, at most 256 blocks: a longer one is not
+    // read past that, whatever the size field says.
+    const MAX: u64 = 256 * 128;
     match (size, edid) {
         (0, _) | (_, 0) => &[],
-        // SAFETY: Limine's EDID is `size` bytes at `edid`, kept for the kernel's life.
-        (size, edid) => unsafe { core::slice::from_raw_parts(edid as *const u8, size as usize) },
+        // SAFETY: Limine's EDID is `size` bytes at `edid`, kept for the kernel's
+        // life; the first `MAX` of them are no more than that.
+        (size, edid) => unsafe {
+            core::slice::from_raw_parts(edid as *const u8, size.min(MAX) as usize)
+        },
     }
 }
 
@@ -111,10 +142,13 @@ pub fn init_gop(fb: &Framebuffer) -> Option<Surface> {
         stride: (fb.pitch / 4) as usize,
         format: format_of(fb),
     };
+    SHADOWED.store(false, Ordering::Release);
     *DISPLAY.lock() = Some(Display {
         surface,
         backend: Backend::Gop,
         size_mm: (0, 0),
+        shadow: None,
+        shadow_tried: false,
     });
     Some(surface)
 }
@@ -161,10 +195,14 @@ pub fn init_gpu(
     if let Some((width, height)) = gpu.size_mm() {
         log!("display: the EDID says {width}x{height} mm; a virtual screen's size is unknown");
     }
+    // A new display has no shadow yet, whatever the one it replaces had.
+    SHADOWED.store(false, Ordering::Release);
     *DISPLAY.lock() = Some(Display {
         surface,
         backend: Backend::Gpu(Box::new(gpu)),
         size_mm: (0, 0),
+        shadow: None,
+        shadow_tried: false,
     });
     Ok(surface)
 }
@@ -178,9 +216,151 @@ pub fn size_mm() -> (u32, u32) {
         .map_or((0, 0), |display| display.size_mm)
 }
 
-/// The display's back buffer, if there is a display.
+/// The back buffer clients draw in, if there is a display: `0x00RRGGBB`. On a
+/// GOP framebuffer of another format that is a shadow of it, made here the
+/// first time ([`present`] packs it onto the screen). Without the frames for
+/// one, the framebuffer itself, said once in the log: clients then draw in the
+/// wrong colours, but they draw.
 pub fn surface() -> Option<Surface> {
-    DISPLAY.lock().as_ref().map(|display| display.surface)
+    let mut guard = DISPLAY.lock();
+    let display = guard.as_mut()?;
+    if display.surface.format.is_native() && !FORCE_SHADOW.load(Ordering::Relaxed) {
+        return Some(display.surface);
+    }
+    if !display.shadow_tried {
+        display.shadow_tried = true;
+        display.shadow = make_shadow(display.surface);
+        SHADOWED.store(display.shadow.is_some(), Ordering::Release);
+    }
+    Some(display.shadow.unwrap_or(display.surface))
+}
+
+/// Whether clients draw in a shadow that [`present`] packs onto the screen.
+/// False on virtio-gpu and a `0x00RRGGBB` GOP: their flush is as it was.
+pub fn shadowed() -> bool {
+    SHADOWED.load(Ordering::Acquire)
+}
+
+/// A zeroed `0x00RRGGBB` back buffer the size of `screen`, in contiguous frames
+/// in the direct map (kept for the kernel's life).
+fn make_shadow(screen: Surface) -> Option<Surface> {
+    use crate::virtio::hal::KernelHal;
+    use virtio_drivers::{BufferDirection, Hal, PAGE_SIZE};
+    let pages = (screen.width * screen.height * 4).div_ceil(PAGE_SIZE);
+    let (phys, virt) = KernelHal::dma_alloc(pages, BufferDirection::Both);
+    if phys == 0 {
+        log!(
+            "display: no frames for a 0x00RRGGBB back buffer over a non-BGRX GOP; \
+             clients draw in the framebuffer"
+        );
+        return None;
+    }
+    log!(
+        "display: GOP pixels are packed by its masks; clients draw in a {}x{} back buffer",
+        screen.width,
+        screen.height
+    );
+    Some(Surface {
+        base: virt.cast::<u32>(),
+        width: screen.width,
+        height: screen.height,
+        stride: screen.width,
+        format: Format::NATIVE,
+    })
+}
+
+/// Rows packed under one hold of the display lock: a band of 1920-pixel rows is
+/// 120 Ki pixels, so whoever waits for the screen waits that long at most. The
+/// bound grows with the width (2560 pixels: 160 Ki).
+pub const BAND_ROWS: u32 = 64;
+
+/// The rectangle a [`present`] of `rect` packs: the whole screen if an earlier
+/// one found the display busy.
+/// Busy now, it stays marked and `rect` is packed alone.
+pub fn pending(rect: Rect) -> Rect {
+    if !BEHIND.swap(false, Ordering::Relaxed) {
+        return rect;
+    }
+    let Some(guard) = DISPLAY.try_lock() else {
+        BEHIND.store(true, Ordering::Relaxed);
+        return rect;
+    };
+    guard.as_ref().map_or(rect, |display| {
+        Rect::screen(display.surface.width as u32, display.surface.height as u32)
+    })
+}
+
+/// Packs `band` of the shadow onto the framebuffer. Never waits for the display:
+/// busy, it marks the next [`present`] as the whole screen, as [`flush`] does.
+pub fn pack_band(band: Rect) -> Result<(), &'static str> {
+    let Some(guard) = DISPLAY.try_lock() else {
+        BEHIND.store(true, Ordering::Relaxed);
+        return Err("display: busy");
+    };
+    if let Some(Display {
+        surface: screen,
+        shadow: Some(shadow),
+        ..
+    }) = guard.as_ref()
+    {
+        let band = band.clamp(screen.width as u32, screen.height as u32);
+        pack_rows(*shadow, *screen, band);
+    }
+    Ok(())
+}
+
+/// Puts `rect` of [`surface`] on screen for the kernel's own drawing: packed
+/// from the shadow band by band where there is one, otherwise [`flush`]. A
+/// client's flush goes through `claim::present`, which checks before each band
+/// that the client still shows.
+pub fn present(rect: Rect) -> Result<(), &'static str> {
+    if !shadowed() {
+        return flush(rect);
+    }
+    let mut result = Ok(());
+    gfxcore::rect::each_band(pending(rect), BAND_ROWS, |band| {
+        result = pack_band(band);
+        result.is_ok()
+    });
+    result
+}
+
+/// Copies `rect` of `from` (`0x00RRGGBB`) to `to`, packed in `to`'s format. The
+/// loops walk raw pointers, one loop for each packer: unoptimised iterators
+/// cost a call a pixel.
+fn pack_rows(from: Surface, to: Surface, rect: Rect) {
+    let packer = to.format.packer();
+    for y in rect.y as usize..(rect.y + rect.height) as usize {
+        let mut src = from
+            .base
+            .as_ptr()
+            .wrapping_add(y * from.stride + rect.x as usize);
+        let mut dst = to
+            .base
+            .as_ptr()
+            .wrapping_add(y * to.stride + rect.x as usize);
+        let end = src.wrapping_add(rect.width as usize);
+        // SAFETY (each loop): `rect` is clamped to both surfaces, which are as
+        // large as the screen and mapped; the framebuffer is device memory,
+        // written volatile.
+        match packer {
+            Packer::Rgbx => {
+                while src < end {
+                    // swap_red_blue by hand: unoptimised, a call a pixel.
+                    let rgb = unsafe { src.read() };
+                    let swapped = ((rgb >> 16) & 0xFF) | (rgb & 0xFF00) | ((rgb & 0xFF) << 16);
+                    unsafe { dst.write_volatile(swapped) };
+                    (src, dst) = (src.wrapping_add(1), dst.wrapping_add(1));
+                }
+            }
+            packer => {
+                while src < end {
+                    unsafe { dst.write_volatile(packer.pack(src.read())) };
+                    (src, dst) = (src.wrapping_add(1), dst.wrapping_add(1));
+                }
+            }
+        }
+    }
 }
 
 pub fn kind() -> Option<Kind> {

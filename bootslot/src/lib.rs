@@ -5,9 +5,11 @@
 //! The rule: the one-shot always names the slot to boot next if nothing goes
 //! wrong, and no one-shot means the recovery slot R. Every event below changes
 //! only the record and the one-shot; the kernel writes them with `efi.rs` and
-//! resets. The test drives every event sequence up to length 8 and checks that
-//! no boot ever lands on a slot with no tries left: each lands on R, a committed
-//! slot, or a trial slot with tries.
+//! resets, in the orders [`up_writes`], [`set_writes`], [`fault_writes`] and
+//! [`arm_writes`] give, and BOOTREC_SET takes only what [`may_set`] allows.
+//! `tests/model` drives those same functions through every sequence of boots
+//! it walks and checks that no boot ever lands on a slot with no tries left:
+//! each lands on R, a committed slot, or a trial slot with tries.
 
 #![no_std]
 
@@ -106,9 +108,11 @@ pub struct Record {
     /// The kernel never runs [`boot`] (the firmware picks the slot), so the
     /// mark a boot that came up and was then reset leaves can spare the try of
     /// the next boot, if that one dies before *up*. R clears it whenever it
-    /// reads it, so it never loops, but it can spare one try in R after each
-    /// *up*: a trial of `TRIES` tries boots at most `2 * TRIES - 1` times
-    /// (`tests/model.rs` walks every way there).
+    /// reads it, and every arm clears it, so a mark never outlives the arm of
+    /// the slot whose *up* set it (a rollback or a stage cannot carry it to a
+    /// fresh trial). It can still spare one try in R after each *up*: a trial
+    /// of `TRIES` tries boots at most `2 * TRIES - 1` times (`tests/model`
+    /// walks every way there).
     pub came_up: bool,
 }
 
@@ -286,10 +290,13 @@ pub fn boot(nv: &mut Nv) -> Slot {
     slot
 }
 
-/// Asks for `slot` on the next boot, and records that its boot has not finished.
+/// Asks for `slot` on the next boot, and records that its boot has not
+/// finished: it has not come up, whatever an earlier boot left in
+/// [`Record::came_up`].
 fn arm(nv: &mut Nv, slot: Slot) {
     nv.one_shot = Some(slot);
     nv.record.armed = Some(slot);
+    nv.record.came_up = false;
 }
 
 /// Whether R, arming `next` from a record that had `armed`, writes the
@@ -301,26 +308,209 @@ pub fn one_shot_first(armed: Option<Slot>, next: Slot) -> bool {
     armed == Some(next)
 }
 
-/// R's two writes when it arms `next` from a record that had `armed`, in the
-/// order [`one_shot_first`] gives: `one_shot` stores the one-shot, `record`
-/// the record. With the one-shot first, the record is stored even when the
-/// one-shot fails, so each pass through R still counts and a store that
-/// refuses every one-shot ends in R staying up, not in a reset loop. The
-/// first error, if any.
+/// Which of R's writes failed ([`arm_writes`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArmFailed<E> {
+    /// The record was not stored: R stays up, since nothing it writes sticks
+    /// and a reset would only bring it back to the same record.
+    Record(E),
+    /// The record was stored and the one-shot was not: R resets, and the pass
+    /// is counted in the record, so a store that refuses every one-shot ends
+    /// in R staying up, not in a reset loop.
+    OneShot(E),
+}
+
+/// R's writes when it arms `next` from a record that had `armed`, in the
+/// order [`one_shot_first`] gives: `one_shot` stores the one-shot (or, with
+/// `None`, deletes it), `record` the record. With the one-shot first, the
+/// record is stored even when the one-shot fails; if the record then fails,
+/// the one-shot is deleted again, so the slot never boots on a try the
+/// record did not count (only a power cut between the writes spares one).
 pub fn arm_writes<E>(
     armed: Option<Slot>,
     next: Slot,
-    one_shot: impl FnOnce() -> Result<(), E>,
+    mut one_shot: impl FnMut(Option<Slot>) -> Result<(), E>,
     record: impl FnOnce() -> Result<(), E>,
-) -> Result<(), E> {
+) -> Result<(), ArmFailed<E>> {
     if one_shot_first(armed, next) {
-        let stored = one_shot();
-        record()?;
-        stored
+        let stored = one_shot(Some(next));
+        if let Err(error) = record() {
+            if stored.is_ok() {
+                let _ = one_shot(None);
+            }
+            return Err(ArmFailed::Record(error));
+        }
+        stored.map_err(ArmFailed::OneShot)
     } else {
-        record()?;
-        one_shot()
+        record().map_err(ArmFailed::Record)?;
+        one_shot(Some(next)).map_err(ArmFailed::OneShot)
     }
+}
+
+/// Which of *up*'s writes failed ([`up_writes`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpFailed<E> {
+    /// The record was not stored: the firmware still holds the try this boot
+    /// spent, so this boot must never arm its slot again while it is a trial
+    /// ([`may_set`]'s `up_lost`).
+    Record(E),
+    OneShot(E),
+}
+
+/// *Up*'s steps, in the kernel's order: the fault path is told the new record
+/// first (`tell`), so a fault just after the record's write never writes the
+/// record before back (that would give a trial its try back while its
+/// one-shot is still set), then the record, then the one-shot.
+pub fn up_writes<E>(
+    tell: impl FnOnce(),
+    record: impl FnOnce() -> Result<(), E>,
+    one_shot: impl FnOnce() -> Result<(), E>,
+) -> Result<(), UpFailed<E>> {
+    tell();
+    record().map_err(UpFailed::Record)?;
+    one_shot().map_err(UpFailed::OneShot)
+}
+
+/// The fault path's writes: the fault in the record it was last told, then
+/// the one-shot deleted, so R boots next. The one-shot goes whether or not the
+/// record was stored. The first error, if any.
+pub fn fault_writes<E>(
+    record: impl FnOnce() -> Result<(), E>,
+    one_shot: impl FnOnce() -> Result<(), E>,
+) -> Result<(), E> {
+    let stored = record();
+    let deleted = one_shot();
+    stored.and(deleted)
+}
+
+/// What a BOOTREC_SET tells the fault path, which writes the record it was
+/// last told ([`set_writes`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Told {
+    /// The record being set, before it is written.
+    New,
+    /// The record before, again: the write failed.
+    Old,
+}
+
+/// BOOTREC_SET's steps, in its order: the fault path is told the new record
+/// *before* it is written, so a fault after the write never writes the
+/// record before over it (a commit's floors would fall back), and one before
+/// the write records the new one (a fault inside the call is not recorded).
+/// If the record's write fails, the fault path is told the old record again
+/// and the one-shot is not written. The first error, if any.
+pub fn set_writes<E>(
+    mut tell: impl FnMut(Told),
+    record: impl FnOnce() -> Result<(), E>,
+    one_shot: impl FnOnce() -> Result<(), E>,
+) -> Result<(), E> {
+    tell(Told::New);
+    if let Err(error) = record() {
+        tell(Told::Old);
+        return Err(error);
+    }
+    one_shot()
+}
+
+/// Whether a boot running in `running` may stage the other slot: from a
+/// committed slot, or from a trial when the other slot is not committed
+/// either (a fresh install's first update). Never over the committed slot a
+/// trial would fall back to: that would leave none.
+pub fn may_stage(record: &Record, running: Slot) -> bool {
+    running
+        .other()
+        .is_some_and(|other| record.slot(running).successful || !record.slot(other).successful)
+}
+
+/// Why BOOTREC_SET refuses a record ([`may_set`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refused {
+    /// The one-shot names a slot [`may_boot`] does not allow.
+    NotBootable,
+    /// This boot's *up* was never stored, and the one-shot arms its slot
+    /// again as a trial: that would give the try back.
+    UpLost,
+    /// A trial stages over the committed slot it would fall back to
+    /// ([`may_stage`]).
+    StagesCommitted,
+    /// The record drops a commit or a floor the firmware holds: it was read
+    /// before a commit (probation commits the running slot while `updated`
+    /// stages). Read again, or [`rebase`], and set again.
+    DropsCommit,
+}
+
+/// Whether BOOTREC_SET, in a boot running in `running`, may replace `now`, the
+/// record the firmware holds (none on a fresh install), with `next` and the
+/// one-shot `one_shot`; `up_lost` when this boot's *up* was not stored. The
+/// floors never fall, and a committed slot stays committed at its release
+/// unless a stage from the other, committed slot begins over it, or the
+/// other slot's commit retires it below the floors.
+pub fn may_set(
+    now: Option<&Record>,
+    next: &Record,
+    one_shot: Option<Slot>,
+    running: Option<Slot>,
+    up_lost: bool,
+) -> Result<(), Refused> {
+    if one_shot.is_some_and(|slot| !may_boot(next, slot)) {
+        return Err(Refused::NotBootable);
+    }
+    if up_lost
+        && let Some(slot) = one_shot
+        && running == Some(slot)
+        && !next.slot(slot).successful
+    {
+        return Err(Refused::UpLost);
+    }
+    let Some(now) = now else {
+        return Ok(());
+    };
+    if next.min_release_seq < now.min_release_seq || next.min_epoch < now.min_epoch {
+        return Err(Refused::DropsCommit);
+    }
+    for slot in [Slot::A, Slot::B] {
+        let (was, is) = (now.slot(slot), next.slot(slot));
+        if !was.successful {
+            continue;
+        }
+        if is.successful {
+            if is.release_seq != was.release_seq {
+                return Err(Refused::DropsCommit);
+            }
+            continue;
+        }
+        let over = is.reason == Reason::Updating && running.and_then(Slot::other) == Some(slot);
+        if over && running.is_some_and(|running| !may_stage(now, running)) {
+            return Err(Refused::StagesCommitted);
+        }
+        let retired = slot.other().is_some_and(|o| next.slot(o).successful)
+            && is.reason == Reason::Unbootable
+            && next.below_floor(slot);
+        if !(over || retired) {
+            return Err(Refused::DropsCommit);
+        }
+    }
+    Ok(())
+}
+
+/// `mine`, a record read before `firmware`, with the commit of `running` that
+/// `firmware` holds and `mine` lacks applied to it, as if it had been read
+/// after (what BOOTREC_SET's [`Refused::DropsCommit`] asks for): the commit's
+/// floors and its retirement of a slot below them, keeping `mine`'s armed
+/// slot. Whether there was such a commit.
+pub fn rebase(mine: &mut Record, firmware: &Record, running: Slot) -> bool {
+    if running == Slot::R || !firmware.slot(running).successful || mine.slot(running).successful {
+        return false;
+    }
+    let armed = mine.armed;
+    let mut nv = Nv {
+        record: *mine,
+        one_shot: None,
+    };
+    commit(&mut nv, running, firmware.min_epoch);
+    nv.record.armed = armed;
+    *mine = nv.record;
+    true
 }
 
 /// *stage*, before writing `slot`: it never boots until [`stage_end`].
@@ -366,6 +556,12 @@ pub fn up(nv: &mut Nv, slot: Slot) {
         state.tries = state.tries.saturating_sub(1);
         if state.tries > 0 {
             arm(nv, slot);
+        } else {
+            // No boot after this one, but R judges this one: `armed` names
+            // the slot `came_up` speaks for. A fault whose power was cut
+            // between its writes can leave the one-shot of a slot the record
+            // does not name as armed.
+            nv.record.armed = Some(slot);
         }
         // This boot spent its try here: a fault from now on spends none in R.
         nv.record.came_up = true;

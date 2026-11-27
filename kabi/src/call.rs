@@ -645,8 +645,11 @@ pub const BOOTREC_GET: u64 = 174;
 /// `bootrec_set(handle, buf, one_shot, restart) -> 0`: writes the 64-byte
 /// record at `buf` (its CRC must hold), and Limine's one-shot for `one_shot`
 /// (a slot, or [`super::update::NONE`] to delete it); a one-shot naming a slot
-/// the record says may not boot is Invalid. With `restart` 1 the machine then
-/// resets into it. Needs WRITE.
+/// the record says may not boot is Invalid, as is a trial staging over the
+/// committed slot. A record that drops a commit or a floor the firmware holds
+/// (one read before probation committed the running slot) is Busy: read
+/// again, or `bootslot::rebase`, and set again (`bootslot::may_set`). With
+/// `restart` 1 the machine then resets into it. Needs WRITE.
 pub const BOOTREC_SET: u64 = 175;
 /// `trust_root(handle, buf, cap) -> len`: the TUF root this slot was built
 /// with (ADR 0008 §2, `kai.root.json` in its bundle), the device's trust

@@ -2,7 +2,8 @@
 //! Under -no-reboot and -no-shutdown a reset or a triple fault also leaves
 //! QEMU paused in `shutdown`, and under -no-reboot alone a power-off ends QEMU
 //! with status 0 as a reset does, so only the reason tells a power-off
-//! (`guest-shutdown`) from them (`guest-reset`).
+//! (`guest-shutdown`) from them (`guest-reset`). A reset the hardware
+//! watchdog made is a `guest-reset` too: QMP's WATCHDOG event before it tells.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
@@ -15,14 +16,24 @@ pub const GUEST_SHUTDOWN: &str = "guest-shutdown";
 /// The reason QEMU gives when the guest reset the machine: the FADT register,
 /// the 8042, a triple fault and ResetSystem all give it.
 pub const GUEST_RESET: &str = "guest-reset";
+/// The WATCHDOG event's action when the watchdog reset the machine.
+pub const WATCHDOG_RESET: &str = "reset";
 /// How long the listener keeps trying to reach QMP once QEMU has started.
 const CONNECT_WITHIN: Duration = Duration::from_secs(30);
 const CONNECT_RETRY: Duration = Duration::from_millis(100);
 
+/// The first SHUTDOWN QEMU sent, and whether the watchdog reset the machine
+/// before it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shutdown {
+    pub reason: String,
+    pub watchdog: bool,
+}
+
 /// Listens on QMP `port` from the start of the boot, so the event cannot pass
-/// before anyone hears it; the receiver gets the first SHUTDOWN's reason. QMP
-/// takes one client, so a case that listens sends no `@` lines.
-pub fn listen(port: u16) -> mpsc::Receiver<String> {
+/// before anyone hears it; the receiver gets the first SHUTDOWN. QMP takes one
+/// client, so a case that listens sends no `@` lines.
+pub fn listen(port: u16) -> mpsc::Receiver<Shutdown> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         if let Some(reason) = first_shutdown(port) {
@@ -33,19 +44,21 @@ pub fn listen(port: u16) -> mpsc::Receiver<String> {
 }
 
 /// Reads events until a SHUTDOWN, or until QEMU closes the socket.
-fn first_shutdown(port: u16) -> Option<String> {
+fn first_shutdown(port: u16) -> Option<Shutdown> {
     let mut reader = BufReader::new(connect(port)?);
     let mut line = String::new();
     // QEMU's greeting, then no event comes until capabilities are negotiated.
     reader.read_line(&mut line).ok()?;
     writeln!(reader.get_mut(), r#"{{"execute":"qmp_capabilities"}}"#).ok()?;
+    let mut watchdog = false;
     loop {
         line.clear();
         if reader.read_line(&mut line).ok()? == 0 {
             return None;
         }
+        watchdog |= watchdog_action(&line).as_deref() == Some(WATCHDOG_RESET);
         if let Some(reason) = shutdown_reason(&line) {
-            return Some(reason);
+            return Some(Shutdown { reason, watchdog });
         }
     }
 }
@@ -71,6 +84,16 @@ pub fn shutdown_reason(line: &str) -> Option<String> {
     Some(reason.to_string())
 }
 
+/// The action in a QMP WATCHDOG event; None for any other line.
+pub fn watchdog_action(line: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    if value.get("event")?.as_str()? != "WATCHDOG" {
+        return None;
+    }
+    let action = value.get("data")?.get("action")?.as_str()?;
+    Some(action.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,6 +107,15 @@ mod tests {
     fn a_shutdown_event_gives_its_reason() {
         assert_eq!(shutdown_reason(OFF).as_deref(), Some(GUEST_SHUTDOWN));
         assert_eq!(shutdown_reason(RESET).as_deref(), Some(GUEST_RESET));
+    }
+
+    const BARK: &str = r#"{"timestamp": {"seconds": 1, "microseconds": 2}, "event": "WATCHDOG", "data": {"action": "reset"}}"#;
+
+    #[test]
+    fn a_watchdog_event_gives_its_action() {
+        assert_eq!(watchdog_action(BARK).as_deref(), Some(WATCHDOG_RESET));
+        assert_eq!(watchdog_action(RESET), None);
+        assert_eq!(watchdog_action(r#"{"event": "WATCHDOG"}"#), None);
     }
 
     #[test]
@@ -120,8 +152,23 @@ mod tests {
     #[test]
     fn the_listener_hears_the_first_shutdown_after_other_events() {
         let port = fake_qmp(&[r#"{"event": "RESUME"}"#, RESET, OFF]);
-        let reason = listen(port).recv_timeout(Duration::from_secs(10));
-        assert_eq!(reason.as_deref(), Ok("guest-reset"));
+        let got = listen(port).recv_timeout(Duration::from_secs(10));
+        let reset = Shutdown {
+            reason: GUEST_RESET.into(),
+            watchdog: false,
+        };
+        assert_eq!(got, Ok(reset));
+    }
+
+    #[test]
+    fn the_listener_hears_a_watchdog_reset() {
+        let port = fake_qmp(&[r#"{"event": "RESUME"}"#, BARK, RESET]);
+        let got = listen(port).recv_timeout(Duration::from_secs(10));
+        let reset = Shutdown {
+            reason: GUEST_RESET.into(),
+            watchdog: true,
+        };
+        assert_eq!(got, Ok(reset));
     }
 
     #[test]

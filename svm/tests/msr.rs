@@ -43,16 +43,35 @@ fn an_msr_on_the_list_is_emulated() {
     const EFER: u64 = 0xC000_0080;
     assert_eq!(
         at(0, EFER, Some(0x1002)),
-        Action::Kernel(Kernel::Msr { write: false }, Next::To(0x1002))
+        Action::Kernel(
+            Kernel::Msr {
+                msr: EFER as u32,
+                write: false
+            },
+            Next::To(0x1002)
+        )
     );
     assert_eq!(
         at(1, 0x830, None),
-        Action::Kernel(Kernel::Msr { write: true }, Next::Decode(Insn::Wrmsr))
+        Action::Kernel(
+            Kernel::Msr {
+                msr: 0x830,
+                write: true
+            },
+            Next::Decode(Insn::Wrmsr)
+        )
     );
-    // RDMSR and WRMSR take ECX: RCX's upper half does not count.
+    // RDMSR and WRMSR take ECX: RCX's upper half does not count, and the
+    // action names the MSR that was checked, not RCX.
     assert_eq!(
         at(0, 0xDEAD_0000_0000_0000 | EFER, Some(2)),
-        Action::Kernel(Kernel::Msr { write: false }, Next::To(2))
+        Action::Kernel(
+            Kernel::Msr {
+                msr: EFER as u32,
+                write: false
+            },
+            Next::To(2)
+        )
     );
 }
 

@@ -318,12 +318,15 @@ impl Host for FakeHost {
         Ok(())
     }
 
-    fn rules_set_aside(&self, text: &str) -> Result<(), String> {
+    fn rules_set_aside(&self, text: &str) -> Result<String, String> {
         if !self.rules_aside_ok.get() {
             return Err(String::from("the disk did not answer"));
         }
-        *self.rules_aside.borrow_mut() = Some(text.into());
-        Ok(())
+        let mut aside = self.rules_aside.borrow_mut();
+        let name = crate::refused_rules_name(|name| aside.iter().any(|(n, _)| n == name))
+            .ok_or_else(|| String::from("every refused name is kept already"))?;
+        aside.push((name.clone(), text.into()));
+        Ok(name)
     }
 
     fn net_grants_read(&self) -> Result<Option<String>, String> {

@@ -146,15 +146,27 @@ fn a_cut_keeping_any_subset_of_one_flushes_writes_is_safe() {
     let new = pattern(NEW, 4);
     let epochs = logged_replace(&base, "BIG.BIN", &new).epochs();
     assert_eq!(epochs.len(), 5, "five phases");
+    assert!(
+        epochs[1..].iter().all(|e| e.len() <= 10),
+        "a small phase grew"
+    );
     let mut rng = Rng(0x2545_F491_4F6C_DD1D);
     for (i, epoch) in epochs.iter().enumerate() {
-        for _ in 0..24 {
+        // A small phase (the FATs, the switch, FSInfo) is tried with every
+        // subset of its writes; the data phase with 24 random ones.
+        let every = epoch.len() <= 10;
+        let tries = if every { 1u32 << epoch.len() } else { 24 };
+        for keep in 0..tries {
             let mut disk = base.clone();
             for (lba, s) in epochs[..i].iter().flatten() {
                 disk.sectors.insert(*lba, s.clone());
             }
-            for (lba, s) in epoch {
-                if rng.next().is_multiple_of(2) {
+            for (n, (lba, s)) in epoch.iter().enumerate() {
+                let kept = match every {
+                    true => keep & (1 << n) != 0,
+                    false => rng.next().is_multiple_of(2),
+                };
+                if kept {
                     disk.sectors.insert(*lba, s.clone());
                 }
             }
@@ -163,6 +175,14 @@ fn a_cut_keeping_any_subset_of_one_flushes_writes_is_safe() {
             if i != 2 {
                 assert_eq!(is_new, i > 2, "phase {} decided the file", i + 1);
             }
+            // The volume checks, and a reclaim settles it without changing
+            // which file it holds.
+            let room = disk.size;
+            let mut v = Volume::open(&mut disk, 0, room).unwrap();
+            let usage = v.check().unwrap();
+            assert_eq!(v.reclaim().unwrap(), usage.leaked);
+            assert_eq!(state(&mut disk, "BIG.BIN", &old, &new), is_new);
+            settled(&disk, total(&[3000, if is_new { NEW } else { OLD }, 9000]));
         }
     }
 }

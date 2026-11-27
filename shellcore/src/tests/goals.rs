@@ -653,6 +653,10 @@ fn a_negation_joined_to_the_cue_still_refuses_a_goal() {
         "trash the drafts in notes/q3, dont-delete the finals",
         "sort notes/q3, never-move the finals",
         "sort notes/q3 and do-not-move anything",
+        // A folder's path between a determiner and the word is no name's
+        // lead (#1556's review).
+        "trash the drafts in my notes/q3, dont-delete the finals",
+        "trash the drafts in my notes/q3 dont-delete the finals",
     ] {
         let scope = crate::goalscope::scope(line, |_| Ok(()));
         assert!(scope.is_err(), "{line}: {scope:?}");
@@ -667,6 +671,40 @@ fn a_negation_joined_to_the_cue_still_refuses_a_goal() {
             Ok(alloc::vec!["fs_list".to_string()]),
             "{line}"
         );
+    }
+}
+
+/// #1577's review: a word that ends its clause leads nothing, so "this:"
+/// before "dont-delete" leaves it a negation; and a folder said not to be
+/// touched is never a goal's folder, in either order.
+#[test]
+fn a_clause_mark_ends_a_lead_and_a_folder_kept_off_refuses_the_goal() {
+    for line in [
+        "trash the drafts in notes/q3, keep this: dont-delete the finals",
+        "don't touch notes/q3, trash the drafts in notes/old",
+        "trash the drafts in notes/old, don't touch notes/q3",
+        "sort everything in notes/ except notes/q3",
+    ] {
+        let scope = crate::goalscope::scope(line, |_| Ok(()));
+        assert!(scope.is_err(), "{line}: {scope:?}");
+    }
+    let kept_off = crate::goalscope::scope(
+        "don't touch notes/q3, trash the drafts in notes/old",
+        |_| Ok(()),
+    );
+    assert_eq!(
+        kept_off,
+        Err(String::from(
+            "\"notes/q3\" is said not to be touched; name only the folders the goal works in"
+        ))
+    );
+    // A negation after the folder, or describing files, keeps it.
+    for line in [
+        "sort notes/q3, it's not urgent",
+        "move the files with no tag into notes/untagged",
+    ] {
+        let scope = crate::goalscope::scope(line, |_| Ok(()));
+        assert!(scope.is_ok(), "{line}: {scope:?}");
     }
 }
 

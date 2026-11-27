@@ -11,6 +11,12 @@
 //! anywhere. On a tag, release.yml restores nothing: the jobs `publish` needs
 //! would otherwise run what any job on main could have written there.
 //!
+//! Two more rules guard what a workflow may do. Every workflow has a top-level
+//! `permissions:` block (without one it gets the repository's default token,
+//! which may write), and only `release.yml` asks for a `write` scope. Every
+//! `uses:` of a remote action names a full commit sha, never a tag a maintainer
+//! can move (the tag goes in a trailing comment).
+//!
 //! The workflows are read line by line, not as YAML: a step is a `- ` list item
 //! and its lines, and its fields are the lines one indent below the dash.
 
@@ -145,6 +151,51 @@ fn lint(file: &str, text: &str) -> (Vec<String>, usize) {
     (errors, seen)
 }
 
+/// The workflows that may ask for a `write` permission.
+const MAY_WRITE: &[&str] = &["release.yml"];
+
+/// What the policy rules find wrong in one file: `workflow` is true for a file
+/// under `.github/workflows` (a local action has no `permissions:`).
+fn policy(file: &str, text: &str, workflow: bool) -> Vec<String> {
+    let name = Path::new(file)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(file);
+    let mut errors = Vec::new();
+    if workflow && !text.lines().any(|l| l.starts_with("permissions:")) {
+        errors.push(format!(
+            "{file}:1: no top-level `permissions:` block: add `permissions: {{}}` or the scopes it needs"
+        ));
+    }
+    for (i, line) in text.lines().enumerate() {
+        let at = format!("{file}:{}", i + 1);
+        let body = line.trim_start();
+        let body = body.strip_prefix("- ").unwrap_or(body).trim_start();
+        if let Some((scope, "write")) = body.split_once(": ")
+            && !scope.contains(' ')
+            && !MAY_WRITE.contains(&name)
+        {
+            errors.push(format!("{at}: `{scope}: write` outside {MAY_WRITE:?}"));
+        }
+        let Some(uses) = body.strip_prefix("uses:") else {
+            continue;
+        };
+        let uses = uses.split(" #").next().unwrap_or(uses).trim();
+        if uses.starts_with("./") {
+            continue;
+        }
+        let pinned = uses
+            .rsplit_once('@')
+            .is_some_and(|(_, sha)| sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()));
+        if !pinned {
+            errors.push(format!(
+                "{at}: `{uses}` is not pinned to a full commit sha: use `@<sha> # <tag>`"
+            ));
+        }
+    }
+    errors
+}
+
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("..")
 }
@@ -186,6 +237,11 @@ fn caches_save_from_main_only_and_a_release_tag_restores_none() {
         let (e, n) = lint(&name, &text);
         errors.extend(e);
         seen += n;
+        errors.extend(policy(
+            &name,
+            &text,
+            path.starts_with(root().join(".github/workflows")),
+        ));
     }
     // The walk reads the cache steps: ci.yml alone has more than ten.
     assert!(seen > 20, "read only {seen} cache steps");
@@ -268,4 +324,45 @@ runs:
     let (errors, seen) = lint(".github/workflows/release.yml", good);
     assert!(errors.is_empty(), "{errors:#?}");
     assert_eq!(seen, 7);
+}
+
+#[test]
+fn the_policy_refuses_a_missing_block_a_write_and_a_tag() {
+    let bad = "\
+name: x
+on: push
+jobs:
+  a:
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: some/action@main # v1
+      - uses: ./.github/actions/local
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+";
+    let errors = policy(".github/workflows/ci.yml", bad, true);
+    let lines: Vec<&str> = errors
+        .iter()
+        .map(|e| e.split(':').nth(1).unwrap_or(""))
+        .collect();
+    assert_eq!(lines, ["1", "6", "8", "9"], "{errors:#?}");
+    // The same file is a release's: its write is allowed, the rest is not.
+    let release = policy(".github/workflows/release.yml", bad, true);
+    assert_eq!(release.len(), 3, "{release:#?}");
+    // A local action has no permissions block to ask for.
+    let local = "runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v4\n";
+    assert_eq!(
+        policy(".github/actions/x/action.yml", local, false).len(),
+        1
+    );
+
+    let good = "\
+permissions: {}
+jobs:
+  a:
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+";
+    assert!(policy(".github/workflows/ci.yml", good, true).is_empty());
 }

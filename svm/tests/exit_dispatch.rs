@@ -181,8 +181,24 @@ fn emulated_instructions_step_to_nrip_or_decode_without_it() {
         (ExitCode::XSETBV, 0, Kernel::Xsetbv, Insn::Xsetbv),
         (ExitCode::INVD, 0, Kernel::Flush, Insn::Invd),
         (ExitCode::WBINVD, 0, Kernel::Flush, Insn::Wbinvd),
-        (ExitCode::MSR, 0, Kernel::Msr { write: false }, Insn::Rdmsr),
-        (ExitCode::MSR, 1, Kernel::Msr { write: true }, Insn::Wrmsr),
+        (
+            ExitCode::MSR,
+            0,
+            Kernel::Msr {
+                msr: EFER as u32,
+                write: false,
+            },
+            Insn::Rdmsr,
+        ),
+        (
+            ExitCode::MSR,
+            1,
+            Kernel::Msr {
+                msr: EFER as u32,
+                write: true,
+            },
+            Insn::Wrmsr,
+        ),
         (
             ExitCode::RDTSCP,
             0,

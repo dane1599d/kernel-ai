@@ -8,8 +8,12 @@
 //!
 //! The file names no hash of `Cargo.lock`, so it changes only when a shipped crate,
 //! its version or a licence does; a PR that adds a crate of our own leaves it alone.
-//! `--check` regenerates it and fails when the committed file differs; CI runs it,
-//! so only CI and whoever changes dependencies need cargo-about. `make_esp`
+//! `--check-sbom FILE` checks the release's CycloneDX SBOM against it: every crate
+//! of its Parts is a component, and every registry component's licence is one
+//! `deny.toml` allows (see [`sbom_problems`]); it reads the committed file and
+//! runs no cargo-about, which the release's build runners do not have.
+//! `--check` regenerates it and fails when the committed file differs; CI runs
+//! it, so only CI and whoever changes dependencies need cargo-about. `make_esp`
 //! copies the file to the boot drive with [`image_line`] on top.
 
 use crate::licences;
@@ -31,8 +35,22 @@ const GRAPHS: [(&str, &str, &str); 3] = [
 ];
 
 pub fn main(args: &[String]) -> Result<(), String> {
-    let root = crate::workspace_root();
-    let text = render(&root)?;
+    dispatch(&crate::workspace_root(), args, render)
+}
+
+/// [`main`] with the notices made by `render`: only writing and `--check` make
+/// them (cargo-about); `--check-sbom` never does.
+fn dispatch(
+    root: &Path,
+    args: &[String],
+    render: impl FnOnce(&Path) -> Result<String, String>,
+) -> Result<(), String> {
+    if let [flag, sbom] = args
+        && flag == "--check-sbom"
+    {
+        return check_sbom(root, Path::new(sbom));
+    }
+    let text = render(root)?;
     let path = root.join(FILE);
     match args {
         [] => {
@@ -55,7 +73,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
             println!("xtask: {FILE} is up to date");
             Ok(())
         }
-        _ => Err("usage: cargo xtask notices [--check]".into()),
+        _ => Err("usage: cargo xtask notices [--check | --check-sbom FILE]".into()),
     }
 }
 
@@ -80,6 +98,114 @@ fn stale(committed: &str, generated: &str) -> Option<Vec<String>> {
     let (old, new) = (committed.lines().count(), generated.lines().count());
     lines.push(format!("{FILE}: {old} lines committed, {new} generated"));
     Some(lines)
+}
+
+/// `--check-sbom`: reads the SBOM at `path` and fails naming every problem.
+fn check_sbom(root: &Path, path: &Path) -> Result<(), String> {
+    let sbom = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let notices =
+        fs::read_to_string(root.join(FILE)).map_err(|e| format!("cannot read {FILE}: {e}"))?;
+    let problems = sbom_problems(&notices, &sbom, &crate::licences::rules(root)?)?;
+    for problem in &problems {
+        println!("xtask: {problem}");
+    }
+    match problems.is_empty() {
+        true => {
+            println!("xtask: the SBOM lists every crate of {FILE}, each under an allowed licence");
+            Ok(())
+        }
+        false => Err(format!(
+            "the SBOM and {FILE} disagree ({} problems)",
+            problems.len()
+        )),
+    }
+}
+
+/// The crates of `notices`' Parts, as (name, version), and the lines that start
+/// like a crate (`- name 1.2`) but did not parse as one (`- name 1.2: licence.`).
+/// The other Parts (core, Limine, the fonts) have no Cargo.lock entry.
+fn parts_crates(notices: &str) -> (BTreeSet<(String, String)>, Vec<String>) {
+    let (mut crates, mut unparsed) = (BTreeSet::new(), Vec::new());
+    let parts = notices
+        .lines()
+        .skip_while(|line| *line != "Parts")
+        .take_while(|line| *line != "Licence texts");
+    for line in parts.filter_map(|line| line.strip_prefix("- ")) {
+        let mut words = line.splitn(3, ' ');
+        let (Some(name), Some(rest)) = (words.next(), words.next()) else {
+            continue;
+        };
+        let name_ok = !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c));
+        if !name_ok || !rest.starts_with(|c: char| c.is_ascii_digit()) {
+            continue;
+        }
+        match rest.strip_suffix(':') {
+            Some(version) if !version.contains([' ', ':']) && words.next().is_some() => {
+                crates.insert((name.to_owned(), version.to_owned()));
+            }
+            _ => unparsed.push(format!("- {line}")),
+        }
+    }
+    (crates, unparsed)
+}
+
+/// What is wrong between `notices` and the CycloneDX `sbom`: a crate the
+/// notices list that is no component, a Parts line that looks like a crate and
+/// does not parse, and a registry component with no licence or one that
+/// `deny.toml`'s rules do not allow. Our own crates (a `file://` purl) are
+/// listed in the SBOM and not judged: their licence is the workspace's.
+pub fn sbom_problems(
+    notices: &str,
+    sbom: &str,
+    rules: &crate::licences::Rules,
+) -> Result<Vec<String>, String> {
+    let sbom: serde_json::Value =
+        serde_json::from_str(sbom).map_err(|e| format!("the SBOM is not JSON: {e}"))?;
+    let components = sbom["components"]
+        .as_array()
+        .ok_or("the SBOM has no components")?;
+    let field = |c: &serde_json::Value, k: &str| c[k].as_str().unwrap_or_default().to_owned();
+    let listed: BTreeSet<(String, String)> = components
+        .iter()
+        .map(|c| (field(c, "name"), field(c, "version")))
+        .collect();
+    let (noticed, unparsed) = parts_crates(notices);
+    if noticed.is_empty() {
+        return Err(format!("{FILE} lists no crates: its Parts did not parse"));
+    }
+    let mut problems: Vec<String> = unparsed
+        .into_iter()
+        .map(|line| format!("{FILE} has a crate-like line that does not parse: {line}"))
+        .collect();
+    for (name, version) in noticed.difference(&listed) {
+        problems.push(format!("{FILE} lists {name} {version}; the SBOM does not"));
+    }
+    for component in components {
+        let (name, version) = (field(component, "name"), field(component, "version"));
+        if field(component, "purl").contains("file://") {
+            continue;
+        }
+        let expression = rules.clarified(&name).map(str::to_owned).or_else(|| {
+            component["licenses"][0]["expression"]
+                .as_str()
+                .or_else(|| component["licenses"][0]["license"]["id"].as_str())
+                .map(str::to_owned)
+        });
+        match expression {
+            None => problems.push(format!("{name} {version} has no licence in the SBOM")),
+            Some(expression) => {
+                if let Err(why) = crate::licences::choose(&expression, rules, Some(&name)) {
+                    problems.push(format!(
+                        "{name} {version}: `{expression}` is not allowed by deny.toml: {why}"
+                    ));
+                }
+            }
+        }
+    }
+    Ok(problems)
 }
 
 /// The OS's version: `version` under `[workspace.package]` in `root`'s
@@ -405,6 +531,152 @@ mod tests {
         // A changed licence, same line count.
         let relicensed = committed.replace("spin 0.12.3: MIT", "spin 0.12.3: Apache-2.0");
         assert!(stale(committed, &relicensed).is_some());
+    }
+
+    fn deny() -> crate::licences::Rules {
+        crate::licences::rules(&crate::workspace_root()).unwrap()
+    }
+
+    fn sbom(components: &[(&str, &str, &str)]) -> String {
+        let list: Vec<_> = components
+            .iter()
+            .map(|(name, version, licence)| {
+                serde_json::json!({
+                    "name": name, "version": version,
+                    "purl": format!("pkg:cargo/{name}@{version}"),
+                    "licenses": [{ "expression": licence }],
+                })
+            })
+            .collect();
+        serde_json::json!({ "components": list }).to_string()
+    }
+
+    const NOTICES: &str = concat!(
+        "Parts\n\n",
+        "- core and alloc (rust-src): MIT OR Apache-2.0. In the kernel.\n",
+        "- smoltcp 0.14.0: 0BSD.\n",
+        "- spin 0.12.3: MIT.\n",
+        "\nLicence texts\n",
+        "- zzz 9.9.9: MIT.\n",
+    );
+
+    #[test]
+    fn parts_take_crate_lines_only_and_stop_at_the_licence_texts() {
+        let (crates, unparsed) = parts_crates(NOTICES);
+        let names: Vec<_> = crates.iter().map(|(n, v)| format!("{n} {v}")).collect();
+        assert_eq!(names, ["smoltcp 0.14.0", "spin 0.12.3"]);
+        assert!(unparsed.is_empty(), "{unparsed:?}");
+    }
+
+    #[test]
+    fn a_crate_like_line_that_does_not_parse_is_named() {
+        let notices = "Parts\n- smoltcp 0.14.0 (x): 0BSD.\n- Limine (12.9): BSD-2-Clause.\n";
+        let (crates, unparsed) = parts_crates(notices);
+        assert!(crates.is_empty());
+        assert_eq!(unparsed, ["- smoltcp 0.14.0 (x): 0BSD."]);
+    }
+
+    #[test]
+    fn an_sbom_with_every_crate_under_an_allowed_licence_has_no_problem() {
+        let s = sbom(&[
+            ("smoltcp", "0.14.0", "0BSD"),
+            ("spin", "0.12.3", "MIT OR Apache-2.0"),
+        ]);
+        assert_eq!(
+            sbom_problems(NOTICES, &s, &deny()).unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_crate_missing_from_the_sbom_is_named() {
+        let s = sbom(&[("smoltcp", "0.14.0", "0BSD"), ("spin", "0.12.2", "MIT")]);
+        let problems = sbom_problems(NOTICES, &s, &deny()).unwrap();
+        assert_eq!(
+            problems,
+            ["NOTICES.txt lists spin 0.12.3; the SBOM does not"]
+        );
+    }
+
+    #[test]
+    fn a_licence_deny_toml_does_not_allow_is_named() {
+        let s = sbom(&[
+            ("smoltcp", "0.14.0", "0BSD"),
+            ("spin", "0.12.3", "MIT"),
+            ("copyleft", "1.0.0", "GPL-3.0-only"),
+            ("bare", "1.0.0", ""),
+        ]);
+        let problems = sbom_problems(NOTICES, &s, &deny()).unwrap();
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems[0].starts_with("copyleft 1.0.0: `GPL-3.0-only` is not allowed"));
+        assert!(problems[1].starts_with("bare 1.0.0: ``"), "{problems:?}");
+    }
+
+    #[test]
+    fn our_own_crates_and_a_crate_with_no_licence_are_told_apart() {
+        let own = serde_json::json!({ "components": [
+            {
+                "name": "kabi", "version": "0.1.0-dev",
+                "purl": "pkg:cargo/kabi@0.1.0-dev?download_url=file://../kabi",
+            },
+            { "name": "smoltcp", "version": "0.14.0", "purl": "pkg:cargo/smoltcp@0.14.0" },
+            {
+                "name": "spin", "version": "0.12.3", "purl": "pkg:cargo/spin@0.12.3",
+                "licenses": [{ "license": { "id": "MIT" } }],
+            },
+        ]})
+        .to_string();
+        let problems = sbom_problems(NOTICES, &own, &deny()).unwrap();
+        assert_eq!(problems, ["smoltcp 0.14.0 has no licence in the SBOM"]);
+    }
+
+    /// #1557's review: the release's build runners have no cargo-about, so
+    /// `--check-sbom` through `main`'s dispatch must never render the notices.
+    /// A temp directory that goes when the test ends, a failed assert included.
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("kai-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn check_sbom_runs_no_cargo_about() {
+        let root = crate::workspace_root();
+        let notices = fs::read_to_string(root.join(FILE)).unwrap();
+        let (crates, _) = parts_crates(&notices);
+        let components: Vec<(&str, &str, &str)> = crates
+            .iter()
+            .map(|(name, version)| (name.as_str(), version.as_str(), "MIT"))
+            .collect();
+        let scratch = Scratch::new("check-sbom-no-cargo-about");
+        let dir = &scratch.0;
+        let (good, short) = (dir.join("good.cdx.json"), dir.join("short.cdx.json"));
+        fs::write(&good, sbom(&components)).unwrap();
+        fs::write(&short, sbom(&components[1..])).unwrap();
+        let args = |path: &Path| ["--check-sbom".to_owned(), path.display().to_string()];
+        let never = |_: &Path| -> Result<String, String> { panic!("cargo-about ran") };
+        assert_eq!(dispatch(&root, &args(&good), never), Ok(()));
+        let err = dispatch(&root, &args(&short), never).unwrap_err();
+        assert!(err.contains("(1 problems)"), "{err}");
+    }
+
+    #[test]
+    fn the_committed_notices_parse_with_no_crate_like_line_left_over() {
+        let notices = fs::read_to_string(crate::workspace_root().join(FILE)).unwrap();
+        let (crates, unparsed) = parts_crates(&notices);
+        assert!(crates.len() > 100, "{}", crates.len());
+        assert!(unparsed.is_empty(), "{unparsed:?}");
     }
 
     #[test]

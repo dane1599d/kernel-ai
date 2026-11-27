@@ -361,6 +361,42 @@ pub fn release_cmdline_ok(cmdline: &str) -> bool {
         .any(|word| word.starts_with("online=") || word.starts_with("test="))
 }
 
+/// A slot warns when its files take more than this many percent of its
+/// partition: the partitions never grow on an install (ADR 0008 S08-2).
+pub const FILL_WARN_PERCENT: u64 = 80;
+
+/// One line for slot `name` whose volume takes `used` bytes of a `mib` MiB
+/// partition: its size in MiB, the share of the partition to a tenth of a
+/// percent, and a warning past [`FILL_WARN_PERCENT`] (exactly that is none).
+/// The line starts `xtask: slot `, which the release workflow's summary reads.
+pub fn fill_line(name: &str, used: u64, mib: u64) -> String {
+    let capacity = mib * MIB;
+    let tenths_mib = used * 10 / MIB;
+    let tenths_percent = used * 1000 / capacity;
+    let mut line = format!(
+        "xtask: slot {name} {}.{} MiB of {mib} MiB ({}.{}%)",
+        tenths_mib / 10,
+        tenths_mib % 10,
+        tenths_percent / 10,
+        tenths_percent % 10
+    );
+    if used * 100 > capacity * FILL_WARN_PERCENT {
+        line.push_str(&format!(" WARNING: more than {FILL_WARN_PERCENT}% full"));
+    }
+    line
+}
+
+/// [`fill_line`] for each slot of `plan`, in disk order.
+fn fill_lines(plan: &Plan) -> Vec<String> {
+    let volumes = plan.volumes.iter().skip(1);
+    let sizes = PARTITION_MIB.iter().skip(1);
+    SLOTS
+        .iter()
+        .zip(volumes.zip(sizes))
+        .map(|(name, ((_, volume), &mib))| fill_line(name, volume.len() as u64, mib))
+        .collect()
+}
+
 /// Writes the release disk to `out`: the slot disk with an empty command line
 /// and exactly [`PARTITION_MIB`] (a build whose files do not fit is refused),
 /// then `kai-data` as partition 5, formatted with a fixed volume id, so every
@@ -387,6 +423,9 @@ pub fn build_release(
         Room::Fixed,
         image_id,
     )?;
+    for line in fill_lines(&plan) {
+        println!("{line}");
+    }
     write(&plan, out, None)?;
     let (first, sectors) = plan.data.ok_or("the release disk has no kai-data")?;
     let uuid = gpt::unique(image_id, "kai-data volume");
@@ -687,6 +726,44 @@ mod tests {
         assert_eq!(fs::metadata(&out).unwrap().len(), len);
         assert_eq!(read_at(&out, at(3) + 4096, 8), fresh_b);
         fs::remove_dir_all(&esp).unwrap();
+    }
+
+    #[test]
+    fn a_slot_warns_past_eighty_percent_and_not_at_it() {
+        // 100 MiB, so 80% is a whole number of bytes.
+        let at = 80 * MIB;
+        assert_eq!(
+            fill_line("kai-a", at, 100),
+            "xtask: slot kai-a 80.0 MiB of 100 MiB (80.0%)"
+        );
+        let over = fill_line("kai-a", at + 1, 100);
+        assert!(over.ends_with("WARNING: more than 80% full"), "{over}");
+        assert!(over.contains("(80.0%)"), "{over}");
+        // A full partition, and an empty one.
+        assert!(fill_line("kai-r", 256 * MIB, 256).contains("(100.0%) WARNING"));
+        assert_eq!(
+            fill_line("kai-b", 0, 1024),
+            "xtask: slot kai-b 0.0 MiB of 1024 MiB (0.0%)"
+        );
+        // The release image's 113 MiB is far under it in kai-a's 1,024.
+        assert_eq!(
+            fill_line("kai-a", 113 * MIB, 1024),
+            "xtask: slot kai-a 113.0 MiB of 1024 MiB (11.0%)"
+        );
+    }
+
+    #[test]
+    fn the_release_disk_reports_each_slots_fill() {
+        let esp = fake_esp("fill");
+        let record = "kai-slot 1\nrelease_seq 1\nepoch 1\nversion 0.1.0\ncommit x\nchannel dev\n";
+        let plan = plan(&esp, "", record, Some(16), Room::Fixed, DISK_NAME).unwrap();
+        let lines = fill_lines(&plan);
+        assert_eq!(lines.len(), 3);
+        for (line, name) in lines.iter().zip(SLOTS) {
+            assert!(line.starts_with(&format!("xtask: slot {name} ")), "{line}");
+            assert!(!line.contains("WARNING"), "{line}");
+        }
+        assert!(lines[0].contains("of 256 MiB") && lines[1].contains("of 1024 MiB"));
     }
 
     #[test]

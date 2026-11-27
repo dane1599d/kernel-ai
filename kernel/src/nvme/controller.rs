@@ -177,10 +177,30 @@ impl Controller {
         let regs = self.regs;
         let caps = self.caps;
         let pair = match io {
-            true => self.io.as_mut().ok_or("nvme: no I/O queue")?,
+            true => match self.io.as_mut() {
+                Some(pair) => pair,
+                None => {
+                    crate::log!(
+                        "nvme: opcode {:#04x} refused: no I/O queue",
+                        command.dwords[0] & 0xFF
+                    );
+                    return Err("nvme: no I/O queue");
+                }
+            },
             false => &mut self.admin,
         };
-        let (slot, tail) = pair.sq.push().ok_or("nvme: the submission queue is full")?;
+        let Some((slot, tail)) = pair.sq.push() else {
+            // Commands run one at a time, so this is a head the controller
+            // reported that left the queue looking full ([`SubmissionQueue::advance_head`]).
+            crate::log!(
+                "nvme: opcode {:#04x} refused: the submission queue {} is full (tail {}, head {})",
+                command.dwords[0] & 0xFF,
+                pair.qid,
+                pair.sq.tail(),
+                pair.sq.head()
+            );
+            return Err("nvme: the submission queue is full");
+        };
         let entry = pair.sq_mem.virt + u64::from(slot) * 64;
         for (i, dword) in command.dwords.iter().enumerate() {
             // SAFETY: slot < entries, so the 64-byte entry lies inside the queue's
@@ -204,7 +224,13 @@ impl Controller {
             let done = Completion::parse(words);
             if pair.cq.is_new(done.phase) {
                 let head = pair.cq.pop();
-                pair.sq.advance_head(done.sq_head);
+                if !pair.sq.advance_head(done.sq_head) {
+                    crate::log!(
+                        "nvme: queue {} completed with a submission head {} outside the queue",
+                        pair.qid,
+                        done.sq_head
+                    );
+                }
                 let doorbell = regs + caps.cq_head_doorbell(pair.qid) as u64;
                 // SAFETY: as for the tail doorbell.
                 unsafe { (doorbell as *mut u32).write_volatile(u32::from(head)) };
