@@ -106,9 +106,11 @@ pub struct Record {
     /// The kernel never runs [`boot`] (the firmware picks the slot), so the
     /// mark a boot that came up and was then reset leaves can spare the try of
     /// the next boot, if that one dies before *up*. R clears it whenever it
-    /// reads it, so it never loops, but it can spare one try in R after each
-    /// *up*: a trial of `TRIES` tries boots at most `2 * TRIES - 1` times
-    /// (`tests/model.rs` walks every way there).
+    /// reads it, and every arm clears it, so a mark never outlives the arm of
+    /// the slot whose *up* set it (a rollback or a stage cannot carry it to a
+    /// fresh trial). It can still spare one try in R after each *up*: a trial
+    /// of `TRIES` tries boots at most `2 * TRIES - 1` times (`tests/model.rs`
+    /// walks every way there).
     pub came_up: bool,
 }
 
@@ -286,10 +288,13 @@ pub fn boot(nv: &mut Nv) -> Slot {
     slot
 }
 
-/// Asks for `slot` on the next boot, and records that its boot has not finished.
+/// Asks for `slot` on the next boot, and records that its boot has not
+/// finished: it has not come up, whatever an earlier boot left in
+/// [`Record::came_up`].
 fn arm(nv: &mut Nv, slot: Slot) {
     nv.one_shot = Some(slot);
     nv.record.armed = Some(slot);
+    nv.record.came_up = false;
 }
 
 /// Whether R, arming `next` from a record that had `armed`, writes the
