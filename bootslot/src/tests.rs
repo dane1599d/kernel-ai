@@ -527,6 +527,76 @@ fn r_stores_the_record_even_when_the_one_shot_write_fails() {
     }
 }
 
+/// [`may_set`]'s refusals of a stage's records, and [`rebase`] after a Busy:
+/// the review's case, a probation commit during a stage from a fresh
+/// install's trial.
+#[test]
+fn a_stage_set_from_before_a_commit_is_refused_and_rebased_onto_it() {
+    let mut fresh = Nv::default();
+    install(&mut fresh, 1);
+    // `updated` in trial A reads the record and stages B.
+    let mut read = fresh;
+    up(&mut read, Slot::A);
+    let firmware = read.record;
+    let mut staging = read;
+    staging.one_shot = Some(Slot::A);
+    stage_begin(&mut staging, Slot::B);
+    // Probation commits A meanwhile.
+    let mut committed = Nv {
+        record: firmware,
+        one_shot: Some(Slot::A),
+    };
+    commit(&mut committed, Slot::A, 1);
+    let now = Some(&committed.record);
+    let set = |record: &Record, one_shot| may_set(now, record, one_shot, Some(Slot::A), false);
+    assert_eq!(
+        set(&staging.record, Some(Slot::A)),
+        Err(Refused::DropsCommit)
+    );
+    // Rebased, it keeps A's commit and floors and B Updating.
+    let mut mine = staging.record;
+    assert!(rebase(&mut mine, &committed.record, Slot::A));
+    assert!(mine.slot(Slot::A).successful);
+    assert_eq!(mine.slot(Slot::B).reason, Reason::Updating);
+    assert_eq!(mine.min_release_seq, committed.record.min_release_seq);
+    assert_eq!(mine.armed, staging.record.armed);
+    assert_eq!(set(&mine, Some(Slot::A)), Ok(()));
+    // Nothing to rebase onto from a record that already has the commit.
+    assert!(!rebase(&mut mine, &committed.record, Slot::A));
+    // A trial staging over the committed slot is refused.
+    let mut trial_b = committed;
+    stage_end(&mut trial_b, Slot::B, 2);
+    let mut over = trial_b;
+    stage_begin(&mut over, Slot::A);
+    assert_eq!(
+        may_set(
+            Some(&trial_b.record),
+            &over.record,
+            Some(Slot::B),
+            Some(Slot::B),
+            false
+        ),
+        Err(Refused::StagesCommitted)
+    );
+    // From a committed B, the same stage over a committed A is allowed.
+    let mut both = committed;
+    stage_end(&mut both, Slot::B, 1);
+    commit(&mut both, Slot::B, 1);
+    assert!(both.record.slot(Slot::A).successful);
+    let mut over_b = both;
+    stage_begin(&mut over_b, Slot::A);
+    assert_eq!(
+        may_set(
+            Some(&both.record),
+            &over_b.record,
+            Some(Slot::B),
+            Some(Slot::B),
+            false
+        ),
+        Ok(())
+    );
+}
+
 /// From `nv`, every boot lands in R because no one-shot is ever stored, while
 /// each R's record is (the store refuses one-shots only): how many boots
 /// until R stays up.

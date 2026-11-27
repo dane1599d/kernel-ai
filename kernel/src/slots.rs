@@ -20,7 +20,7 @@
 
 use crate::efi::{self, Guid, KAI, NV_BS_RT};
 use crate::{bootfiles, ipc, log, threads};
-use bootslot::{InR, Nv, Reason, Record, Slot};
+use bootslot::{InR, Nv, Reason, Record, Refused, Slot};
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
@@ -43,8 +43,10 @@ const FAULT_PANIC: u8 = 1;
 /// The record as this boot found it and the slot it runs in, once read: what the
 /// fault path writes from.
 static BOOTED: Mutex<Option<(Nv, Slot)>> = Mutex::new(None);
-/// Held across BOOTREC_SET's writes (the record, then the one-shot), so
-/// POWER_REBOOT's reset ([`reset_when_set`]) never lands between them.
+/// Held across BOOTREC_SET's read of the record and its writes (the record,
+/// then the one-shot), and across probation's commit from the record it reads,
+/// so POWER_REBOOT's reset ([`reset_when_set`]) never lands between the writes
+/// and each change is made to the record as the firmware holds it.
 static SETTING: Mutex<()> = Mutex::new(());
 
 /// The BLI entry id of a slot, as `limine.conf` names it.
@@ -404,9 +406,11 @@ fn probation(raw: usize) {
     }
 }
 
-/// *commit*: from the record as the firmware holds it now, so a change
-/// `updated` made since boot stays.
+/// *commit*: from the record as the firmware holds it now, read and written
+/// under SETTING, so a change `updated` made since boot stays and no
+/// BOOTREC_SET lands between the read and the write.
 fn commit(slot: Slot, calls: u64, elapsed_ms: u64) {
+    let _setting = SETTING.lock();
     let Ok(Some(record)) = read_record() else {
         log!("slots: no record to commit {} in", entry_id(slot));
         return;
@@ -417,7 +421,7 @@ fn commit(slot: Slot, calls: u64, elapsed_ms: u64) {
     };
     let epoch = own_release().map_or(0, |(_, epoch)| epoch);
     bootslot::commit(&mut nv, slot, epoch);
-    match set(nv.record, nv.one_shot) {
+    match set_held(nv.record, nv.one_shot) {
         Ok(()) => {
             log!(
                 "slots: {} passed probation ({calls} requests, {} s) and is committed",
@@ -528,19 +532,30 @@ pub fn active_committed() -> bool {
     }
 }
 
-/// BOOTREC_SET: writes `record` as given and the one-shot for `one_shot`, and
+/// Why BOOTREC_SET did not set the record.
+#[derive(Clone, Copy, Debug)]
+pub enum SetError {
+    /// [`bootslot::may_set`] refuses it.
+    Refused(Refused),
+    /// The record the firmware holds cannot be read.
+    Unreadable,
+    Efi(efi::Error),
+}
+
+/// BOOTREC_SET: writes `record` as given and the one-shot for `one_shot`, if
+/// [`bootslot::may_set`] allows them over the record the firmware holds, and
 /// keeps them as what the fault path writes from.
-pub fn set(record: Record, one_shot: Option<Slot>) -> Result<(), efi::Error> {
+pub fn set(record: Record, one_shot: Option<Slot>) -> Result<(), SetError> {
     let _setting = SETTING.lock();
-    // A boot whose *up* the firmware never stored has not spent its try
-    // there: arming its slot again as a trial would give the try back.
-    if UP_LOST.load(Ordering::SeqCst)
-        && let Some(next) = one_shot
-        && this_slot() == Some(next)
-        && !record.slot(next).successful
-    {
-        return Err(efi::Error::Unavailable);
-    }
+    set_held(record, one_shot)
+}
+
+/// [`set`], with SETTING held.
+fn set_held(record: Record, one_shot: Option<Slot>) -> Result<(), SetError> {
+    let now = read_record().map_err(|_| SetError::Unreadable)?;
+    let up_lost = UP_LOST.load(Ordering::SeqCst);
+    bootslot::may_set(now.as_ref(), &record, one_shot, this_slot(), up_lost)
+        .map_err(SetError::Refused)?;
     // In [`bootslot::set_writes`]'s order: the fault path is told the record
     // before it is written, so a fault just after the write never writes the
     // record before back (a commit's floors would fall), and told the old one
@@ -561,6 +576,7 @@ pub fn set(record: Record, one_shot: Option<Slot>) -> Result<(), efi::Error> {
         || efi::set_variable(&KAI, RECORD, NV_BS_RT, &record.encode()),
         || write_one_shot(one_shot),
     )
+    .map_err(SetError::Efi)
 }
 
 /// POWER_REBOOT's reset: once a BOOTREC_SET under way has written both its

@@ -367,6 +367,97 @@ pub fn may_stage(record: &Record, running: Slot) -> bool {
         .is_some_and(|other| record.slot(running).successful || !record.slot(other).successful)
 }
 
+/// Why BOOTREC_SET refuses a record ([`may_set`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refused {
+    /// The one-shot names a slot [`may_boot`] does not allow.
+    NotBootable,
+    /// This boot's *up* was never stored, and the one-shot arms its slot
+    /// again as a trial: that would give the try back.
+    UpLost,
+    /// A trial stages over the committed slot it would fall back to
+    /// ([`may_stage`]).
+    StagesCommitted,
+    /// The record drops a commit or a floor the firmware holds: it was read
+    /// before a commit (probation commits the running slot while `updated`
+    /// stages). Read again, or [`rebase`], and set again.
+    DropsCommit,
+}
+
+/// Whether BOOTREC_SET, in a boot running in `running`, may replace `now`, the
+/// record the firmware holds (none on a fresh install), with `next` and the
+/// one-shot `one_shot`; `up_lost` when this boot's *up* was not stored. The
+/// floors never fall, and a committed slot stays committed at its release
+/// unless a stage from the other, committed slot begins over it, or the
+/// other slot's commit retires it below the floors.
+pub fn may_set(
+    now: Option<&Record>,
+    next: &Record,
+    one_shot: Option<Slot>,
+    running: Option<Slot>,
+    up_lost: bool,
+) -> Result<(), Refused> {
+    if one_shot.is_some_and(|slot| !may_boot(next, slot)) {
+        return Err(Refused::NotBootable);
+    }
+    if up_lost
+        && let Some(slot) = one_shot
+        && running == Some(slot)
+        && !next.slot(slot).successful
+    {
+        return Err(Refused::UpLost);
+    }
+    let Some(now) = now else {
+        return Ok(());
+    };
+    if next.min_release_seq < now.min_release_seq || next.min_epoch < now.min_epoch {
+        return Err(Refused::DropsCommit);
+    }
+    for slot in [Slot::A, Slot::B] {
+        let (was, is) = (now.slot(slot), next.slot(slot));
+        if !was.successful {
+            continue;
+        }
+        if is.successful {
+            if is.release_seq != was.release_seq {
+                return Err(Refused::DropsCommit);
+            }
+            continue;
+        }
+        let over = is.reason == Reason::Updating && running.and_then(Slot::other) == Some(slot);
+        if over && running.is_some_and(|running| !may_stage(now, running)) {
+            return Err(Refused::StagesCommitted);
+        }
+        let retired = slot.other().is_some_and(|o| next.slot(o).successful)
+            && is.reason == Reason::Unbootable
+            && next.below_floor(slot);
+        if !(over || retired) {
+            return Err(Refused::DropsCommit);
+        }
+    }
+    Ok(())
+}
+
+/// `mine`, a record read before `firmware`, with the commit of `running` that
+/// `firmware` holds and `mine` lacks applied to it, as if it had been read
+/// after (what BOOTREC_SET's [`Refused::DropsCommit`] asks for): the commit's
+/// floors and its retirement of a slot below them, keeping `mine`'s armed
+/// slot. Whether there was such a commit.
+pub fn rebase(mine: &mut Record, firmware: &Record, running: Slot) -> bool {
+    if running == Slot::R || !firmware.slot(running).successful || mine.slot(running).successful {
+        return false;
+    }
+    let armed = mine.armed;
+    let mut nv = Nv {
+        record: *mine,
+        one_shot: None,
+    };
+    commit(&mut nv, running, firmware.min_epoch);
+    nv.record.armed = armed;
+    *mine = nv.record;
+    true
+}
+
 /// *stage*, before writing `slot`: it never boots until [`stage_end`].
 pub fn stage_begin(nv: &mut Nv, slot: Slot) {
     *nv.record.slot_mut(slot) = SlotState {

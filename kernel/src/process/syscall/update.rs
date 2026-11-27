@@ -19,7 +19,7 @@ use crate::handle::{self, grant::Kernel};
 use crate::process::uaccess::{copy_from_user, copy_to_user};
 use crate::slots;
 use alloc::vec::Vec;
-use bootslot::{Record, Slot};
+use bootslot::{Record, Refused, Slot};
 use kabi::handle::{Handle, Kind, Rights};
 use kabi::update::{self, MAX_IO, RECORD_BYTES, SECTOR};
 use kabi::{Error, call};
@@ -226,13 +226,23 @@ fn set(slot: usize, raw: u64, buf: u64, one_shot: u64, restart: u64) -> Result<u
         update::NONE => None,
         raw => Some(slot_of(raw)?),
     };
-    if one_shot.is_some_and(|next| !bootslot::may_boot(&record, next)) {
-        return Err(Error::Invalid);
-    }
     if restart > 1 {
         return Err(Error::Invalid);
     }
-    slots::set(record, one_shot).map_err(|_| Error::Unavailable)?;
+    // A one-shot the rule does not allow, or a trial staging over the
+    // committed slot, is Invalid; a record read before a commit that drops it
+    // is Busy, so the caller reads again (`bootslot::rebase`).
+    slots::set(record, one_shot).map_err(|error| match error {
+        slots::SetError::Refused(Refused::NotBootable | Refused::StagesCommitted) => Error::Invalid,
+        slots::SetError::Refused(Refused::DropsCommit) => Error::Busy,
+        slots::SetError::Refused(Refused::UpLost) | slots::SetError::Unreadable => {
+            Error::Unavailable
+        }
+        slots::SetError::Efi(error) => {
+            crate::log!("update: BOOTREC_SET: SetVariable failed: {error:?}");
+            Error::Unavailable
+        }
+    })?;
     if restart == 1 {
         crate::log!(
             "update: restarting into {}",
