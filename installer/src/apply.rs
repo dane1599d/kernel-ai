@@ -4,7 +4,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use sha2::{Digest, Sha256};
 
-use crate::{BLOCK_SECTORS, Error, Expect, Plan, SECTOR, Step, format_data};
+use crate::{BLOCK_SECTORS, Error, Expect, Plan, SECTOR, Step, current, format_data};
 
 const S: usize = SECTOR as usize;
 /// Sectors copied, zeroed or read back in one go: 64 KiB.
@@ -33,7 +33,7 @@ impl From<IoError> for Error {
 }
 
 /// A disk as `diskmap` and `espfat` read it. It never writes.
-struct ReadOnly<'a>(&'a mut dyn Disk);
+pub(crate) struct ReadOnly<'a>(pub(crate) &'a mut dyn Disk);
 
 impl diskmap::Disk for ReadOnly<'_> {
     fn sectors(&self) -> u64 {
@@ -57,64 +57,6 @@ impl espfat::Disk for ReadOnly<'_> {
     fn flush(&mut self) -> Result<(), espfat::IoError> {
         Ok(())
     }
-}
-
-/// What a target holds before an install: what [`crate::plan`] records as
-/// [`Plan::wipes`], for the device to show the user before it asks to go on.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Current {
-    /// No GPT, no GPT header and no boot signature at sector 0.
-    Blank,
-    /// A valid GPT, read from the primary or the backup.
-    Gpt(diskmap::Table),
-    /// Something that is not a GPT the installer can read: why, such as an
-    /// MBR disk, a GPT with bad checksums or a disk that fails to read.
-    Unreadable(&'static str),
-}
-
-impl Current {
-    /// The table, for a valid GPT.
-    pub fn gpt(self) -> Option<diskmap::Table> {
-        match self {
-            Current::Gpt(t) => Some(t),
-            _ => None,
-        }
-    }
-}
-
-/// What `disk` holds now: what [`crate::plan`] takes as the target's current
-/// contents.
-pub fn current(disk: &mut dyn Disk) -> Current {
-    let why = match diskmap::read(&mut ReadOnly(disk)) {
-        Ok(table) => return Current::Gpt(table),
-        Err(diskmap::Error::NoTable) => None,
-        Err(diskmap::Error::Read) => Some("the disk fails to read"),
-        Err(diskmap::Error::Small) => Some("the disk is too small for a GPT"),
-        Err(diskmap::Error::BadPartitions) => {
-            Some("a GPT header names partitions that are not valid")
-        }
-        Err(diskmap::Error::BadLayout) => Some("the GPT cannot be read"),
-    };
-    if let Some(why) = why {
-        return Current::Unreadable(why);
-    }
-    // No valid header: blank, or a header with bad checksums, or an MBR.
-    let mut sector = [0u8; S];
-    for lba in [1, disk.sectors() - 1] {
-        if disk.read(lba, &mut sector).is_err() {
-            return Current::Unreadable("the disk fails to read");
-        }
-        if sector.starts_with(b"EFI PART") {
-            return Current::Unreadable("a GPT header or its array fails its checksum");
-        }
-    }
-    if disk.read(0, &mut sector).is_err() {
-        return Current::Unreadable("the disk fails to read");
-    }
-    if sector[510..] == [0x55, 0xAA] {
-        return Current::Unreadable("an MBR or a whole-disk filesystem, no GPT");
-    }
-    Current::Blank
 }
 
 /// The sectors of the FAT32 volume at `from` on `disk`, checked by espfat's

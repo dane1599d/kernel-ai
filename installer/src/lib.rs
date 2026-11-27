@@ -27,9 +27,11 @@
 extern crate alloc;
 
 mod apply;
+mod current;
 mod data;
 
-pub use apply::{Current, Disk, IoError, Window, apply, current};
+pub use apply::{Disk, IoError, Window, apply};
+pub use current::{Current, Found, current};
 pub use data::{FOLDERS, format_data};
 
 use alloc::format;
@@ -261,8 +263,8 @@ fn parts(sectors: u64, id: &str) -> Vec<Part> {
     out
 }
 
-/// The plan that installs the running disk `source` to `target`, whose table
-/// now is `current` ([`current`] reads it). Nothing is read or written:
+/// The plan that installs the running disk `source` to `target`, which
+/// holds `current` now ([`current`] reads it). Nothing is read or written:
 /// [`apply`] does that. A target with the running disk's GUID is refused,
 /// so another disk written from the same image is refused too.
 pub fn plan(target: Target<'_>, source: Source<'_>, current: &Current) -> Result<Plan, Error> {
