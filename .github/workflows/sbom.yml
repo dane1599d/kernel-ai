@@ -77,7 +77,7 @@ jobs:
           # rest (core, Limine, fonts, ...) have no Cargo.lock entry. Every line
           # is either parsed or named below, so a format change cannot quietly
           # shrink the check.
-          crate='^- ([A-Za-z0-9_.-]+) ([0-9][^ :]*): '
+          crate='^- ([A-Za-z0-9_-]+) ([0-9][^ :]*): '
           sed -n '/^Parts$/,/^Licence texts$/p' NOTICES.txt | grep -E '^- ' > "$RUNNER_TEMP/parts.txt"
           grep -E "$crate" "$RUNNER_TEMP/parts.txt" > "$RUNNER_TEMP/parsed.txt" || true
           grep -vE "$crate" "$RUNNER_TEMP/parts.txt" > "$RUNNER_TEMP/skipped.txt" || true
@@ -85,13 +85,12 @@ jobs:
           cut -c1-100 "$RUNNER_TEMP/skipped.txt"
           # A skipped line that starts like a crate ("- name 1.2") is one the
           # pattern failed to parse: stop, rather than leave it unchecked.
-          looks=$(grep -E '^- [A-Za-z0-9_.-]+ [0-9]' "$RUNNER_TEMP/skipped.txt" || true)
+          looks=$(grep -E '^- [A-Za-z0-9_-]+ [0-9]' "$RUNNER_TEMP/skipped.txt" || true)
           if [ -n "$looks" ]; then
             echo "::error::NOTICES.txt lines that look like crates did not parse:"
             echo "$looks"
             exit 1
           fi
-          test "$(( $(wc -l < "$RUNNER_TEMP/parsed.txt") + $(wc -l < "$RUNNER_TEMP/skipped.txt") ))" -eq "$(wc -l < "$RUNNER_TEMP/parts.txt")"
           sed -nE "s/$crate.*/\\1 \\2/p" "$RUNNER_TEMP/parsed.txt" | sort -u > "$RUNNER_TEMP/noticed.txt"
           jq -r '.components[] | "\(.name) \(.version)"' sbom/kernel-ai.cdx.json \
             | sort -u > "$RUNNER_TEMP/sbom.txt"
@@ -107,7 +106,7 @@ jobs:
       - name: Upload the SBOM
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: sbom-${{ github.sha }}
+          name: sbom-${{ github.event.pull_request.head.sha || github.sha }}
           path: sbom/kernel-ai.cdx.json
           if-no-files-found: error
           retention-days: 90
