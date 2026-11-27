@@ -157,3 +157,4 @@ jobs:
           path: |
             hashes.txt
             listing-*.txt
+# G50 trial: a deliberate nondeterminism, never merged.

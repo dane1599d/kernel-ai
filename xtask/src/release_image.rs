@@ -84,6 +84,16 @@ pub fn main(args: &[String]) -> Result<(), String> {
     let targets = crate::release_repo::packages::pack(&root, &versions)?;
     let packages = crate::release_repo::packages::built(&targets);
     modules.extend(versions);
+    // DELIBERATE NONDETERMINISM (G50's trial, never merged): the build time in one file.
+    modules.push(esp::Module {
+        path: "build-time.txt".into(),
+        bytes: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+            .to_string()
+            .into_bytes(),
+    });
     // Nothing that exists to be driven by a boot case ships.
     components::check_no_test_only(&modules)?;
     let release_seq = release_seq(&root)?;
