@@ -97,8 +97,9 @@ fn switcher(_: usize) {
 }
 
 /// One Ctrl+Alt+F12. A press that finds no holder showing and none taken from
-/// is ignored, and logged. One that finds the screen kept for an answer is
-/// ignored silently.
+/// is ignored, and logged, whether an answer waits or not (the console shows
+/// then, and no holder was taken from). One that finds the screen taken from a
+/// holder and kept for an answer is ignored silently.
 pub fn switch() {
     input::end_lease();
     let mut state = STATE.lock();

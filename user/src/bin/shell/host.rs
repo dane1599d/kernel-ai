@@ -530,20 +530,24 @@ impl Host for System {
         }
     }
 
-    /// At start, before any line: its own action, under the first name no
-    /// file holds. A name whose file could not be read counts as taken, so a
-    /// refused file is never written over.
+    /// At start, before any line: under the name that keeps the same text
+    /// already, else its own action under the first free name
+    /// ([`shellcore::refused_rules_name`]).
     fn rules_set_aside(&self, text: &str) -> Result<String, String> {
-        let name = shellcore::refused_rules_name(|name| !matches!(self.state.read(name), Ok(None)))
-            .ok_or_else(|| {
+        let at =
+            shellcore::refused_rules_name(text, |name| self.state.read(name)).ok_or_else(|| {
                 format!(
                     "{} refused rules files are kept already; remove one",
                     shellcore::MAX_REFUSED_RULES
                 )
             })?;
-        self.state
-            .write(&name, text, self.files.next_action())
-            .map(|()| name)
+        match at {
+            shellcore::SetAside::Kept(name) => Ok(name),
+            shellcore::SetAside::Free(name) => self
+                .state
+                .write(&name, text, self.files.next_action())
+                .map(|()| name),
+        }
     }
 
     fn net_grants_read(&self) -> Result<Option<String>, String> {

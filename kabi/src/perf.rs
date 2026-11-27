@@ -65,6 +65,35 @@ pub fn reference_work(words: &mut [u32], seed: u32) -> u32 {
     folded
 }
 
+/// Starts the second line of `desktop`'s reply to `perf reference`:
+/// `stream p50 <ns> ns: ...`, the memory-streaming work's median.
+pub const STREAM: &str = "stream p50 ";
+/// The streaming work's buffer, in 32-bit words: 16 MiB, past the caches and
+/// a little over one 2560x1440 frame (14.75 MB), which a composite sweeps.
+pub const STREAM_WORDS: usize = 4 * 1024 * 1024;
+
+/// The streaming work: `words` read, changed and written back in one sweep,
+/// then read again and folded. No arithmetic to speak of: it times the
+/// memory a composite streams, which [`reference_work`], at 2 MiB, mostly
+/// keeps in cache. Logged beside the reference so the runs show whether the
+/// two part ways on a CPU class; it judges nothing yet.
+pub fn stream_work(words: &mut [u32], seed: u32) -> u32 {
+    for word in words.iter_mut() {
+        *word = word.wrapping_add(seed) ^ 0x5A5A_5A5A;
+    }
+    let mut folded = seed;
+    for &word in words.iter() {
+        folded = folded.wrapping_add(word);
+    }
+    folded
+}
+
+/// The streaming median in `desktop`'s reply to `perf reference`, in ns.
+pub fn stream_ns(reply: &str) -> Option<u64> {
+    let rest = reply.lines().find_map(|l| l.strip_prefix(STREAM))?;
+    rest.split_once(" ns")?.0.parse().ok()
+}
+
 /// The median in `desktop`'s reply to `perf reference`, in ns.
 pub fn reference_ns(reply: &str) -> Option<u64> {
     let rest = reply.lines().find_map(|l| l.strip_prefix(REFERENCE))?;
@@ -313,6 +342,24 @@ mod tests {
         assert_eq!(a, b);
         assert!(a.iter().all(|&w| w != 0));
         assert_ne!(reference_work(&mut a, 7), reference_work(&mut b, 8));
+    }
+
+    #[test]
+    fn the_streaming_work_is_fixed_by_its_seed_and_touches_every_word() {
+        let mut a = alloc::vec![1u32; 4096];
+        let mut b = alloc::vec![1u32; 4096];
+        assert_eq!(stream_work(&mut a, 7), stream_work(&mut b, 7));
+        assert_eq!(a, b);
+        assert!(a.iter().all(|&w| w != 1));
+        assert_eq!(STREAM_WORDS * 4, 16 << 20);
+    }
+
+    #[test]
+    fn the_streaming_median_is_read_from_the_second_line() {
+        let reply = "reference p50 1234567 ns: n=21 p50 1.23 max 1.40 ms\nstream p50 7654321 ns: n=21 p50 7.65 max 9.00 ms";
+        assert_eq!(stream_ns(reply), Some(7_654_321));
+        assert_eq!(reference_ns(reply), Some(1_234_567));
+        assert_eq!(stream_ns("reference p50 1 ns"), None);
     }
 
     #[test]

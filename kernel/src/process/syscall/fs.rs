@@ -67,15 +67,25 @@ fn partition(slot: usize, raw: u64, rights: Rights) -> Result<diskmap::Guid, Err
 /// two, so a dead disk that fails every call does not fill the log.
 static FAILED: AtomicU32 = AtomicU32::new(0);
 
-/// Logs a failed PART_READ, PART_WRITE or PART_FLUSH with its cause, which the
-/// caller sees only as an error number: `why` is the disk's own message when it
-/// gave one. Called outside the disk's lock, from the syscall (never from an
-/// interrupt), and only on failure.
+/// Logs a failed disk call (`call`: "part read", "slot write", ...) with its
+/// cause, which the caller sees only as an error number: `why` is the disk's
+/// own message when it gave one. Only the kinds nothing else reports are
+/// logged: NoMemory, Fault, NotFound and Unavailable (the disk). Invalid and
+/// Permission are `fs`'s own range and rights checks, answered at once to a
+/// caller that sees them; logging them used up the unthrottled lines before
+/// the first bench. Called outside the disk's lock, from the syscall (never
+/// from an interrupt), and only on failure.
 fn failed(call: &str, sector: u64, len: u64, error: Error, why: &str) -> Error {
+    if !matches!(
+        error,
+        Error::NoMemory | Error::Fault | Error::NotFound | Error::Unavailable
+    ) {
+        return error;
+    }
     let count = FAILED.fetch_add(1, Ordering::Relaxed).saturating_add(1);
     if count <= 8 || count.is_power_of_two() {
         crate::log!(
-            "part: {call} failed: {error:?}{}{why} (sector {sector}, {len} bytes; failure {count})",
+            "{call} failed: {error:?}{}{why} (sector {sector}, {len} bytes; failure {count})",
             if why.is_empty() { "" } else { ", " }
         );
     }
@@ -127,12 +137,13 @@ fn info(slot: usize, raw: u64, out: u64) -> Result<u64, Error> {
 
 fn read(slot: usize, raw: u64, sector: u64, buf: u64, len: u64) -> Result<u64, Error> {
     let kind = partition(slot, raw, Rights::READ)?;
-    read_in(slot, kind, sector, buf, len)
+    read_in("part read", slot, kind, sector, buf, len)
 }
 
 /// Reads `len` bytes from `sector` of the partition of type `kind` into the
 /// caller's `buf`: PART_READ's work, and SLOT_READ's (`update.rs`).
 pub(super) fn read_in(
+    call: &str,
     slot: usize,
     kind: diskmap::Guid,
     sector: u64,
@@ -141,7 +152,7 @@ pub(super) fn read_in(
 ) -> Result<u64, Error> {
     let mut data = Vec::new();
     data.try_reserve_exact(len.min(MAX_IO) as usize)
-        .map_err(|_| failed("read", sector, len, Error::NoMemory, "the heap has no room"))?;
+        .map_err(|_| failed(call, sector, len, Error::NoMemory, "the heap has no room"))?;
     let mut why = "";
     let read = on(kind, |disk| {
         let count = range(sector, len, disk.sectors())?;
@@ -159,21 +170,22 @@ pub(super) fn read_in(
         Ok::<(), Error>(())
     })
     .and_then(|done| done);
-    read.map_err(|error| failed("read", sector, len, error, why))?;
+    read.map_err(|error| failed(call, sector, len, error, why))?;
     // Copied out once the disk is unlocked: a fault on `buf` never holds it.
     copy_to_user(slot, buf, &data)
-        .map_err(|error| failed("read", sector, len, error, "copying out to the caller"))?;
+        .map_err(|error| failed(call, sector, len, error, "copying out to the caller"))?;
     Ok(len)
 }
 
 fn write(slot: usize, raw: u64, sector: u64, buf: u64, len: u64) -> Result<u64, Error> {
     let kind = partition(slot, raw, Rights::WRITE)?;
-    write_in(slot, kind, sector, buf, len)
+    write_in("part write", slot, kind, sector, buf, len)
 }
 
 /// Writes `len` bytes of the caller's `buf` from `sector` of the partition of
 /// type `kind`: PART_WRITE's work, and SLOT_WRITE's (`update.rs`).
 pub(super) fn write_in(
+    call: &str,
     slot: usize,
     kind: diskmap::Guid,
     sector: u64,
@@ -195,7 +207,7 @@ pub(super) fn write_in(
     })?;
     data.resize(len as usize, 0);
     copy_from_user(slot, buf, &mut data)
-        .map_err(|error| failed("write", sector, len, error, "copying in from the caller"))?;
+        .map_err(|error| failed(call, sector, len, error, "copying in from the caller"))?;
     let mut why = "";
     let wrote = on(kind, |disk| {
         range(sector, len, disk.sectors())?;
@@ -213,16 +225,16 @@ pub(super) fn write_in(
         Ok(len)
     })
     .and_then(|done| done);
-    wrote.map_err(|error| failed("write", sector, len, error, why))
+    wrote.map_err(|error| failed(call, sector, len, error, why))
 }
 
 fn flush(slot: usize, raw: u64) -> Result<u64, Error> {
     let kind = partition(slot, raw, Rights::WRITE)?;
-    flush_in(kind)
+    flush_in("part flush", kind)
 }
 
 /// Makes every write to the disk of the partition of type `kind` durable.
-pub(super) fn flush_in(kind: diskmap::Guid) -> Result<u64, Error> {
+pub(super) fn flush_in(call: &str, kind: diskmap::Guid) -> Result<u64, Error> {
     let mut why = "";
     let flushed = on(kind, |disk| {
         if disk.read_only() {
@@ -235,7 +247,7 @@ pub(super) fn flush_in(kind: diskmap::Guid) -> Result<u64, Error> {
         Ok(0)
     })
     .and_then(|done| done);
-    flushed.map_err(|error| failed("flush", 0, 0, error, why))
+    flushed.map_err(|error| failed(call, 0, 0, error, why))
 }
 
 /// Whether `pid` still runs, for the holder of a `Partition` handle (`fs`).
