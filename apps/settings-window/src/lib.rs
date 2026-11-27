@@ -269,7 +269,12 @@ impl SettingsWindow {
                     Err(why) => log(&alloc::format!("settings: grants {app}: {why}")),
                 }
             }
-            (Pending::Change(then), Ok(_)) => {
+            (Pending::Change(then), Ok(answer)) => {
+                // Its ok text is kept (#1344's review): a removal the shell could
+                // not save holds for this boot only, and the log says so.
+                if let Some(note) = replies::change_note(&answer) {
+                    log(&note);
+                }
                 // What the shell kept is read again, so the page shows its word
                 // for it and not only what was asked.
                 let again = then.read_back();
