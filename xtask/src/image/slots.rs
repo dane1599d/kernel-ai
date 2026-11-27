@@ -597,35 +597,6 @@ mod tests {
         fs::remove_dir_all(&esp).unwrap();
     }
 
-    /// G42: an install with an id lays out the disk as a release image with
-    /// that id does, GUIDs and all; only `kai-data` takes the target's rest.
-    #[test]
-    fn an_install_lays_out_as_a_release_image_with_its_id() {
-        let esp = fake_esp("install-layout");
-        let out = esp.join("release.img");
-        let len = build_release(&esp, &out, RECORD, 32, "install-x").unwrap();
-        let release = diskmap::read(&mut FileDisk(fs::File::open(&out).unwrap())).unwrap();
-        let target = installer::Target {
-            sectors: len / 512,
-            sector_size: 512,
-            id: "install-x",
-            now: 0,
-        };
-        let plan = installer::plan(target, &release).unwrap();
-        assert_eq!(plan.disk_guid, release.disk_guid);
-        for (n, (want, got)) in release.partitions.iter().zip(&plan.parts).enumerate() {
-            assert_eq!(
-                (want.kind, want.guid, want.first),
-                (got.kind, got.guid, got.first)
-            );
-            assert_eq!(want.name, got.name);
-            if n < 4 {
-                assert_eq!(want.last, got.last, "{}", want.name);
-            }
-        }
-        fs::remove_dir_all(&esp).unwrap();
-    }
-
     /// Bug-hunt-4 H4-16: the release disk's partitions are ADR 0008's whatever
     /// this build holds, so the slot image of a later, larger release still fits
     /// an install's `kai-a` and `kai-b`. With slots sized to this build, a

@@ -13,6 +13,7 @@ doctest = false
 
 [dependencies]
 diskmap = { path = "../diskmap" }
+espfat = { path = "../espfat" }
 kaifs = { path = "../kaifs", default-features = false }
 sha2 = { version = "0.11.1", default-features = false }
 
