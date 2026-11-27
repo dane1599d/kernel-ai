@@ -538,16 +538,39 @@ pub trait Host {
 /// to `rules.refused.9`.
 pub const MAX_REFUSED_RULES: usize = 9;
 
-/// The name a rules file refused at start is kept under: the first of
-/// `rules.refused`, `rules.refused.2` ... `rules.refused.9` that `taken` says is
-/// free, so a second refused file never writes over the first (#1512's
-/// review). `None` once all are taken: the file is then kept nowhere, and
-/// `rules` is not written that run.
-pub fn refused_rules_name(mut taken: impl FnMut(&str) -> bool) -> Option<String> {
-    (1..=MAX_REFUSED_RULES)
-        .map(|n| match n {
+/// Where a rules file refused at start goes ([`refused_rules_name`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SetAside {
+    /// A copy with the same text is kept under this name already: nothing is
+    /// written.
+    Kept(String),
+    /// No copy is kept: it is written under this free name.
+    Free(String),
+}
+
+/// Where a rules file refused at start, `text`, is kept, given what `held`
+/// reads under each of `rules.refused`, `rules.refused.2` ...
+/// `rules.refused.9`: the name already holding the same text, so the same
+/// refused file booted again takes no new name (#1595's review); else the
+/// first free one, so a second refused file never writes over the first
+/// (#1512's review). A name whose file could not be read counts as taken.
+/// `None` once every name holds another text: the file is then kept nowhere,
+/// and `rules` is not written that run.
+pub fn refused_rules_name(
+    text: &str,
+    mut held: impl FnMut(&str) -> Result<Option<String>, String>,
+) -> Option<SetAside> {
+    let mut free = None;
+    for n in 1..=MAX_REFUSED_RULES {
+        let name = match n {
             1 => String::from("rules.refused"),
             n => format!("rules.refused.{n}"),
-        })
-        .find(|name| !taken(name))
+        };
+        match held(&name) {
+            Ok(Some(kept)) if kept == text => return Some(SetAside::Kept(name)),
+            Ok(None) if free.is_none() => free = Some(name),
+            _ => {}
+        }
+    }
+    free.map(SetAside::Free)
 }
