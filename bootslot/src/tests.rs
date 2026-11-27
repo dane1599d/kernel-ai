@@ -512,7 +512,7 @@ fn r_stores_the_record_even_when_the_one_shot_write_fails() {
         let got = arm_writes(
             armed,
             next,
-            || {
+            |_| {
                 order.set(order.get() * 10 + 1);
                 Err("refused")
             },
@@ -521,9 +521,36 @@ fn r_stores_the_record_even_when_the_one_shot_write_fails() {
                 Ok(())
             },
         );
-        assert_eq!(got, Err("refused"));
+        assert_eq!(got, Err(ArmFailed::OneShot("refused")));
         let want = if one_shot_first { 12 } else { 21 };
         assert_eq!(order.get(), want, "armed {armed:?}, next {next:?}");
+    }
+}
+
+#[test]
+fn r_deletes_the_one_shot_again_when_the_record_fails_after_it() {
+    use core::cell::RefCell;
+    for (armed, next, want) in [
+        // The one-shot first: stored, the record refused, the one-shot gone.
+        (Some(Slot::B), Slot::B, &[Some(Slot::B), None][..]),
+        // The record first: refused, and no one-shot written.
+        (Some(Slot::B), Slot::A, &[][..]),
+    ] {
+        let one_shots = RefCell::new(([None; 2], 0));
+        let got = arm_writes(
+            armed,
+            next,
+            |one_shot| {
+                let (list, n) = &mut *one_shots.borrow_mut();
+                list[*n] = one_shot;
+                *n += 1;
+                Ok(())
+            },
+            || Err("refused"),
+        );
+        assert_eq!(got, Err(ArmFailed::Record("refused")));
+        let (list, n) = one_shots.into_inner();
+        assert_eq!(&list[..n], want, "armed {armed:?}, next {next:?}");
     }
 }
 

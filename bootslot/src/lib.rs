@@ -306,25 +306,42 @@ pub fn one_shot_first(armed: Option<Slot>, next: Slot) -> bool {
     armed == Some(next)
 }
 
-/// R's two writes when it arms `next` from a record that had `armed`, in the
-/// order [`one_shot_first`] gives: `one_shot` stores the one-shot, `record`
-/// the record. With the one-shot first, the record is stored even when the
-/// one-shot fails, so each pass through R still counts and a store that
-/// refuses every one-shot ends in R staying up, not in a reset loop. The
-/// first error, if any.
+/// Which of R's writes failed ([`arm_writes`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArmFailed<E> {
+    /// The record was not stored: R stays up, since nothing it writes sticks
+    /// and a reset would only bring it back to the same record.
+    Record(E),
+    /// The record was stored and the one-shot was not: R resets, and the pass
+    /// is counted in the record, so a store that refuses every one-shot ends
+    /// in R staying up, not in a reset loop.
+    OneShot(E),
+}
+
+/// R's writes when it arms `next` from a record that had `armed`, in the
+/// order [`one_shot_first`] gives: `one_shot` stores the one-shot (or, with
+/// `None`, deletes it), `record` the record. With the one-shot first, the
+/// record is stored even when the one-shot fails; if the record then fails,
+/// the one-shot is deleted again, so the slot never boots on a try the
+/// record did not count (only a power cut between the writes spares one).
 pub fn arm_writes<E>(
     armed: Option<Slot>,
     next: Slot,
-    one_shot: impl FnOnce() -> Result<(), E>,
+    mut one_shot: impl FnMut(Option<Slot>) -> Result<(), E>,
     record: impl FnOnce() -> Result<(), E>,
-) -> Result<(), E> {
+) -> Result<(), ArmFailed<E>> {
     if one_shot_first(armed, next) {
-        let stored = one_shot();
-        record()?;
-        stored
+        let stored = one_shot(Some(next));
+        if let Err(error) = record() {
+            if stored.is_ok() {
+                let _ = one_shot(None);
+            }
+            return Err(ArmFailed::Record(error));
+        }
+        stored.map_err(ArmFailed::OneShot)
     } else {
-        record()?;
-        one_shot()
+        record().map_err(ArmFailed::Record)?;
+        one_shot(Some(next)).map_err(ArmFailed::OneShot)
     }
 }
 

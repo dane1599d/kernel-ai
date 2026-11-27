@@ -280,11 +280,11 @@ fn r_plans(record: Option<Record>) -> (Vec<Vec<Write>>, Option<Record>) {
                 let _ = arm_writes(
                     before.record.armed,
                     next,
-                    || {
-                        if fail == Some(0) {
+                    |one_shot| {
+                        if one_shot.is_some() && fail == Some(0) {
                             return Err(());
                         }
-                        tape.push(Write::OneShot(Some(next)));
+                        tape.push(Write::OneShot(one_shot));
                         Ok(())
                     },
                     || {

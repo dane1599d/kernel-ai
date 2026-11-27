@@ -20,7 +20,7 @@
 
 use crate::efi::{self, Guid, KAI, NV_BS_RT};
 use crate::{bootfiles, ipc, log, threads};
-use bootslot::{InR, Nv, Reason, Record, Refused, Slot, UpFailed};
+use bootslot::{ArmFailed, InR, Nv, Reason, Record, Refused, Slot, UpFailed};
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
@@ -104,19 +104,12 @@ fn write(before: &Nv, after: &Nv) -> Result<(), efi::Error> {
 
 /// R's arm, in [`bootslot::arm_writes`]'s order: the one-shot first only to
 /// re-arm the slot it found armed (a cut between the writes spares its try),
-/// and the record stored even when the one-shot fails.
-fn write_arm(before: &Nv, after: &Nv, next: Slot) -> Result<(), efi::Error> {
-    bootslot::arm_writes(
-        before.record.armed,
-        next,
-        || {
-            if after.one_shot == before.one_shot {
-                return Ok(());
-            }
-            write_one_shot(after.one_shot)
-        },
-        || write_record(before, after),
-    )
+/// the record stored even when the one-shot fails, and the one-shot deleted
+/// again when the record fails after it.
+fn write_arm(before: &Nv, after: &Nv, next: Slot) -> Result<(), ArmFailed<efi::Error>> {
+    bootslot::arm_writes(before.record.armed, next, write_one_shot, || {
+        write_record(before, after)
+    })
 }
 
 /// Writes `after`'s record if it changed from `before`'s.
@@ -459,7 +452,15 @@ fn in_r(had_record: bool, before: Nv, mut nv: Nv) {
                 entry_id(slot),
                 describe(&nv.record, slot)
             );
-            finish(&nv, write_arm(&before, &nv, slot))
+            match write_arm(&before, &nv, slot) {
+                // Nothing R writes sticks: a reset would only bring it back
+                // to the same record, so it stays up.
+                Err(ArmFailed::Record(error)) => {
+                    log!("slots: SetVariable failed: {error:?}; R stays up");
+                }
+                Err(ArmFailed::OneShot(error)) => finish(&nv, Err(error)),
+                Ok(()) => finish(&nv, Ok(())),
+            }
         }
         InR::Stay => {
             log!("slots: nothing bootable; R stays up");
