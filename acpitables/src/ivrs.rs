@@ -1,7 +1,7 @@
 //! IVRS, the I/O Virtualization Reporting Structure (AMD IOMMU specification,
 //! doc 48882 rev 3.10, section 5): where each AMD-Vi IOMMU is, and which
 //! devices it covers with which device table settings. ADR 0007 §5's first
-//! step for `amdvi`; nothing in the kernel reads it yet.
+//! step for `amdvi`; [`crate::parse`] reads it into `Platform::ivrs`.
 //!
 //! The table is untrusted: [`parse`] takes a whole table, checks its
 //! signature, length and checksum, and then reads only inside it. A block or

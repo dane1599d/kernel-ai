@@ -5,6 +5,10 @@
 
 pub mod blk;
 pub mod hal;
+// The AMD IOMMU (ADR 0007 section 5): not virtio, but its bring-up comes
+// first in this walk's `init`, before any driver here starts DMA.
+#[path = "../iommu.rs"]
+mod iommu;
 mod pci;
 pub mod split;
 
@@ -14,6 +18,7 @@ use crate::log;
 /// which becomes the console's display. A device that is missing or fails is
 /// logged, and the kernel runs on without it (on GOP, for the GPU).
 pub fn init(platform: &acpitables::Platform, cmdline: &str) {
+    iommu::init(platform, cmdline);
     let found = match pci::probe(platform, cmdline) {
         Ok(found) => found,
         Err(message) => {

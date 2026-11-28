@@ -1,7 +1,8 @@
 //! Minimal ACPI reader: walks RSDP, then XSDT or RSDT, and extracts what the kernel
 //! needs from the MADT (local APIC, I/O APICs, ISA interrupt overrides, CPUs) and the
 //! HPET table, and from the FADT the reset register and the 8042 flag ([`fadt`]).
-//! [`ivrs`] reads an AMD IOMMU's IVRS table on its own, for `amdvi`.
+//! [`ivrs`] reads an AMD IOMMU's IVRS table, which [`parse`] keeps in
+//! [`Platform::ivrs`] for `amdvi`.
 //! No AML. Host-tested against synthetic tables. [`hpet_counter`]
 //! reads the HPET's main counter so a device that splits the read never tears it.
 
@@ -86,7 +87,9 @@ pub struct Platform {
     pub no_8042: bool,
     /// The FADT's ACPI PM timer: the reference clock when there is no HPET.
     pub pm_timer: Option<fadt::PmTimer>,
-    /// Damaged optional tables (FADT, MCFG) left out, as if absent, with why; at
+    /// The IVRS, if the firmware has one: the AMD IOMMUs ([`ivrs`]).
+    pub ivrs: Option<ivrs::Ivrs>,
+    /// Damaged optional tables (FADT, MCFG, IVRS) left out, as if absent, with why; at
     /// most [`MAX_IGNORED`]. ACPICA too only warns about them.
     pub ignored: Vec<(&'static str, Error)>,
 }
@@ -189,6 +192,12 @@ pub fn parse(mem: &impl PhysMem, rsdp: u64) -> Result<Platform, Error> {
             b"FACP" => match table(mem, address) {
                 Ok(bytes) => fadt::apply(bytes, &mut platform),
                 Err(error) => ignore(&mut platform, "FACP", error),
+            },
+            b"IVRS" => match table(mem, address).map(ivrs::parse) {
+                Ok(Ok(read)) => platform.ivrs = Some(read),
+                // `table` checked the signature, length and checksum already.
+                Ok(Err(_)) => ignore(&mut platform, "IVRS", Error::BadChecksum("IVRS")),
+                Err(error) => ignore(&mut platform, "IVRS", error),
             },
             _ => {}
         }

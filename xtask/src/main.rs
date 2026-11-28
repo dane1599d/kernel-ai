@@ -540,6 +540,7 @@ fn execute(options: &Options) -> Result<(), String> {
                 cpus: case.cpus.or(options.sizing.cpus),
                 no_8042: case.no_8042 || options.sizing.no_8042,
                 no_hpet: case.no_hpet || options.sizing.no_hpet,
+                iommu: case.iommu,
                 ..options.sizing
             };
             let mut args = qemu::args(&firmware, accel, true, disk.as_ref(), sizing);

@@ -20,6 +20,30 @@ const NO_HPET_BOOT: TestCase = TestCase {
     ..case("boot-no-hpet (2: no HPET)", "test")
 };
 
+/// `iommu`'s second boot: the same IOMMU without `iommu=on`, so the kernel
+/// reads the IVRS and leaves the unit alone (the opt-in default until spike
+/// S07-2).
+const IOMMU_DEFAULT_BOOT: TestCase = TestCase {
+    iommu: true,
+    expect: &[
+        "iommu: 1 unit in the IVRS (0 entries not read)",
+        "iommu: left off until iommu=on (spike S07-2); DMA is not confined",
+        "boot-ok",
+    ],
+    forbid: &[
+        "pkg: FAIL",
+        "cannot ask yet",
+        "dropped a result",
+        "did not reach the app",
+        "supervision: supervisor died",
+        crate::cases::ROOM_WARNING,
+        "a completion wait came back",
+        "; left off",
+        "iommu-check:",
+    ],
+    ..case("iommu (2: off by default)", "test")
+};
+
 /// The second boot of `entropy-boots`.
 const ENTROPY_BOOT_2: TestCase = TestCase {
     expect: &["entropy: virtio-rng mixed in", "entropy-boots: sample "],
@@ -48,6 +72,39 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
         near_pct: Some(3),
         then: Some(&NO_HPET_BOOT),
         ..case("boot-no-hpet", "test")
+    },
+    // ADR 0007 section 5, v0.3: with iommu=check (opt-in until spike S07-2),
+    // the kernel reads QEMU's IVRS, gives its one IOMMU a pass-through
+    // device table, a command buffer and an event log, and `iommu=check`
+    // proves amdvi's command and event-log formats against
+    // QEMU's amd-iommu: a store that lands, invalidations that log nothing,
+    // the Status bits, and a bad command decoded as ILLEGAL_COMMAND_ERROR.
+    TestCase {
+        iommu: true,
+        expect: &[
+            "iommu: 1 unit in the IVRS (0 entries not read)",
+            "iommu: 00:02.0 at 0xfed80000: a completion wait came back in ",
+            "iommu-check: status ok",
+            "iommu-check: completion wait store ok",
+            "iommu-check: invalidations ok",
+            "iommu-check: illegal command event ok",
+            "iommu-check: every check passed",
+            "boot-ok",
+        ],
+        forbid: &[
+            "pkg: FAIL",
+            "cannot ask yet",
+            "dropped a result",
+            "did not reach the app",
+            "supervision: supervisor died",
+            crate::cases::ROOM_WARNING,
+            "; left off",
+            "iommu: off on the command line",
+            "iommu: left off until iommu=on",
+            "FAILED",
+        ],
+        then: Some(&IOMMU_DEFAULT_BOOT),
+        ..case("iommu", "test iommu=check")
     },
     // P6 row 1 (ADR 0006): the nesting census. The kernel logs the VMX, SVM,
     // NPT and NRIPS bits it sees; nesting-census.yml reads them per runner.
