@@ -45,7 +45,9 @@ pub enum Pages {
 pub enum Command {
     /// Waits for every earlier command; then, with `store`, writes its data
     /// at its address (8-byte aligned), and with `interrupt` raises the
-    /// completion-wait interrupt. `flush` lets later commands start first.
+    /// completion-wait interrupt. `flush` is the F bit (bit 2 of word 0);
+    /// doc 48882 section 2.4.1 defines how it orders the commands around
+    /// it, and the kernel sends it clear.
     CompletionWait {
         store: Option<(u64, u64)>,
         interrupt: bool,
