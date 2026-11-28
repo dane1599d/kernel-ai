@@ -110,14 +110,14 @@ pub fn current(disk: &mut dyn Disk) -> Current {
             if disk.read(lba, bytes).is_err() {
                 return Current::ReadFails;
             }
-            for (at, sector) in (lba..).zip(bytes.chunks_exact(S)) {
+            for (at, sector) in (lba..).zip(bytes.as_chunks::<S>().0) {
                 hash.update(sector);
-                zero &= sector.iter().all(|&b| b == 0);
+                zero &= *sector == [0; S];
                 if let Some(k) = LOOKED_AT.iter().position(|&x| x == at) {
-                    looked[k].copy_from_slice(sector);
+                    looked[k] = *sector;
                 }
                 if at + 1 == sectors {
-                    last.copy_from_slice(sector);
+                    last = *sector;
                 }
             }
             lba += n;

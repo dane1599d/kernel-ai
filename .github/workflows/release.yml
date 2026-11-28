@@ -14,7 +14,9 @@
 # The `vm` job boots the slot disk in QEMU under KVM: `updated` takes release 2
 # from an update disk signed by a throwaway root and boots it, and refuses the
 # same disk with one byte of the image flipped (boot cases `update-disk` and
-# `update-tampered`, ADR 0008 §12).
+# `update-tampered`, ADR 0008 §12). The root rotation cases follow: a move to
+# root v2, a v1 disk refused after it, and a rotation v1 never signed refused
+# (`update-root-rotate`, `update-root-old`, `update-root-one-key`).
 #
 # Once `release/pkgrepo/` is committed (P4 task 18's interim key files,
 # `cargo xtask release-repo`), the image carries it as `pkgrepo/`, its `models`
@@ -233,9 +235,9 @@ jobs:
           esac
       - run: rustup show active-toolchain || rustup toolchain install
       - run: rustup target add wasm32-unknown-unknown
-      - name: update-disk, then update-tampered
+      - name: update-disk, update-tampered, then the root rotation cases
         run: |
-          for case in update-disk update-tampered; do
+          for case in update-disk update-tampered update-root-rotate update-root-old update-root-one-key; do
             XTASK_CASE="$case" cargo xtask test --accel kvm --timeout 300
           done
 

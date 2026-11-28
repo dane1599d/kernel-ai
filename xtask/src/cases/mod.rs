@@ -236,6 +236,11 @@ impl UpdateDisk {
         signer: crate::image::update_disk::Signer::Root2,
         ..Self::ROOT1
     };
+    /// [`Self::ROOT2`] with a rotation only v2's root key signed.
+    pub const ROOT2_ONE_KEY: Self = Self {
+        signer: crate::image::update_disk::Signer::Root2OneKey,
+        ..Self::ROOT1
+    };
 }
 
 /// Lines no case expects, from the founder's second walkthrough: a package
