@@ -10,9 +10,12 @@ struct Branch {
     /// A commit's model input, as a label: two commits with one label match.
     input: BTreeMap<String, &'static str>,
     tag: Option<String>,
+    /// `git tag` fails.
+    tag_fails: bool,
     runs: BTreeMap<&'static str, Vec<Run>>,
-    jobs: BTreeMap<u64, Vec<(String, String)>>,
+    jobs: BTreeMap<u64, Vec<Job>>,
     logs: BTreeMap<u64, String>,
+    job_logs: BTreeMap<u64, String>,
 }
 
 impl Facts for Branch {
@@ -22,8 +25,11 @@ impl Facts for Branch {
     fn seq(&self, rev: &str) -> Option<String> {
         self.seq.get(rev).cloned()
     }
-    fn last_tag(&self) -> Option<String> {
-        self.tag.clone()
+    fn last_tag(&self) -> Result<Option<String>, String> {
+        match self.tag_fails {
+            true => Err("fatal: not a git repository".into()),
+            false => Ok(self.tag.clone()),
+        }
     }
     fn same_model_input(&self, a: &str, b: &str) -> Option<bool> {
         let input = |s: &str| self.input.get(s);
@@ -39,8 +45,14 @@ impl Facts for Branch {
             })
             .collect())
     }
-    fn jobs(&self, id: u64) -> Result<Vec<(String, String)>, String> {
+    fn jobs(&self, id: u64) -> Result<Vec<Job>, String> {
         Ok(self.jobs.get(&id).cloned().unwrap_or_default())
+    }
+    fn job_log(&self, job: u64) -> Result<String, String> {
+        self.job_logs
+            .get(&job)
+            .cloned()
+            .ok_or(format!("no job log {job}"))
     }
     fn log(&self, id: u64) -> Result<String, String> {
         self.logs.get(&id).cloned().ok_or(format!("no log {id}"))
@@ -55,11 +67,48 @@ fn run(id: u64, at: &str, conclusion: &str) -> Run {
     }
 }
 
-fn jobs(names: &[(&str, &str)]) -> Vec<(String, String)> {
+/// A run's jobs, each given the id `run * 100 + its index`.
+fn jobs(run: u64, names: &[(&str, &str)]) -> Vec<Job> {
     names
         .iter()
-        .map(|(n, c)| (n.to_string(), c.to_string()))
+        .enumerate()
+        .map(|(i, (n, c))| Job {
+            id: run * 100 + i as u64,
+            name: n.to_string(),
+            conclusion: c.to_string(),
+        })
         .collect()
+}
+
+/// An `actbench act seed N` job's log, as GitHub prints the step's env and
+/// the gate's verdict (job 140114349622's shape: EXTRA has a leading space).
+fn act_log(seed: u32, extra: &str, limit: &str, verdict: &str) -> String {
+    let p = "actbench act seed 42\tRun the arms on the local engine\t2026-11-26T18:53:10Z";
+    format!(
+        "{p}   ARMS: act\n{p}   SEEDS: {seed}\n{p}   EXTRA: {extra}\n{p}   LIMIT: {limit}\n\
+         {p} xtask: actbench act seed {seed}:\n{p} xtask: actbench act seed {seed}: {verdict}\n"
+    )
+}
+
+/// Run 30's gated act jobs for 42, 1 and 2 (job ids 3001 to 3003).
+fn gated(b: &mut Branch) {
+    b.jobs.insert(
+        30,
+        jobs(
+            30,
+            &[
+                ("plan", "success"),
+                ("actbench act seed 42", "success"),
+                ("actbench act seed 1", "success"),
+                ("actbench act seed 2", "success"),
+                ("actbench shipped seed 42", "failure"),
+            ],
+        ),
+    );
+    for (job, seed) in [(3001, 42), (3002, 1), (3003, 2)] {
+        b.job_logs
+            .insert(job, act_log(seed, " --gate", "", "passes"));
+    }
 }
 
 /// A fluency-model.yml log's lines as GitHub prints them: job, step, time.
@@ -75,17 +124,15 @@ fn fluency_log(c_flag: &str, mem_flag: &str, first: u32, repaired: u32) -> Strin
     )
 }
 
-fn boots(accels: &[(&str, usize, &str)]) -> Vec<(String, String)> {
-    let mut out = vec![("Format, lint, host unit tests".into(), "success".into())];
+fn boots(accels: &[(&str, usize, &str)]) -> Vec<Job> {
+    let mut names = vec![("Format, lint, host unit tests".to_string(), "success")];
     for (accel, of, c) in accels {
         for k in 1..=*of {
-            out.push((
-                format!("Boot test ({accel}, shard {k}/{of})"),
-                c.to_string(),
-            ));
+            names.push((format!("Boot test ({accel}, shard {k}/{of})"), c));
         }
     }
-    out
+    let names: Vec<(&str, &str)> = names.iter().map(|(n, c)| (n.as_str(), *c)).collect();
+    jobs(0, &names)
 }
 
 /// An rc.2 branch with everything a machine checks: each line is met.
@@ -108,15 +155,7 @@ fn ready() -> Branch {
     b.logs.insert(20, fluency_log("", "", 47, 48));
     b.runs
         .insert("actbench-model.yml", vec![run(30, "docs", "success")]);
-    b.jobs.insert(
-        30,
-        jobs(&[
-            ("plan", "success"),
-            ("actbench act seed 42", "success"),
-            ("actbench act seed 1", "success"),
-            ("actbench shipped seed 42", "failure"),
-        ]),
-    );
+    gated(&mut b);
     b.runs.insert(
         "ci.yml",
         vec![run(40, "rc2", "success"), run(41, "rc2", "success")],
@@ -149,7 +188,10 @@ fn a_ready_branch_meets_every_line_a_machine_checks() {
             .starts_with("run 20 at docs: 48/50 after one repair (47/50 first try)"),
         "{lines:#?}"
     );
-    assert!(lines[3].detail.contains("2 act jobs passed"), "{lines:#?}");
+    assert_eq!(
+        lines[3].detail,
+        "run 30 at docs: the gated act arm passed on seeds 42, 1, 2"
+    );
     assert!(
         lines[4]
             .detail
@@ -185,10 +227,7 @@ fn a_branch_short_of_rc2_names_each_line_left() {
     );
     assert_eq!(lines[1].detail, "no green Release run at rc2: 11 failure");
     assert_eq!(lines[2].detail, "under 47/50: run 20 at docs: 46/50");
-    assert_eq!(
-        lines[3].detail,
-        "no green run of the act arm at this model input (0 green runs there)"
-    );
+    assert_eq!(lines[3].detail, "no green actbench run at this model input");
     assert_eq!(
         lines[4].detail,
         "no run with every shard of both: run 40: KVM 3/3, TCG 0/0"
@@ -222,7 +261,7 @@ fn only_the_rhai_gate_at_the_same_model_input_counts() {
         ]),
     );
     b.jobs
-        .insert(30, jobs(&[("actbench shipped seed 42", "success")]));
+        .insert(30, jobs(30, &[("actbench shipped seed 42", "success")]));
     let lines = check(&b, "rc2").unwrap();
     assert_eq!(lines[2].state, State::Missing);
     assert_eq!(
@@ -230,6 +269,10 @@ fn only_the_rhai_gate_at_the_same_model_input_counts() {
         "no green rhai fluency run at this model input (2 green runs there, none the rhai gate)"
     );
     assert_eq!(lines[3].state, State::Missing, "{lines:#?}");
+    assert_eq!(
+        lines[3].detail,
+        "no full gated act run: run 30 at docs: no gated act job for seed 42, 1, 2"
+    );
     assert_eq!(lines[4].state, State::Missing);
     assert!(
         lines[4].detail.contains("run 41: KVM 3/3, TCG 4/5"),
@@ -237,11 +280,126 @@ fn only_the_rhai_gate_at_the_same_model_input_counts() {
     );
 }
 
+/// A green actbench run is the checklist's only when it is the full gated act
+/// arm: each narrower one is named, never met (run 44464121503 was green with
+/// `--only-m8` on seed 42 alone).
 #[test]
-fn no_tag_and_an_odd_seq() {
+fn only_a_full_gated_act_run_meets_actbench() {
+    type Spoil = fn(&mut Branch);
+    let cases: [(&str, Spoil, &str); 7] = [
+        (
+            "ungated",
+            |b| {
+                b.job_logs.insert(3001, act_log(42, "", "", "passes"));
+            },
+            "actbench act seed 42: options \"\", not --gate alone",
+        ),
+        (
+            "--only-m8",
+            |b| {
+                b.job_logs
+                    .insert(3001, act_log(42, "--only-m8 --gate", "", "passes"));
+            },
+            "actbench act seed 42: options \"--only-m8 --gate\", not --gate alone",
+        ),
+        (
+            "--no-m8",
+            |b| {
+                b.job_logs
+                    .insert(3002, act_log(1, "--no-m8 --gate", "", "passes"));
+            },
+            "actbench act seed 1: options \"--no-m8 --gate\", not --gate alone",
+        ),
+        (
+            "limited",
+            |b| {
+                b.job_logs
+                    .insert(3003, act_log(2, " --gate", "5", "passes"));
+            },
+            "actbench act seed 2: limit \"5\"",
+        ),
+        (
+            "no passes line",
+            |b| {
+                b.job_logs
+                    .insert(3001, act_log(42, " --gate", "", "misses the bar"));
+            },
+            "actbench act seed 42: no `xtask: actbench act seed 42: passes` line",
+        ),
+        (
+            "one seed",
+            |b| {
+                b.jobs.insert(
+                    30,
+                    jobs(
+                        30,
+                        &[("plan", "success"), ("actbench act seed 42", "success")],
+                    ),
+                );
+            },
+            "no gated act job for seed 1, 2",
+        ),
+        (
+            "a failed act job",
+            |b| {
+                if let Some(j) = b.jobs.get_mut(&30) {
+                    j[2].conclusion = "failure".into();
+                }
+            },
+            "actbench act seed 1 is failure",
+        ),
+    ];
+    for (what, spoil, why) in cases {
+        let mut b = ready();
+        spoil(&mut b);
+        let line = &check(&b, "rc2").unwrap()[3];
+        assert_eq!(line.state, State::Missing, "{what}: {line:#?}");
+        assert_eq!(
+            line.detail,
+            format!("no full gated act run: run 30 at docs: {why}"),
+            "{what}"
+        );
+    }
+    assert_eq!(act_job(&act_log(2, " --gate", "", "passes")), Ok(2));
+    assert!(
+        act_job(&act_log(2, " --gate", "", "passes").replace("ARMS: act", "ARMS: act,m8")).is_err()
+    );
+}
+
+/// The seq line is met only above a tag's readable seq.
+#[test]
+fn no_tag_a_failed_git_tag_and_an_odd_seq() {
     let mut b = ready();
     b.tag = None;
-    assert_eq!(check(&b, "rc2").unwrap()[0].detail, "2, above no tag's 0");
+    let line = &check(&b, "rc2").unwrap()[0];
+    assert_eq!(
+        (line.state, line.detail.as_str()),
+        (
+            State::Missing,
+            "2, but this clone has no v* tag to be above: fetch the tags"
+        )
+    );
+    b.tag = Some("v0.1.0-rc.1".into());
+    b.tag_fails = true;
+    let line = &check(&b, "rc2").unwrap()[0];
+    assert_eq!(
+        (line.state, line.detail.as_str()),
+        (
+            State::Missing,
+            "2, but git tag failed: fatal: not a git repository"
+        )
+    );
+    b.tag_fails = false;
+    b.seq.remove("v0.1.0-rc.1");
+    let line = &check(&b, "rc2").unwrap()[0];
+    assert_eq!(
+        (line.state, line.detail.as_str()),
+        (
+            State::Missing,
+            "2, but v0.1.0-rc.1's release/seq cannot be read"
+        )
+    );
+    b.seq.insert("v0.1.0-rc.1".into(), "1".into());
     b.seq.insert("rc2".into(), "two".into());
     let line = &check(&b, "rc2").unwrap()[0];
     assert_eq!(
