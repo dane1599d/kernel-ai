@@ -494,17 +494,11 @@ fn check(handle: Handle) -> Result<(), String> {
     // an update writes one. That is its FAT32 volume, not the whole partition,
     // which is larger (ADR 0008 §1), rounded up to whole blocks ([`BLOCK`]);
     // past the volume is the partition's. The room rule is the update's own.
-    let image = image_sectors(handle, active as u64)? * SECTOR;
-    let room = info(other as u64)?.sectors * SECTOR;
-    let sectors = match blocks::padded(image) {
-        Some(padded) if blocks::fits(image, room) => padded / SECTOR,
-        _ => {
-            return Err(format!(
-                "the running slot's image is {}, more than {other:?}'s {room}",
-                blocks::shown(image)
-            ));
-        }
-    };
+    let room = info(other as u64)?.sectors;
+    let sectors =
+        blocks::copy_sectors(image_sectors(handle, active as u64)?, room).map_err(|why| {
+            format!("refused: {active:?}'s image cannot be copied into {other:?}: {why}")
+        })?;
     let mut bad = nv.record.encode();
     bad[10] ^= 0xFF;
     if sys::bootrec_set(handle, &bad, NONE, false) != Err(Error::Invalid) {
@@ -522,6 +516,7 @@ fn check(handle: Handle) -> Result<(), String> {
     bootslot::restart_into(&mut nv, other);
     println!(
         "updated: staged {other:?} as release {STAGED_RELEASE}: {} MiB written, flushed and read back",
+        // `copy_sectors` worked these out from bytes, so they fit `u64` bytes.
         (sectors * SECTOR) >> 20
     );
     println!("updated: restarting into {other:?}");
