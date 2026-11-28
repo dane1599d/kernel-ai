@@ -90,6 +90,7 @@ mod fpu_tests;
 mod gdt;
 mod handle;
 mod handle_tests;
+mod hda;
 mod hpet;
 mod https_tests;
 mod i8042;
@@ -405,6 +406,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Pointer => run_case(pointer::self_test),
         SelfTest::Display => run_case(display_tests::check),
         SelfTest::Usb => run_case(usb::self_test),
+        SelfTest::Hda => run_case(hda::self_test),
         SelfTest::Sched => run_case(sched_tests::latency_check),
         SelfTest::Watchdog => run_case(sched_tests::watchdog_check),
         SelfTest::Smp => run_case(smp_tests::all_cpus_check),

@@ -79,6 +79,10 @@ pub const SD_BDPU: u64 = 0x1C;
 pub const SD_SRST: u8 = 1 << 0;
 /// SDnCTL byte 0: the stream's DMA runs.
 pub const SD_RUN: u8 = 1 << 1;
+/// SDnCTL byte 0: interrupt on a BDL entry's completion (with its IOC).
+pub const SD_IOCE: u8 = 1 << 2;
+/// INTCTL: the global interrupt enable; bits 29:0 enable stream n's.
+pub const INTCTL_GIE: u32 = 1 << 31;
 /// SDnSTS: buffer completion, FIFO error, descriptor error.
 pub const SD_STS_CLEAR: u8 = (1 << 2) | (1 << 3) | (1 << 4);
 

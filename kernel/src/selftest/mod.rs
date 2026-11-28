@@ -76,6 +76,8 @@ pub enum SelfTest {
     Display,
     /// P7: keys and pointer reports arrive from a USB keyboard, mouse or tablet.
     Usb,
+    /// The HD Audio tone plays: its stream position moves (v0.3).
+    Hda,
     Sched,
     Watchdog,
     Smp,

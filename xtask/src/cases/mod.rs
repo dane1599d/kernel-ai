@@ -123,6 +123,10 @@ pub struct TestCase {
     /// USB devices (`usb-kbd`, `usb-tablet`, `usb-mouse`) on a `qemu-xhci`
     /// controller; none and no controller when empty.
     pub usb: &'static [&'static str],
+    /// An Intel HD Audio controller (`intel-hda`, ICH6's 8086:2668) with
+    /// QEMU's `hda-duplex` codec, its output recorded to `target/hda.wav`
+    /// ([`HDA_WAV`]).
+    pub hda: bool,
     /// Put the network card behind a PCIe root port, on bus 1, so the kernel
     /// reaches it only by walking the bridge.
     pub bridge: bool,
@@ -332,6 +336,9 @@ pub(crate) fn tcg_skip(case: &TestCase) -> Option<String> {
         .then(|| format!("xtask: {} skipped under TCG (kvm_only)", case.name))
 }
 
+/// Where an `hda` case's audio goes, in QEMU's working directory (`target/`).
+pub const HDA_WAV: &str = "hda.wav";
+
 pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase {
     TestCase {
         name,
@@ -364,6 +371,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         gpu: false,
         screen: None,
         usb: &[],
+        hda: false,
         bridge: false,
         net_polled: false,
         resets: false,

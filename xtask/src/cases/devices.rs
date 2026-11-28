@@ -225,6 +225,27 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("no-8042", "test=usb")
     },
+    // v0.3: HD Audio on QEMU's intel-hda (ICH6) with its hda-duplex codec,
+    // recorded to target/hda.wav. The kernel opens the codec's output path,
+    // queues the tone, and passes once the stream's position in its buffer has
+    // moved and its buffer completions have interrupted on MSI. The node
+    // numbers are QEMU's to give, so only their shape is checked.
+    TestCase {
+        hda: true,
+        expect: &[
+            "pci: hda at ",
+            "(id 8086:2668), BAR0 ",
+            ": HD Audio 1.0, codecs 0x0001, interrupts on MSI vector 0x",
+            ": codec 0, vendor 1af4",
+            ": output path pin ",
+            ") -> DAC ",
+            ": a 375 Hz tone queued on output stream ",
+            ": 48000 Hz, 16-bit, 2 channels, a 8192-byte cyclic buffer",
+            "hda: the stream position moved: ",
+            " buffer interrupts on MSI",
+        ],
+        ..case("hda", "test=hda")
+    },
     // P7: a keyboard and a relative mouse (boot protocol) on xHCI.
     TestCase {
         usb: &["usb-kbd", "usb-mouse"],

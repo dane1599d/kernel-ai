@@ -11,7 +11,7 @@ use crate::irq;
 use kabi::device::{DeviceRecord, MAX_RECORDS, VERSION, irq_mode, place, state};
 use spin::Mutex;
 
-/// The records in use, then the MSI-X vector of each record that has one.
+/// The records in use, then the MSI or MSI-X vector of each record that has one.
 struct Table {
     count: usize,
     records: [DeviceRecord; MAX_RECORDS],
@@ -28,6 +28,8 @@ static TABLE: Mutex<Table> = Mutex::new(Table {
 pub enum Outcome {
     /// The driver has the device, with this MSI-X vector or polled.
     Running(Option<u8>),
+    /// The driver has the device, interrupting on this MSI vector.
+    RunningMsi(u8),
     /// The driver could not take it; `code` says why (see [`error`]).
     Failed(u32),
 }
@@ -70,6 +72,11 @@ pub fn bind(function: &pci::Function, driver: &str, outcome: Outcome) {
                 None => irq_mode::POLLED,
             };
             vector
+        }
+        Outcome::RunningMsi(vector) => {
+            record.state = state::RUNNING;
+            record.irq_mode = irq_mode::MSI;
+            Some(vector)
         }
         Outcome::Failed(code) => {
             record.state = state::FAILED;

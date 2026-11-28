@@ -562,6 +562,31 @@ mod tests {
         assert_eq!(input_args(&case("plain", "test=x")).unwrap().1, None);
     }
 
+    /// An `hda` case gets ICH6's HD Audio controller, QEMU's duplex codec on
+    /// its link, and a WAV backend for the codec's output.
+    #[test]
+    fn an_hda_case_gets_the_controller_codec_and_a_wav() {
+        let hda = TestCase {
+            hda: true,
+            ..case("hda", "test=hda")
+        };
+        let (args, port) = input_args(&hda).unwrap();
+        assert_eq!(port, None);
+        assert_eq!(
+            args,
+            [
+                "-audiodev",
+                "wav,id=kai-audio,path=hda.wav",
+                "-device",
+                "intel-hda,id=kai-hda",
+                "-device",
+                "hda-duplex,bus=kai-hda.0,audiodev=kai-audio",
+            ]
+        );
+        let (plain, _) = input_args(&case("plain", "test=x")).unwrap();
+        assert!(plain.is_empty());
+    }
+
     /// A stamped line matches as the same line without its stamp; a program's
     /// `[name] ` and anything stamp-like but not a stamp stay.
     #[test]

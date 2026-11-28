@@ -67,9 +67,9 @@ const CORB_AT: usize = 0;
 const RIRB_AT: usize = 1024;
 const BDL_AT: usize = 3072;
 
-/// What the bring-up found and started, for the log.
+/// What [`Controller::open`] found and set up, for the log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Playing {
+pub struct Opened {
     pub version: (u8, u8),
     /// STATESTS: bit n is a codec at address n.
     pub codecs: u16,
@@ -77,11 +77,25 @@ pub struct Playing {
     pub vendor: u32,
     pub group: FunctionGroup,
     pub path: Path,
-    /// The stream descriptor the tone plays on.
+    /// The format the DAC was given.
+    pub format: Format,
+}
+
+/// The tone [`Controller::start_tone`] started.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tone {
+    /// The stream descriptor it plays on.
     pub stream: u8,
     pub format: Format,
     /// The cyclic buffer's length in bytes.
     pub buffer: u32,
+}
+
+/// Both, from [`Controller::play_tone`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Playing {
+    pub opened: Opened,
+    pub tone: Tone,
 }
 
 pub struct Controller<H: Host, R: Regs> {
@@ -97,6 +111,8 @@ pub struct Controller<H: Host, R: Regs> {
     /// The stream descriptor programmed, from its reset on; the teardown
     /// stops and clears it.
     stream: Option<u8>,
+    /// Buffer completions interrupt (IOC, the stream's SIE and GIE).
+    interrupts: bool,
     /// The rings' bases are written and their DMA may run.
     rings_on: bool,
     /// Commands sent since the bring-up began, against [`VERB_BUDGET`].
@@ -116,6 +132,7 @@ impl<H: Host, R: Regs> Controller<H, R> {
             rirb_rp: 0,
             codec: 0,
             stream: None,
+            interrupts: false,
             rings_on: false,
             verbs: 0,
         }
@@ -125,20 +142,35 @@ impl<H: Host, R: Regs> Controller<H, R> {
         &mut self.host
     }
 
-    /// Everything from reset to the tone playing: the controller out of reset,
-    /// the rings running, the first codec's output path powered and unmuted,
-    /// and the first output stream running on the tone. On any error the
-    /// stream and the rings are torn down, so no DMA is left running.
-    pub fn play_tone(&mut self) -> Result<Playing, Error> {
-        self.verbs = 0;
-        let played = self.bring_up();
-        if played.is_err() {
-            let _ = self.teardown();
-        }
-        played
+    /// Has the tone's stream interrupt at each buffer's end (each BDL entry's
+    /// IOC, the stream's interrupt enable and the global one); off, it is
+    /// polled. Set before [`Controller::start_tone`].
+    pub fn set_interrupts(&mut self, on: bool) {
+        self.interrupts = on;
     }
 
-    fn bring_up(&mut self) -> Result<Playing, Error> {
+    /// The stream descriptor the tone will play on: the first output one.
+    pub fn output_stream(&self) -> Result<u8, Error> {
+        match streams(self.regs.read16(GCAP)) {
+            (_, 0, _) => Err(Error::NoOutputStream),
+            (inputs, _, _) => Ok(inputs),
+        }
+    }
+
+    /// The controller out of reset, the rings running, and the first codec's
+    /// output path powered, unmuted and its DAC pointed at the stream, still
+    /// silent: no stream runs yet. Its commands count against
+    /// [`VERB_BUDGET`]; on any error the rings are torn down.
+    pub fn open(&mut self) -> Result<Opened, Error> {
+        self.verbs = 0;
+        let opened = self.bring_up();
+        if opened.is_err() {
+            let _ = self.teardown();
+        }
+        opened
+    }
+
+    fn bring_up(&mut self) -> Result<Opened, Error> {
         let version = (self.regs.read8(VMAJ), self.regs.read8(VMIN));
         let codecs = self.reset()?;
         if codecs == 0 {
@@ -151,18 +183,40 @@ impl<H: Host, R: Regs> Controller<H, R> {
         let path = graph::output_path(self, &group)?;
         let format = Format::STEREO_48K_16;
         self.open_path(&group, &path, format)?;
-        let (stream, buffer) = self.start_stream(format)?;
-        Ok(Playing {
+        Ok(Opened {
             version,
             codecs,
             codec: self.codec,
             vendor,
             group,
             path,
-            stream,
             format,
+        })
+    }
+
+    /// The first output stream running on the tone, in `opened`'s format. On
+    /// any error the stream and the rings are torn down, so no DMA is left
+    /// running.
+    pub fn start_tone(&mut self, opened: &Opened) -> Result<Tone, Error> {
+        let (stream, buffer) = match self.start_stream(opened.format) {
+            Ok(started) => started,
+            Err(e) => {
+                let _ = self.teardown();
+                return Err(e);
+            }
+        };
+        Ok(Tone {
+            stream,
+            format: opened.format,
             buffer,
         })
+    }
+
+    /// [`Controller::open`], then [`Controller::start_tone`].
+    pub fn play_tone(&mut self) -> Result<Playing, Error> {
+        let opened = self.open()?;
+        let tone = self.start_tone(&opened)?;
+        Ok(Playing { opened, tone })
     }
 
     /// The output stream's position in its buffer, in bytes (SDnLPIB): it
@@ -178,11 +232,14 @@ impl<H: Host, R: Regs> Controller<H, R> {
         self.teardown()
     }
 
-    /// The one teardown (stop and every error after DMA was on): the stream's
-    /// RUN cleared and waited out, the stream reset, its BDL, length and last
-    /// index zeroed; then the rings stopped, waited out, and their bases
-    /// zeroed.
+    /// The one teardown (stop and every error after DMA was on): interrupts
+    /// off, the stream's RUN cleared and waited out, the stream reset, its
+    /// BDL, length and last index zeroed; then the rings stopped, waited out,
+    /// and their bases zeroed.
     fn teardown(&mut self) -> Result<(), Error> {
+        if self.interrupts {
+            self.regs.write32(INTCTL, 0);
+        }
         let mut first: Option<Error> = None;
         let mut note = |r: Result<(), Error>| {
             if let Err(e) = r {
@@ -459,11 +516,7 @@ impl<H: Host, R: Regs> Controller<H, R> {
     /// The first output stream descriptor, reset and started on the tone
     /// (section 4.5.1): returns its index and the buffer's length.
     fn start_stream(&mut self, format: Format) -> Result<(u8, u32), Error> {
-        let (inputs, outputs, _) = streams(self.regs.read16(GCAP));
-        if outputs == 0 {
-            return Err(Error::NoOutputStream);
-        }
-        let s = inputs;
+        let s = self.output_stream()?;
         self.regs.write8(sd(s, SD_CTL0), 0);
         self.regs.write8(sd(s, SD_CTL0), SD_SRST);
         let _ = self.wait("the stream to enter reset", 1_000_000, |r| {
@@ -489,8 +542,11 @@ impl<H: Host, R: Regs> Controller<H, R> {
             unsafe { core::slice::from_raw_parts_mut(buffer.cpu().as_ptr(), BUFFER_PAGES * PAGE) };
         stream::tone(bytes);
         for page in 0..BUFFER_PAGES {
-            let entry =
-                stream::bdl_entry(buffer.device() + (page * PAGE) as u64, PAGE as u32, false);
+            let entry = stream::bdl_entry(
+                buffer.device() + (page * PAGE) as u64,
+                PAGE as u32,
+                self.interrupts,
+            );
             // SAFETY: the BDL is in the rings' page, from 3072, and two
             // 16-byte entries end well inside it.
             unsafe {
@@ -512,7 +568,11 @@ impl<H: Host, R: Regs> Controller<H, R> {
         self.regs.write16(sd(s, SD_FMT), bits);
         self.regs.write8(sd(s, SD_CTL2), STREAM_TAG << 4);
         self.buffer = Some(buffer);
-        self.regs.write8(sd(s, SD_CTL0), SD_RUN);
+        if self.interrupts {
+            self.regs.write32(INTCTL, INTCTL_GIE | (1 << s));
+        }
+        let ioce = if self.interrupts { SD_IOCE } else { 0 };
+        self.regs.write8(sd(s, SD_CTL0), SD_RUN | ioce);
         self.wait("the stream to run", RESET_NS, |r| {
             r.read8(sd(s, SD_CTL0)) & SD_RUN != 0
         })?;

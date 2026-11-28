@@ -133,6 +133,8 @@ pub struct Found {
     pub nvme: Vec<crate::nvme::Function>,
     /// Every xHCI controller, in bus order.
     pub usb: Vec<crate::usb::Function>,
+    /// Every HD Audio controller, in bus order.
+    pub hda: Vec<crate::hda::Function>,
 }
 
 /// Walks every bus of every MCFG window once and sets up each function that
@@ -151,6 +153,7 @@ pub fn probe(platform: &acpitables::Platform, cmdline: &str) -> Result<Found, &'
         rng: None,
         nvme: Vec::new(),
         usb: Vec::new(),
+        hda: Vec::new(),
     };
     for window in &platform.ecam {
         let access = EcamAccess::new(window);
@@ -228,6 +231,40 @@ fn bind(
             Ok((bar, state)) => {
                 log!("pci: {driver} at {at}, BAR0 {bar:#x}: the watchdog, {state}");
                 Outcome::Running(None)
+            }
+            Err(message) => {
+                log!("pci: {driver} at {at}: {message}");
+                Outcome::Failed(error::BAR)
+            }
+        });
+    }
+    if driver == "hda" {
+        return Some(match memory_bar0(root, at, true) {
+            Ok((bar, bar_len)) => {
+                // ADR 0007 section 4: MSI, else polled; never INTx.
+                let vector = match enable_msi(access, at, crate::hda::on_interrupt) {
+                    Ok(vector) => Some(vector),
+                    Err(why) => {
+                        log!("pci: {driver} at {at}: {why}; polled");
+                        None
+                    }
+                };
+                log!(
+                    "pci: {driver} at {at} (id {:04x}:{:04x}), BAR0 {bar:#x} ({} KiB)",
+                    ids.vendor,
+                    ids.device,
+                    bar_len / 1024
+                );
+                found.hda.push(crate::hda::Function {
+                    name: format!("{at}"),
+                    bar,
+                    bar_len,
+                    vector,
+                });
+                match vector {
+                    Some(vector) => Outcome::RunningMsi(vector),
+                    None => Outcome::Running(None),
+                }
             }
             Err(message) => {
                 log!("pci: {driver} at {at}: {message}");
@@ -388,6 +425,33 @@ fn enable_msix(
         access.write(address, 0x04, command | 1 << 10);
     }
     msix.enable(access, address, true);
+    Ok(vector)
+}
+
+/// Gives the function's one MSI vector a vector of its own, delivered to the
+/// boot CPU, and turns MSI on with legacy INTx off, for a device with MSI and
+/// no MSI-X (HD Audio controllers may have only that).
+fn enable_msi(
+    access: &EcamAccess,
+    function: DeviceFunction,
+    handler: crate::irq::Handler,
+) -> Result<u8, &'static str> {
+    use pci::msix;
+    let address = pci::PciAddress::new(0, function.bus, function.device, function.function);
+    let msi = msix::msi(access, address).ok_or("no MSI")?;
+    let vector = crate::irq::allocate(handler).ok_or("no free interrupt vector")?;
+    let boot_apic = crate::percpu::get(0)
+        .lapic_id
+        .load(core::sync::atomic::Ordering::Relaxed);
+    // Command register bit 10: no legacy INTx. The status half is written as
+    // zeros, which leaves its write-1-to-clear bits alone.
+    // SAFETY: offset 0x04 of this function's configuration space.
+    unsafe {
+        use pci::ConfigRegionAccess;
+        let command = access.read(address, 0x04) & 0xFFFF;
+        access.write(address, 0x04, command | 1 << 10);
+    }
+    msi.enable(access, address, msix::message(boot_apic as u8, vector));
     Ok(vector)
 }
 

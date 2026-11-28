@@ -20,6 +20,7 @@ pub fn from_cmdline(cmdline: &str) -> SelfTest {
             "test=pointer" => Some(SelfTest::Pointer),
             "test=display" => Some(SelfTest::Display),
             "test=usb" => Some(SelfTest::Usb),
+            "test=hda" => Some(SelfTest::Hda),
             "test=sched" => Some(SelfTest::Sched),
             "test=watchdog" => Some(SelfTest::Watchdog),
             "test=smp" => Some(SelfTest::Smp),
