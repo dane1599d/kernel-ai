@@ -122,9 +122,14 @@ fn pm_raw(port: u16) -> u32 {
     }
 }
 
-/// The PM timer's count, carried into 64 bits from `last`.
-fn pm_counter(port: u16, last: u64) -> u64 {
+/// The PM timer's count, read and then carried into 64 bits from the last good
+/// value. The port is read first: a reader preempted between loading
+/// LAST_TICKS and the read would carry a count more than half a wrap ahead as
+/// one behind, 4.69 s in the past (#1660's review). Read in this order, the
+/// last value can only be a little ahead, which the carry allows.
+fn pm_counter(port: u16) -> u64 {
     let raw = pm_raw(port);
+    let last = LAST_TICKS.load(Ordering::Relaxed);
     match PM_BITS32.load(Ordering::Relaxed) {
         true => acpitables::hpet_counter::extend32(raw, last),
         false => acpitables::hpet_counter::extend24(raw, last),
@@ -133,11 +138,14 @@ fn pm_counter(port: u16, last: u64) -> u64 {
 
 fn main_counter() -> u64 {
     READS.fetch_add(1, Ordering::Relaxed);
-    let last = LAST_TICKS.load(Ordering::Relaxed);
     let pm = PM_PORT.load(Ordering::Relaxed) as u16;
-    let (ticks, split) = if pm != 0 {
-        (pm_counter(pm, last), false)
-    } else if WIDE.load(Ordering::Relaxed) {
+    if pm != 0 {
+        let ticks = pm_counter(pm);
+        LAST_TICKS.fetch_max(ticks, Ordering::Relaxed);
+        return ticks;
+    }
+    let last = LAST_TICKS.load(Ordering::Relaxed);
+    let (ticks, split) = if WIDE.load(Ordering::Relaxed) {
         acpitables::hpet_counter::read(
             || read(MAIN_COUNTER),
             || read32(MAIN_COUNTER),

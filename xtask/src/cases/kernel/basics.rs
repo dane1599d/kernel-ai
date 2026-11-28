@@ -5,7 +5,9 @@ use crate::disk::Fixture;
 
 /// `boot-no-hpet`'s second boot (P6 G57): q35 with `hpet=off`, so the FADT's
 /// PM timer is the reference clock. Its APIC timer calibration must come
-/// within 1% of the first boot's, against the HPET.
+/// within 3% of the first boot's, against the HPET: TCG's 10 ms calibration
+/// already varies by over 1% between two HPET boots (6 of 354 pairs, #1660's
+/// review).
 const NO_HPET_BOOT: TestCase = TestCase {
     no_hpet: true,
     expect: &[
@@ -14,7 +16,7 @@ const NO_HPET_BOOT: TestCase = TestCase {
         "boot-ok",
     ],
     differs: Some("timer: APIC "),
-    near_pct: Some(1),
+    near_pct: Some(3),
     ..case("boot-no-hpet (2: no HPET)", "test")
 };
 
@@ -43,7 +45,7 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
     TestCase {
         expect: &["counts/ms, HPET "],
         differs: Some("timer: APIC "),
-        near_pct: Some(1),
+        near_pct: Some(3),
         then: Some(&NO_HPET_BOOT),
         ..case("boot-no-hpet", "test")
     },
