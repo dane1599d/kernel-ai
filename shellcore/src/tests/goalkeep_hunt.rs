@@ -1,4 +1,4 @@
-//! #1684's review hunt for the state-word release (`crate::goalkeep`): lines
+//! #1684's review hunts (rounds 101 and 102) for the state-word release (`crate::goalkeep`): lines
 //! that keep a folder off, each refused and named as current main names it.
 
 /// #1684's review hunt: 80 lines that keep a folder off which the release
@@ -238,6 +238,106 @@ const HUNT_1684: &[(&str, &str)] = &[
         "notes/q3 isn't touched by anything, keep it that way",
         "notes/q3",
     ),
+    // Round 102: an order that selects by difference ("the rest", "everything
+    // else", "the others", "what's left", "minus it", "instead") names what
+    // the line keeps notes/q3 out of; the first nine are the review's.
+    ("notes/q3 isn't sorted; sort the rest of notes/", "notes/q3"),
+    (
+        "notes/q3 isn't sorted; sort everything else in notes/",
+        "notes/q3",
+    ),
+    ("notes/q3 isn't sorted, sort the others", "notes/q3"),
+    (
+        "notes/q3 isn't sorted, sort the remaining folders in notes/",
+        "notes/q3",
+    ),
+    ("notes/q3 isn't sorted, trash what's left", "notes/q3"),
+    ("notes/q3 isn't sorted, sort the other folders", "notes/q3"),
+    ("notes/q3 isn't sorted, sort notes/ minus it", "notes/q3"),
+    (
+        "notes/q3 isn't sorted, sort notes/ bar notes/q3",
+        "notes/q3",
+    ),
+    ("notes/q3 isn't sorted, sort notes/q4 instead", "notes/q3"),
+    (
+        "notes/q3 isn't done yet, sort the remainder of notes/",
+        "notes/q3",
+    ),
+    (
+        "notes/q3 isn't ready, tidy whatever remains in notes/",
+        "notes/q3",
+    ),
+    ("notes/q3 isn't sorted, sort notes/ sans it", "notes/q3"),
+    (
+        "notes/q3 isn't sorted, sort the leftover folders in notes/",
+        "notes/q3",
+    ),
+    (
+        "notes/q3 isn't sorted, trash the leftovers in notes/",
+        "notes/q3",
+    ),
+    (
+        "notes/q3 isn't sorted, sort notes/ less notes/q3",
+        "notes/q3",
+    ),
+    (
+        "notes/q3 isn't sorted, sort everything in notes/ besides it",
+        "notes/q3",
+    ),
+    (
+        "notes/q3 isn't sorted, sort everything outside it",
+        "notes/q3",
+    ),
+    (
+        "neither notes/q3 nor notes/q4 is done, sort the rest",
+        "notes/q3",
+    ),
+    (
+        "notes/q3 wasn't backed up, sort every other folder in notes/",
+        "notes/q3",
+    ),
+    (
+        "notes/q3 isn't tidy, file whatever is left in notes/",
+        "notes/q3",
+    ),
+    (
+        "notes/q3 isn't sorted yet, sort the rest of them",
+        "notes/q3",
+    ),
+    (
+        "notes/q3 isn't sorted, so sort the others in notes/ first",
+        "notes/q3",
+    ),
+    (
+        "please, notes/q3 isn't ready; trash everything else",
+        "notes/q3",
+    ),
+    // An order on another folder leaves notes/q3 a folder the goal was only
+    // told about, and one on its neighbours selects by difference.
+    ("notes/q3 isn't sorted, sort notes/q4", "notes/q3"),
+    ("notes/q3 isn't sorted, sort notes/", "notes/q3"),
+    (
+        "notes/q3 isn't sorted yet, trash the drafts in notes/old",
+        "notes/q3",
+    ),
+    ("notes/q3 isn't sorted, sort its siblings", "notes/q3"),
+    (
+        "notes/q3 isn't sorted, sort the folders around it",
+        "notes/q3",
+    ),
+    (
+        "notes/q3 isn't sorted, sort the folders next to it",
+        "notes/q3",
+    ),
+    (
+        "neither notes/q3 nor notes/q4 is sorted, sort notes/q4",
+        "notes/q3",
+    ),
+    (
+        "notes/q3 and notes/q4 aren't sorted, sort notes/q4",
+        "notes/q4",
+    ),
+    ("notes/q3 and notes/q4 aren't sorted, sort it", "notes/q4"),
 ];
 
 #[test]

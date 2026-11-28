@@ -23,7 +23,10 @@
 //!   It is decided for the whole line first ([`freed`]): the state word ends
 //!   its clause ("isn't ready to be touched" refuses), nothing but what it is
 //!   said of comes before the negation, and every other clause is filler or
-//!   a plain order ("sort it by topic", "trash the drafts in notes/old"). Any
+//!   a plain order on the described folders themselves ("sort it by topic",
+//!   "so sort both"): it points back to them or names them all, names no
+//!   other path, and selects nothing by difference ("the rest", "everything
+//!   else", "the others", "sort notes/q4"). Any
 //!   other line ("..., hands off", "..., nobody touches it", "..., sort it
 //!   later", "my finals aren't done, notes/q3 included, so leave them") is
 //!   read exactly as without the release, naming the folder it named, and
@@ -164,7 +167,10 @@ const ORDER_VERBS: &[&str] = &[
 ];
 
 /// Words that, in an order after a [`freed`] clause, may hold something
-/// back: "..., copy nothing", "..., sort it later".
+/// back ("..., copy nothing", "..., sort it later"), or select by difference
+/// and so leave the described folder out ("..., sort the rest of notes/",
+/// "everything else", "the others", "what's left", "minus it", "instead",
+/// #1684's review).
 const HOLDS_BACK: &[&str] = &[
     "nothing",
     "no",
@@ -183,6 +189,32 @@ const HOLDS_BACK: &[&str] = &[
     "untouched",
     "unchanged",
     "as",
+    "rest",
+    "remaining",
+    "remainder",
+    "remains",
+    "else",
+    "others",
+    "other",
+    "left",
+    "leftover",
+    "leftovers",
+    "minus",
+    "bar",
+    "sans",
+    "instead",
+    "less",
+    "besides",
+    "outside",
+    "beyond",
+    "siblings",
+    "sibling",
+    "around",
+    "neighbours",
+    "neighbors",
+    "next",
+    "near",
+    "beside",
 ];
 
 /// Words that may lead a list item before a row's cue that ends the list:
@@ -461,9 +493,10 @@ fn describes(words: &[Word], at: usize) -> bool {
 /// Whether `clauses` are a line the release lets through: a clause whose
 /// negation only says how a folder is ([`describes`]) holds nothing before
 /// that negation but what it is said of, and every other clause is filler or
-/// a plain order (it opens with a row's cue or one of [`ORDER_VERBS`], with
-/// no negation, exclusion or [`HOLDS_BACK`] word): "notes/q3 isn't sorted
-/// yet, sort it by topic". Any other line ("..., hands off", "..., nobody
+/// a plain order on the described folders (it opens with a row's cue or one
+/// of [`ORDER_VERBS`], points back to them or names them all, names no other
+/// path, and has no negation, exclusion or [`HOLDS_BACK`] word): "notes/q3
+/// isn't sorted yet, sort it by topic". Any other line ("..., hands off", "..., nobody
 /// touches it", "..., so wait", "nobody touches notes/q3 as it isn't
 /// sorted") is read as #1650 read it, and refused as it refused it, naming
 /// the same folder (#1684's review).
@@ -486,15 +519,45 @@ fn freed(clauses: &[Clause], starts_order: impl Fn(&str) -> bool) -> bool {
             || COPULAS.contains(&w.text.as_str())
             || TOPIC_FILLER.contains(&w.text.as_str())
     });
-    // Every other clause is filler, or an order with no word that may hold
-    // something back ("copy nothing", "sort it later").
+    // Every other clause is filler, or an order on the described folders
+    // themselves: it points back to them ("sort it", "sort both") or names
+    // them, names no other path ("sort notes/q4" would leave notes/q3 a
+    // folder the goal was only told about), and has no word that may hold
+    // something back or select by difference ("copy nothing", "sort it
+    // later", "sort the rest of notes/", #1684's review).
+    let described: Vec<&str> = words
+        .iter()
+        .filter(|w| w.path)
+        .map(|w| w.text.as_str())
+        .collect();
     let order = |c: &Clause| {
-        ordered(&c.words, |w: &str| {
-            starts_order(w) || ORDER_VERBS.contains(&w)
-        }) && !c
+        // To every described folder: with two or more, a plural pointer or
+        // each by name ("sort notes/q4" or "sort it" after "notes/q3 and
+        // notes/q4 aren't sorted" picks one, by difference).
+        let plural = c
             .words
             .iter()
-            .any(|w| HOLDS_BACK.contains(&w.text.as_str()) || keeps_off_word(&w.text))
+            .any(|w| matches!(w.text.as_str(), "them" | "both" | "these" | "those" | "all"));
+        let singular = c
+            .words
+            .iter()
+            .any(|w| matches!(w.text.as_str(), "it" | "this" | "that" | "there"));
+        let all_named = described
+            .iter()
+            .all(|d| c.words.iter().any(|w| w.text == *d));
+        let refers_back = all_named || plural || (singular && described.len() == 1);
+        let no_other_path = c
+            .words
+            .iter()
+            .all(|w| !w.path || described.contains(&w.text.as_str()));
+        ordered(&c.words, |w: &str| {
+            starts_order(w) || ORDER_VERBS.contains(&w)
+        }) && refers_back
+            && no_other_path
+            && !c
+                .words
+                .iter()
+                .any(|w| HOLDS_BACK.contains(&w.text.as_str()) || keeps_off_word(&w.text))
     };
     only_its_subject
         && clauses
