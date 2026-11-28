@@ -28,6 +28,18 @@ const FRAME_MTU: usize = 1514;
 /// logged once, not on every poll after.
 static STALLED: AtomicBool = AtomicBool::new(false);
 
+/// While set, a poll gives the card no receive buffers back, so it uses up the
+/// ones it holds: `test=net-throughput`'s dry-ring check alone sets it
+/// (#1623's review), through [`super::withhold_receive_buffers`], which only
+/// `net_throughput_tests` calls. No syscall or user-space path reaches it, and
+/// on any other boot it stays false from boot on, so every poll refills.
+static WITHHOLD: AtomicBool = AtomicBool::new(false);
+
+/// Sets [`WITHHOLD`].
+pub(super) fn withhold(on: bool) {
+    WITHHOLD.store(on, Ordering::Relaxed);
+}
+
 /// Frames received since boot.
 static RECEIVED: AtomicU64 = AtomicU64::new(0);
 
@@ -114,7 +126,9 @@ impl Card {
     /// them and the frames queued to send: one kick for each when the card
     /// asked (with EVENT_IDX), or always without it.
     fn refill(&mut self) {
-        while let Some(mut buffer) = self.stash.pop() {
+        while !WITHHOLD.load(Ordering::Relaxed)
+            && let Some(mut buffer) = self.stash.pop()
+        {
             // SAFETY: the buffer is kept in `rx` until the card gives its token back.
             match unsafe { self.nic.add_receive(&mut buffer) } {
                 Ok(token) => self.rx[usize::from(token)] = Some(buffer),
@@ -160,6 +174,16 @@ impl NicDevice {
     /// ([`Card::refill`]).
     pub fn refill(&mut self) {
         self.card.get_mut().refill();
+    }
+
+    /// How many receive buffers the card holds: given and not yet taken back.
+    pub fn held(&self) -> usize {
+        self.card.borrow().rx.iter().filter(|b| b.is_some()).count()
+    }
+
+    /// Whether the card took VIRTIO_F_EVENT_IDX.
+    pub fn event_idx(&self) -> bool {
+        self.card.borrow().nic.event_idx()
     }
 }
 

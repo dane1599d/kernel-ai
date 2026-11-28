@@ -8,9 +8,9 @@
 //! workflow names the round trip and holds the floor.
 //!
 //! A second, untimed download then checks the card's path (#1623's review):
-//! each NET_RECV that returns data polls the interface once, and with polls
-//! held off long enough for the card to use every receive buffer, it is
-//! kicked again and the download goes on ([`ring_check`]).
+//! each NET_RECV that returns data polls the interface once, and once the
+//! card has used every receive buffer it held and is given them back, it is
+//! kicked and the download goes on ([`ring_check`]).
 
 use crate::net::stream::{self, ready};
 use crate::{hpet, log, net, threads};
@@ -26,12 +26,15 @@ const FIRST_BYTE_MS: u64 = 20_000;
 const SETUP_WAIT_MS: u64 = 15_000;
 /// One NET_POLL's wait between reads.
 const POLL_MS: u64 = 100;
-/// [`ring_check`]'s download, the point it holds polls off at, and for how
-/// long: at 8 MB/s, +80 ms's rate, 1.6 MB comes meanwhile, past the 256
-/// buffers of 1.5 KB the card holds.
+/// [`ring_check`]'s download, and the point it stops giving the card receive
+/// buffers back at.
 const RING_BYTES: u64 = 16 * 1024 * 1024;
 const RING_HOLD_AT: u64 = 4 * 1024 * 1024;
-const RING_HOLD_MS: u64 = 200;
+/// How long the card may take to use the buffers it holds, and how long it is
+/// left dry after, so the frames still on the way reach it and it asks for a
+/// kick (its `avail_event`) before it gets buffers back.
+const DRY_WITHIN_MS: u64 = 10_000;
+const DRY_FOR_MS: u64 = 100;
 /// Reads that returned data whose polls [`ring_check`] counts.
 const POLL_SAMPLES: usize = 16;
 
@@ -80,22 +83,34 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
 
 /// The untimed download: after [`RING_HOLD_AT`] bytes, the polls of
 /// [`POLL_SAMPLES`] reads that return data, the least of which must be one
-/// (a poll before the read too would make it two); then the network lock
-/// held for [`RING_HOLD_MS`], so the card uses every receive buffer and waits
-/// for a kick, which must come, and the download must reach [`RING_BYTES`].
+/// (a poll before the read too would make it two). Then the card is given no
+/// receive buffers back until it holds none, however many frames the sender
+/// keeps in flight; it must hold none, and once it gets them back it must be
+/// kicked and the download must reach [`RING_BYTES`].
 fn ring_check(server: core::net::Ipv4Addr, port: u16) -> Result<(), &'static str> {
     let id = stream::connect(OWNER, server, port, true, None, None)
         .map_err(|_| "net-throughput: cannot connect to the blob server again")?;
     let result = ring_download(id);
+    // Whatever happened, every later poll refills again.
+    net::withhold_receive_buffers(false);
     let _ = stream::close(OWNER, id);
-    let (fewest_polls, kicks_before, kicks_after) = result?;
+    let ring = result?;
+    let (_, event_idx) = net::card_ring().ok_or("net-throughput: the card is gone")?;
     log!(
-        "net-throughput: the fewest polls of {POLL_SAMPLES} reads with data was {fewest_polls}; rx kicks {kicks_before} before polls were held {RING_HOLD_MS} ms, {kicks_after} after"
+        "net-throughput: the fewest polls of {POLL_SAMPLES} reads with data was {}; event_idx={event_idx}; the card held {} receive buffers once dry; rx kicks {} before the buffers went back, {} after; {} frames came by the first read with data after",
+        ring.fewest_polls,
+        ring.held_dry,
+        ring.kicks_before,
+        ring.kicks_after,
+        ring.first_frames
     );
-    if fewest_polls != 1 {
+    if ring.fewest_polls != 1 {
         return Err("net-throughput: a read with data did not poll the interface exactly once");
     }
-    if kicks_after <= kicks_before {
+    if ring.held_dry != 0 {
+        return Err("net-throughput: the card never used every receive buffer it held");
+    }
+    if ring.kicks_after <= ring.kicks_before {
         return Err("net-throughput: the card ran dry and was never kicked again");
     }
     log!(
@@ -104,41 +119,91 @@ fn ring_check(server: core::net::Ipv4Addr, port: u16) -> Result<(), &'static str
     Ok(())
 }
 
-fn ring_download(id: u64) -> Result<(u64, u64, u64), &'static str> {
+/// What [`ring_download`] saw.
+struct Ring {
+    fewest_polls: u64,
+    /// Receive buffers the card held when it was given them back: 0 once dry.
+    held_dry: usize,
+    kicks_before: u64,
+    kicks_after: u64,
+    /// Frames the card received from the buffers going back to the first read
+    /// with data after.
+    first_frames: u64,
+}
+
+fn ring_download(id: u64) -> Result<Ring, &'static str> {
     send_request(id)?;
     let mut buf = alloc::vec![0u8; stream::MAX_CALL];
     let mut bytes = 0u64;
     let mut fewest = u64::MAX;
     let mut samples = 0;
-    let mut kicks_before = None;
+    // Set once the buffers went back: held then, kicks before, frames before.
+    let mut given_back: Option<(usize, u64, u64)> = None;
+    let mut first_frames = None;
+    let mut dry_since: Option<u64> = None;
+    let mut withheld_at = None;
     let start = hpet::nanos();
     while bytes < RING_BYTES {
-        if hpet::nanos().saturating_sub(start) >= FIRST_BYTE_MS * 1_000_000 {
+        let now = hpet::nanos();
+        if now.saturating_sub(start) >= FIRST_BYTE_MS * 1_000_000 {
             return Err("net-throughput: the second download stalled");
+        }
+        if let Some(at) = withheld_at
+            && given_back.is_none()
+        {
+            let (held, _) = net::card_ring().ok_or("net-throughput: the card is gone")?;
+            if held == 0 {
+                dry_since.get_or_insert(now);
+            }
+            let dry_long =
+                dry_since.is_some_and(|d| now.saturating_sub(d) >= DRY_FOR_MS * 1_000_000);
+            let too_long = now.saturating_sub(at) >= DRY_WITHIN_MS * 1_000_000;
+            if dry_long || too_long {
+                let (frames, kicks, _) = net::card_counts();
+                given_back = Some((held, kicks, frames));
+                net::withhold_receive_buffers(false);
+                if !dry_long {
+                    break;
+                }
+            }
         }
         let polls = net::polls();
         match stream::recv(OWNER, id, &mut buf) {
             Ok(0) => return Err("net-throughput: the second download ended early"),
             Ok(n) => {
                 bytes += n as u64;
+                if let Some((_, _, frames)) = given_back
+                    && first_frames.is_none()
+                {
+                    first_frames = Some(net::card_counts().0 - frames);
+                }
                 if bytes >= RING_HOLD_AT && samples < POLL_SAMPLES {
                     fewest = fewest.min(net::polls() - polls);
                     samples += 1;
-                } else if samples == POLL_SAMPLES && kicks_before.is_none() {
-                    kicks_before = Some(net::card_counts().1);
-                    net::hold_polls_ms(RING_HOLD_MS);
+                    if samples == POLL_SAMPLES {
+                        net::withhold_receive_buffers(true);
+                        withheld_at = Some(hpet::nanos());
+                    }
                 }
             }
             Err(kabi::Error::Busy) => {
                 let want = ready::READABLE | ready::CLOSED;
-                stream::poll(OWNER, id, want, POLL_MS, || false)
+                // Dry, the card takes nothing in, so this waits out its gap.
+                stream::poll(OWNER, id, want, POLL_MS.min(DRY_FOR_MS / 4), || false)
                     .map_err(|_| "net-throughput: the second download failed")?;
             }
             Err(_) => return Err("net-throughput: a read of the second download failed"),
         }
     }
-    let kicks_before = kicks_before.ok_or("net-throughput: polls were never held")?;
-    Ok((fewest, kicks_before, net::card_counts().1))
+    let (held_dry, kicks_before, _) =
+        given_back.ok_or("net-throughput: the buffers were never withheld")?;
+    Ok(Ring {
+        fewest_polls: fewest,
+        held_dry,
+        kicks_before,
+        kicks_after: net::card_counts().1,
+        first_frames: first_frames.unwrap_or(0),
+    })
 }
 
 /// Sends the blob's request on `id` once it is connected.

@@ -130,6 +130,11 @@ impl<H: Hal, T: Transport + EventIndex, const SIZE: usize> VirtioNet<H, T, SIZE>
         })
     }
 
+    /// Whether the device took VIRTIO_F_EVENT_IDX.
+    pub fn event_idx(&self) -> bool {
+        self.event_idx
+    }
+
     pub fn mac_address(&self) -> [u8; 6] {
         self.mac
     }

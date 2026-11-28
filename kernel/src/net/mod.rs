@@ -330,16 +330,19 @@ pub fn polls() -> u64 {
     POLLS.load(Ordering::Relaxed)
 }
 
-/// Holds the network lock for `ms`, so nothing polls the interface and the
-/// card fills every receive buffer it holds: `test=net-throughput`'s check of
-/// the kick after the ring ran dry. Spins: the lock is a spin lock.
-pub(crate) fn hold_polls_ms(ms: u64) {
+/// Stops (`true`) or starts again giving the card receive buffers back after
+/// each poll: for `test=net-throughput`'s dry-ring check only
+/// ([`device`]'s `WITHHOLD`).
+pub(crate) fn withhold_receive_buffers(on: bool) {
+    device::withhold(on);
+}
+
+/// How many receive buffers the card holds, and whether it took EVENT_IDX;
+/// None before the card is up.
+pub(crate) fn card_ring() -> Option<(usize, bool)> {
     let guard = NET.lock();
-    let until = hpet::nanos().saturating_add(ms * 1_000_000);
-    while hpet::nanos() < until {
-        core::hint::spin_loop();
-    }
-    drop(guard);
+    let net = guard.as_ref()?;
+    Some((net.device.held(), net.device.event_idx()))
 }
 
 /// Receive interrupts taken so far; None when the card is polled.
