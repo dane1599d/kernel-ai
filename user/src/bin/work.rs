@@ -25,16 +25,6 @@ use user::{arg, args, println, sys};
 user::entry!(main);
 
 const MS: u64 = 1_000_000;
-/// Iterations per calibration run, and how many runs. A run must be far shorter
-/// than a tick: with 20,000-iteration runs (about 20 ms) every run of mix A's
-/// eight processes, all calibrating at once on one CPU, was preempted, so the
-/// speed came out about 4x low and a 2-4 ms build burst ran for 0.7 ms (M10).
-const CALIBRATION_ITERS: u64 = 200;
-const CALIBRATION_RUNS: usize = 64;
-/// The longest calibration runs, when shorter ones all timed under
-/// [`workload::MIN_CALIBRATION_NS`]: still well under a tick.
-const MAX_CALIBRATION_ITERS: u64 = 1 << 14;
-
 fn main() -> i32 {
     let args = args();
     let mix = arg(&args, "mix").and_then(Mix::by_name);
@@ -48,7 +38,14 @@ fn main() -> i32 {
         println!("mix {} has no process {index}", mix.name);
         return 2;
     };
-    let speed = calibrate();
+    let Some(speed) = calibrate() else {
+        println!(
+            "the clock timed no run of up to {} iterations at {} ns or more; not calibrated",
+            workload::MAX_CALIBRATION_ITERS,
+            workload::MIN_CALIBRATION_NS
+        );
+        return 3;
+    };
     println!(
         "up: mix {} process {index} ({}), seed {seed}, {} iterations per ms",
         mix.name, proc.name, speed
@@ -77,26 +74,14 @@ fn main() -> i32 {
     }
 }
 
-/// Loop iterations per millisecond: the fastest of several timed runs, of
-/// those the clock saw take at least [`workload::MIN_CALIBRATION_NS`]. With none
-/// that long, the runs are timed again at twice the iterations.
-fn calibrate() -> u64 {
-    let mut iterations = CALIBRATION_ITERS;
-    loop {
-        let runs = (0..CALIBRATION_RUNS).map(|_| {
-            let start = sys::time_ns();
-            spin(iterations);
-            sys::time_ns().saturating_sub(start)
-        });
-        if let Some(speed) = workload::iterations_per_ms(iterations, runs) {
-            return speed;
-        }
-        if iterations >= MAX_CALIBRATION_ITERS {
-            // A clock this coarse: assume every run took the shortest that counts.
-            return iterations * MS / workload::MIN_CALIBRATION_NS;
-        }
-        iterations *= 2;
-    }
+/// Loop iterations per millisecond ([`workload::calibrate`]), each run timed
+/// with `time_ns`.
+fn calibrate() -> Option<u64> {
+    workload::calibrate(|iterations| {
+        let start = sys::time_ns();
+        spin(iterations);
+        sys::time_ns().saturating_sub(start)
+    })
 }
 
 /// Computes for about `ns` of CPU time.
