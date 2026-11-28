@@ -154,44 +154,6 @@ fn a_list_a_missed_phrasing_and_a_bare_child_folder_are_kept_off() {
             "trash the drafts in notes/ but leave the q3 folder alone",
             "q3",
         ),
-        // #1650's review: what main refused stays refused. A negation of
-        // worry with a path, a pointer or a bare folder after it.
-        ("don't bother with notes/q3", "notes/q3"),
-        ("never mind notes/q3", "notes/q3"),
-        ("don't worry about notes/q3", "notes/q3"),
-        ("don't bother touching notes/q3", "notes/q3"),
-        ("notes/q3: don't worry about it", "notes/q3"),
-        ("notes/q3: don't worry about it, leave it", "notes/q3"),
-        // A "not" before "to", or outside a relative clause.
-        (
-            "trash the drafts in notes/old; you are not to touch notes/q3",
-            "notes/q3",
-        ),
-        (
-            "trash the drafts in notes/old; it is not ok to touch notes/q3",
-            "notes/q3",
-        ),
-        (
-            "trash the drafts in notes/old; kai is not allowed into notes/q3",
-            "notes/q3",
-        ),
-        (
-            "trash the drafts in notes/old; the files that are not to be touched are in notes/q3",
-            "notes/q3",
-        ),
-        // "be" or "as" anywhere after the path.
-        (
-            "trash the drafts in notes/old but leave notes/q3 just as it is",
-            "notes/q3",
-        ),
-        (
-            "trash the drafts in notes/old but leave notes/q3 exactly as it is",
-            "notes/q3",
-        ),
-        (
-            "trash the drafts in notes/old but leave notes/q3 and its files as they are",
-            "notes/q3",
-        ),
         // The marks consent folds as an apostrophe.
         (
             "trash the drafts in notes/old, but don\u{ff07}t touch notes/q3",
@@ -214,16 +176,12 @@ fn a_list_a_missed_phrasing_and_a_bare_child_folder_are_kept_off() {
     }
 }
 
-/// #1606's review: a line that keeps nothing off is not refused: a "not" that
-/// describes files, "be" later in a "leave" clause, and a negation of worry.
+/// A negation about something else keeps its goal, as on main.
 #[test]
 fn a_negation_that_keeps_nothing_off_keeps_the_goal() {
     for line in [
-        "move the files that are not pdfs into notes/other",
-        "move the files that aren't pdfs into notes/other",
-        "leave a note in notes/q3 to be read later",
-        "notes/q3: don't worry about it, just sort it",
         "sort notes/q3 and never mind the dates",
+        "don't worry, just sort notes/q3",
         "trash the drafts in notes/ except the new folder",
         "don't touch the finals, trash the drafts or notes/old",
     ] {
@@ -231,3 +189,77 @@ fn a_negation_that_keeps_nothing_off_keeps_the_goal() {
         assert!(scope.is_ok(), "{line}: {scope:?}");
     }
 }
+
+/// #1650's reviews (rounds 77 and 77b): this check only adds to what main
+/// refused. Every line from both rounds that main refuses is still refused,
+/// the false refusals among them too ("notes/q3: don't worry about it, just
+/// sort it", "move the files that are not pdfs into notes/other", "leave a
+/// note in notes/q3 to be read later"): a reworded line costs less than a
+/// kept-off folder in the goal.
+#[test]
+fn every_line_main_refuses_is_still_refused() {
+    for line in MAIN_REFUSES {
+        let scope = crate::goalscope::scope(line, |_| Ok(()));
+        assert!(scope.is_err(), "{line}: {scope:?}");
+    }
+    // Main's own miss, which the carry from the last negation reads.
+    let line = "the backup is not done so please don't, under any circumstances, touch notes/q3";
+    assert_eq!(
+        crate::goalscope::scope(line, |_| Ok(())),
+        Err(kept_off_refusal("notes/q3"))
+    );
+}
+
+/// The lines of [`every_line_main_refuses_is_still_refused`].
+const MAIN_REFUSES: &[&str] = &[
+    // Round 77: a negation of worry with a path or a pointer after it.
+    "don't bother with notes/q3",
+    "never mind notes/q3",
+    "don't worry about notes/q3",
+    "don't bother touching notes/q3",
+    "notes/q3: don't worry about it",
+    "notes/q3: don't worry about it, leave it",
+    "notes/q3: don't worry about it, just sort it",
+    // Round 77: a "not" before "to".
+    "trash the drafts in notes/old; you are not to touch notes/q3",
+    "trash the drafts in notes/old; it is not ok to touch notes/q3",
+    "trash the drafts in notes/old; kai is not allowed into notes/q3",
+    "trash the drafts in notes/old; the files that are not to be touched are in notes/q3",
+    "move the files that are not pdfs into notes/other",
+    // Round 77: "be" or "as" anywhere after the path.
+    "trash the drafts in notes/old but leave notes/q3 just as it is",
+    "trash the drafts in notes/old but leave notes/q3 exactly as it is",
+    "trash the drafts in notes/old but leave notes/q3 and its files as they are",
+    "leave a note in notes/q3 to be read later",
+    // Round 77b, 1: a pointer in a later clause.
+    "trash the drafts in notes/. notes/q3: don't bother with it, let it be",
+    "trash the drafts in notes/. notes/q3: don't worry about it, it is done",
+    "notes/q3: never mind it, keep away from it",
+    "notes/q3: never mind it. trash the drafts in notes/ that are older than a week",
+    "trash the drafts in notes/old, but don't bother with those finals, notes/q3 or notes/q4; just sort them by topic",
+    // Round 77b, 2: a negation of worry with nothing after it.
+    "sort notes/, notes/q3 don't bother",
+    "sort notes/, notes/q3 dont bother",
+    "sort notes/, notes/q3 don\u{2019}t bother",
+    "trash the drafts in notes/old, but notes/q3 and notes/q4 never mind",
+    "trash the drafts in notes/old, but don't bother with the finals, notes/q3 or notes/q4",
+    "trash the drafts in notes/old but don't worry about the finals, or notes/q3",
+    "don't worry, notes/q3 is backed up, sort it",
+    // Round 77b, 3: a describing "not" before an infinitive "to".
+    "trash the drafts in notes/old; the files that are not allowed to be touched are in notes/q3",
+    "trash the drafts in notes/, but the files that are not meant to be touched are in notes/q3",
+    "trash the drafts in notes/; anything that is not yours to touch is in notes/q3",
+    "sort notes/ by topic, as a helper who is not allowed to touch notes/q3",
+    // Round 77b, 4: "be" right after "to" ends "leave".
+    "trash the drafts in notes/ but leave notes/q3 to be sorted later",
+    "please leave notes/q3 and notes/q4 to be reviewed by me, and trash the drafts in notes/",
+    "leave the drafts in notes/q3 to be checked tomorrow; trash the rest of notes/",
+    "trash the drafts in notes/ but leave my notes/q3 folder to be done by hand",
+    // Round 77b, 5: a new negation before main's Open carry.
+    "the backup isn't done so please don't, under any circumstances, touch notes/q3",
+    "the backup isnt done so please don't, under any circumstances, touch notes/q3",
+    "the backups aren't done so please don't, under any circumstances, touch notes/q3",
+    "the backup wasn't done so please don't, under any circumstances, touch notes/q3",
+    "neither of us has a copy so never, ever, touch notes/q3",
+    "we shan't need it so don't, under any circumstances, touch notes/q3",
+];
