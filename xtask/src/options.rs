@@ -53,8 +53,8 @@ pub struct Options {
     pub local: Option<String>,
     /// `run --store DIR`: the model store `--local` reads, as `setup --store`.
     pub store: Option<String>,
-    /// `--cpus N` and `--mem SIZE`: the VM's vCPUs and memory, for `run`, `test`
-    /// and `soak`.
+    /// `--cpus N`, `--mem SIZE`, `--cpu-model NAME` and `--no-8042`: the VM's
+    /// vCPUs, memory, CPU model and 8042, for `run`, `test` and `soak`.
     pub sizing: Sizing,
     /// `icount --shift N`: each guest instruction takes 2^N virtual nanoseconds.
     pub shift: u32,
@@ -94,13 +94,20 @@ impl Options {
     }
 }
 
-/// The VM's size when given on the command line; xtask's defaults otherwise.
+/// The VM's size and shape when given on the command line; xtask's defaults
+/// otherwise.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Sizing {
     /// vCPUs, 1 to [`MAX_VM_CPUS`].
     pub cpus: Option<usize>,
     /// Guest memory in MiB; a model disk's need is a floor under it.
     pub mem_mib: Option<u64>,
+    /// `--cpu-model NAME`: QEMU's `-cpu`, `max` without it. `EPYC-Genoa` is
+    /// Zen 4, the founder's 7700X's core (G56).
+    pub cpu_model: Option<&'static str>,
+    /// `--no-8042`: q35 with `i8042=off`, so the FADT says there is none, as on
+    /// boards without a legacy keyboard controller (G56).
+    pub no_8042: bool,
 }
 
 /// The most vCPUs `--cpus` and the host-sized runs give a VM, kept at 8 so
@@ -247,6 +254,18 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                     .ok_or(format!("--cpus expects 1 to {MAX_VM_CPUS}"))?;
                 options.sizing.cpus = Some(cpus);
             }
+            "--cpu-model" if task != Task::Build && task != Task::Smoke => {
+                let name = rest
+                    .next()
+                    .filter(|name| valid_cpu_model(name))
+                    .ok_or("--cpu-model expects a QEMU CPU model such as EPYC-Genoa")?;
+                // Parsed once per run: leaked so Sizing stays Copy.
+                let name: &'static str = name.clone().leak();
+                options.sizing.cpu_model = Some(name);
+            }
+            "--no-8042" if task != Task::Build && task != Task::Smoke => {
+                options.sizing.no_8042 = true;
+            }
             "--mem" if task != Task::Build && task != Task::Smoke => {
                 let size = rest
                     .next()
@@ -356,6 +375,16 @@ fn parse_mem(text: &str) -> Result<u64, String> {
 }
 
 /// IPv4 address and port, for example 192.168.1.50:8080. The kernel has no DNS.
+/// A QEMU CPU model's name alone: no `,` feature list, nothing QEMU's option
+/// parser or a shell would read otherwise.
+fn valid_cpu_model(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+
 fn valid_host_port(text: &str) -> bool {
     let Some((host, port)) = text.rsplit_once(':') else {
         return false;
@@ -508,8 +537,15 @@ mod tests {
             options.sizing,
             Sizing {
                 cpus: Some(8),
-                mem_mib: Some(6144)
+                mem_mib: Some(6144),
+                ..Sizing::default()
             }
+        );
+        let shaped = parse_args(&args(&["test", "--cpu-model", "EPYC-Genoa", "--no-8042"]));
+        let shaped = shaped.unwrap().sizing;
+        assert_eq!(
+            (shaped.cpu_model, shaped.no_8042),
+            (Some("EPYC-Genoa"), true)
         );
         let run = parse_args(&args(&["run", "--mem", "2048"])).unwrap();
         assert_eq!(run.sizing.mem_mib, Some(2048));
@@ -523,6 +559,8 @@ mod tests {
             ["--cpus", "9"],
             ["--mem", "100M"],
             ["--mem", "x"],
+            ["--cpu-model", "max,+avx512f"],
+            ["--cpu-model", ""],
         ] {
             assert!(
                 parse_args(&args(&["run", bad[0], bad[1]])).is_err(),
@@ -530,6 +568,8 @@ mod tests {
             );
         }
         assert!(parse_args(&args(&["build", "--cpus", "2"])).is_err());
+        assert!(parse_args(&args(&["build", "--no-8042"])).is_err());
+        assert!(parse_args(&args(&["run", "--cpu-model"])).is_err());
         assert!(parse_args(&args(&["run", "--mem"])).is_err());
     }
 

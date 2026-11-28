@@ -91,6 +91,8 @@ pub struct TestCase {
     /// vCPUs the case boots with, whatever `--cpus` says: `smp-x2apic`'s 12,
     /// above [`crate::options::MAX_VM_CPUS`] (P6 G48).
     pub cpus: Option<usize>,
+    /// Boot q35 with `i8042=off`, whatever `--no-8042` says (G56).
+    pub no_8042: bool,
     /// Attach the disk as an NVMe controller (`-device nvme`) instead of
     /// virtio-blk.
     pub nvme: bool,
@@ -344,6 +346,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         server: true,
         memory_mib: None,
         cpus: None,
+        no_8042: false,
         kvm_only: false,
         nvme: false,
         four_k: false,
