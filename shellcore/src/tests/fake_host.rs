@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// When the fake keeps a refused rules file: 2026-11-27 04:12 UTC.
+pub(super) const KEPT_NS: u64 = 1_795_752_720_000_000_000;
+
 impl FakeHost {
     pub(super) fn with_ledger<T>(&self, f: impl FnOnce(&mut crate::ledger::Ledger) -> T) -> T {
         let mut ledger = self.ledger.get();
@@ -304,7 +307,26 @@ impl Host for FakeHost {
                 aside.push((name.clone(), text.into()));
                 Ok(name)
             }
-            None => Err(String::from("every refused name is kept already")),
+            None => Err(crate::refused_rules_full()),
+        }
+    }
+
+    fn refused_rules_read(&self, name: &str) -> Result<Option<(String, u64)>, String> {
+        Ok(self
+            .rules_aside
+            .borrow()
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, kept)| (kept.clone(), KEPT_NS)))
+    }
+
+    fn refused_rules_trash(&self, name: &str) -> Result<(), String> {
+        let mut aside = self.rules_aside.borrow_mut();
+        let before = aside.len();
+        aside.retain(|(n, _)| n != name);
+        match aside.len() < before {
+            true => Ok(()),
+            false => Err(format!("{name}: no such file")),
         }
     }
 

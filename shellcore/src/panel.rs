@@ -55,6 +55,7 @@ pub(crate) struct Terminal {
     pub(crate) clarifying: Option<String>,
     pub(crate) pending: Option<crate::actions::Pending>,
     pub(crate) undo_asking: Option<u64>,
+    pub(crate) refused_asking: Option<usize>,
     pub(crate) c: crate::cmode::CMode,
 }
 
@@ -72,6 +73,9 @@ impl Shell {
         if line.starts_with("answer ") {
             return PanelResult::Refused(String::from("answers go in the terminal"));
         }
+        if crate::refused::is_remove_line(line) {
+            return PanelResult::Refused(String::from(crate::refused::REMOVE_AT_TERMINAL));
+        }
         if self.c_waiting() {
             return PanelResult::Refused(String::from(C_WAITS));
         }
@@ -83,6 +87,7 @@ impl Shell {
             clarifying: self.clarifying.take(),
             pending: self.pending.take(),
             undo_asking: self.undo_asking.take(),
+            refused_asking: self.refused_asking.take(),
             c: core::mem::take(&mut self.c),
         };
         self.asked_model = false;
@@ -124,6 +129,7 @@ impl Shell {
         self.clarifying = terminal.clarifying;
         self.pending = terminal.pending;
         self.undo_asking = terminal.undo_asking;
+        self.refused_asking = terminal.refused_asking;
         self.c = terminal.c;
         result
     }

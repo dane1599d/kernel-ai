@@ -116,6 +116,9 @@ impl Shell {
         if line.starts_with("answer ") {
             return Reply::err("answers go on the question's own prompt");
         }
+        if crate::refused::is_remove_line(line) {
+            return Reply::err(crate::refused::REMOVE_AT_TERMINAL);
+        }
         // While the console's C entry waits on its question, the shell is
         // still the entry's: a line run between would be decided as one of
         // its calls, and its `undo` could put back the entry's calls so far.
@@ -131,6 +134,7 @@ impl Shell {
             clarifying: self.clarifying.take(),
             pending: self.pending.take(),
             undo_asking: self.undo_asking.take(),
+            refused_asking: self.refused_asking.take(),
             c: core::mem::take(&mut self.c),
         };
         // The console's tune proposal is its own: a line here neither answers
@@ -141,6 +145,7 @@ impl Shell {
         self.clarifying = mine.clarifying;
         self.pending = mine.pending;
         self.undo_asking = mine.undo_asking;
+        self.refused_asking = None;
         self.c = mine.c;
         self.asked_model = false;
         self.worded = false;
@@ -176,6 +181,7 @@ impl Shell {
             clarifying: self.clarifying.take(),
             pending: None,
             undo_asking: None,
+            refused_asking: None,
             c: core::mem::take(&mut self.c),
         };
         self.fronts.insert(String::from(app), kept);
@@ -183,6 +189,7 @@ impl Shell {
         self.clarifying = console.clarifying;
         self.pending = console.pending;
         self.undo_asking = console.undo_asking;
+        self.refused_asking = console.refused_asking;
         self.c = console.c;
         reply
     }

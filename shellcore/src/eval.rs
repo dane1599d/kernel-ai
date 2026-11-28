@@ -33,6 +33,10 @@ impl Shell {
         {
             return self.answer(rest);
         }
+        // `rules refused remove`'s question takes only a typed y or n.
+        if let Some(reply) = self.refused_answer(input) {
+            return reply;
+        }
         if let Some(reply) = self.answer_bare(input) {
             return reply;
         }
@@ -93,6 +97,9 @@ impl Shell {
                 "show" | "why" => return self.show_last(),
                 _ => {}
             }
+        }
+        if let Some(reply) = self.refused_line(input) {
+            return reply;
         }
         // `open <app>` alone opens it with no model (the Apps sheet's line).
         if let Some(reply) = self.open_line(input) {
