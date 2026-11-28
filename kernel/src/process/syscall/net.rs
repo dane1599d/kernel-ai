@@ -142,8 +142,9 @@ fn recv_metered(slot: usize, id: u64, out: &mut [u8]) -> Result<usize, Error> {
     let today = net::dest::today();
     let cap = out.len().min(net::stream::MAX_CALL) as u64;
     let Some(charged) = net::dest::with_meter(&meter, |m| m.try_receive(cap, today)) else {
-        // A receive into no room reads nothing: 0 only once the stream ended.
-        return match net::stream::recv(owner(slot), id, &mut []) {
+        // A receive into no room reads nothing: 0 only once the stream ended,
+        // with the interface polled first so a FIN in the ring counts.
+        return match net::stream::recv_polled(owner(slot), id, &mut []) {
             Ok(0) => Ok(0),
             Ok(_) | Err(Error::Busy) => {
                 if net::dest::with_meter(&meter, |m| m.first_refusal(today)) {

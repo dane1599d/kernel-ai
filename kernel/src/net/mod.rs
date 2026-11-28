@@ -25,7 +25,7 @@ use crate::{hpet, log, threads};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::net::Ipv4Addr;
-use core::sync::atomic::{AtomicU16, Ordering};
+use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use device::NicDevice;
 use smoltcp::iface::{Config, Interface, SocketSet, SocketStorage};
 use smoltcp::socket::{Socket, tcp};
@@ -63,6 +63,7 @@ unsafe impl Send for Net {}
 impl Net {
     /// Moves frames both ways and applies whatever the DHCP client learned.
     fn poll(&mut self) {
+        POLLS.fetch_add(1, Ordering::Relaxed);
         self.iface.poll(now(), &mut self.device, &mut self.sockets);
         self.device.refill();
         self.setup
@@ -72,6 +73,8 @@ impl Net {
 }
 
 static NET: Mutex<Option<Net>> = Mutex::new(None);
+/// Interface polls since boot.
+static POLLS: AtomicU64 = AtomicU64::new(0);
 static NEXT_PORT: AtomicU16 = AtomicU16::new(FIRST_EPHEMERAL_PORT);
 
 fn now() -> Instant {
@@ -320,6 +323,26 @@ pub fn parse_endpoint(text: &str) -> Option<(Ipv4Addr, u16)> {
 pub fn card_counts() -> (u64, u64, u64) {
     let (rx, tx) = virtio_net::kicks();
     (device::received(), rx, tx)
+}
+
+/// Interface polls since boot, by every caller.
+pub fn polls() -> u64 {
+    POLLS.load(Ordering::Relaxed)
+}
+
+/// Stops (`true`) or starts again giving the card receive buffers back after
+/// each poll: for `test=net-throughput`'s dry-ring check only
+/// ([`device`]'s `WITHHOLD`).
+pub(crate) fn withhold_receive_buffers(on: bool) {
+    device::withhold(on);
+}
+
+/// How many receive buffers the card holds, and whether it took EVENT_IDX;
+/// None before the card is up.
+pub(crate) fn card_ring() -> Option<(usize, bool)> {
+    let guard = NET.lock();
+    let net = guard.as_ref()?;
+    Some((net.device.held(), net.device.event_idx()))
 }
 
 /// Receive interrupts taken so far; None when the card is polled.

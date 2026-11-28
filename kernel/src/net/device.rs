@@ -2,13 +2,14 @@
 //!
 //! - **Receive:** the card holds [`QUEUE_SIZE`] buffers. One handed back after
 //!   its frame is read waits in a stash, and the stash goes back to the card in
-//!   one batch after each poll ([`NicDevice::refill`]), kicked only when the
-//!   card asked to hear of it. A kick for each buffer cost a VM exit per frame
-//!   under KVM, 50-62 µs of 52-98 (spike P5-S2), and one for each poll still
-//!   92% of a download's time (G67).
-//! - **Send:** a frame is queued without waiting for the card and kicked with
-//!   the rest of its poll's frames; sent buffers are reclaimed before each
-//!   send.
+//!   one batch after each poll ([`NicDevice::refill`]). With EVENT_IDX the
+//!   card is kicked for a batch only when its `avail_event` asks, and without
+//!   it for every batch. A kick for each buffer cost a VM exit per frame under
+//!   KVM, 50-62 µs of 52-98 (spike P5-S2), and one for each poll still 92% of
+//!   a download's time (G67).
+//! - **Send:** a frame is queued without waiting for the card, and its poll's
+//!   frames are checked as one batch the same way; sent buffers are reclaimed
+//!   before each send.
 
 use super::{BUFFER_LEN, Nic, QUEUE_SIZE};
 use crate::log;
@@ -26,6 +27,18 @@ const FRAME_MTU: usize = 1514;
 /// Set once the card filled a receive buffer it was never given, so that is
 /// logged once, not on every poll after.
 static STALLED: AtomicBool = AtomicBool::new(false);
+
+/// While set, a poll gives the card no receive buffers back, so it uses up the
+/// ones it holds: `test=net-throughput`'s dry-ring check alone sets it
+/// (#1623's review), through [`super::withhold_receive_buffers`], which only
+/// `net_throughput_tests` calls. No syscall or user-space path reaches it, and
+/// on any other boot it stays false from boot on, so every poll refills.
+static WITHHOLD: AtomicBool = AtomicBool::new(false);
+
+/// Sets [`WITHHOLD`].
+pub(super) fn withhold(on: bool) {
+    WITHHOLD.store(on, Ordering::Relaxed);
+}
 
 /// Frames received since boot.
 static RECEIVED: AtomicU64 = AtomicU64::new(0);
@@ -70,7 +83,8 @@ impl Card {
         self.nic.can_send()
     }
 
-    /// Queues `frame` for the card, behind a zero header; the poll's kick sends it.
+    /// Queues `frame` for the card, behind a zero header; the poll's check
+    /// kicks the card for it when the card asked.
     fn transmit(&mut self, frame: &[u8]) {
         self.reclaim();
         let header = super::virtio_net::HEADER;
@@ -108,10 +122,13 @@ impl Card {
         }
     }
 
-    /// Gives the card every stashed receive buffer, then kicks it once for
-    /// them and once for the frames queued to send, each when the card asked.
+    /// Gives the card every stashed receive buffer, then checks the batch of
+    /// them and the frames queued to send: one kick for each when the card
+    /// asked (with EVENT_IDX), or always without it.
     fn refill(&mut self) {
-        while let Some(mut buffer) = self.stash.pop() {
+        while !WITHHOLD.load(Ordering::Relaxed)
+            && let Some(mut buffer) = self.stash.pop()
+        {
             // SAFETY: the buffer is kept in `rx` until the card gives its token back.
             match unsafe { self.nic.add_receive(&mut buffer) } {
                 Ok(token) => self.rx[usize::from(token)] = Some(buffer),
@@ -153,9 +170,20 @@ impl NicDevice {
     }
 
     /// Gives the card back the receive buffers read since the last time and
-    /// sends what was queued, with one kick each: after each poll.
+    /// sends what was queued, after each poll, kicking each queue at most once
+    /// ([`Card::refill`]).
     pub fn refill(&mut self) {
         self.card.get_mut().refill();
+    }
+
+    /// How many receive buffers the card holds: given and not yet taken back.
+    pub fn held(&self) -> usize {
+        self.card.borrow().rx.iter().filter(|b| b.is_some()).count()
+    }
+
+    /// Whether the card took VIRTIO_F_EVENT_IDX.
+    pub fn event_idx(&self) -> bool {
+        self.card.borrow().nic.event_idx()
     }
 }
 

@@ -5,8 +5,9 @@
 //! `queue_set` goes to the wrapped transport unchanged. It also gives one
 //! queue an MSI-X entry ([`SplitTransport::route_queue`]): the network card's
 //! receive queue, so frames raise an interrupt (P5 plan 3.2). And it keeps
-//! where each queue's used ring is, so a driver can read the device's
-//! `avail_event` there ([`SplitTransport::avail_event`]).
+//! where each queue's rings are, so a driver can read the published available
+//! index and the device's `avail_event` there ([`SplitTransport::avail_idx`],
+//! [`SplitTransport::avail_event`]).
 
 use super::pci::EcamAccess;
 use virtio_drivers::transport::pci::PciTransport;
@@ -32,8 +33,16 @@ const QUEUE_DEVICE: u64 = 48;
 pub const COMMON_CFG_BYTES: u64 = 56;
 /// No MSI-X entry: the event is not signalled (VirtIO 1.2, 4.1.4.3).
 const NO_VECTOR: u16 = 0xFFFF;
-/// Queues whose used ring is kept: the network card's two.
+/// Queues whose rings are kept: the network card's two.
 const KEPT_QUEUES: usize = 2;
+
+/// Where a queue's rings are, physical, and its size.
+#[derive(Clone, Copy)]
+struct Rings {
+    available: u64,
+    used: u64,
+    size: u32,
+}
 
 pub struct SplitTransport {
     inner: PciTransport,
@@ -41,8 +50,8 @@ pub struct SplitTransport {
     common: u64,
     /// The queue given an MSI-X entry, and the entry.
     routed: Option<(u16, u16)>,
-    /// Each kept queue's used ring, physical, and its size.
-    used_rings: [Option<(u64, u32)>; KEPT_QUEUES],
+    /// Each kept queue's rings, physical, and its size.
+    rings: [Option<Rings>; KEPT_QUEUES],
     /// Whether the device took that entry when the queue was set up.
     routed_taken: bool,
 }
@@ -78,7 +87,7 @@ impl SplitTransport {
             common,
             routed: None,
             routed_taken: false,
-            used_rings: [None; KEPT_QUEUES],
+            rings: [None; KEPT_QUEUES],
         }
     }
 
@@ -86,13 +95,24 @@ impl SplitTransport {
     /// be notified of (VIRTIO_F_EVENT_IDX): the 16 bits after the used ring's
     /// entries (VirtIO 1.2, 2.7.8). None for a queue not set up or not kept.
     pub fn avail_event(&self, queue: u16) -> Option<u16> {
-        let (phys, size) = (*self.used_rings.get(usize::from(queue))?)?;
-        let at = crate::memory::hhdm() + phys + 4 + 8 * u64::from(size);
+        let rings = (*self.rings.get(usize::from(queue))?)?;
         // SAFETY: the used ring was allocated by the driver's Hal::dma_alloc in
         // the direct map, `4 + 8 * size + 2` bytes at least, and lives while the
         // queue does; `avail_event` is 2-aligned. The device writes it, so the
         // read is volatile.
-        Some(unsafe { (at as *const u16).read_volatile() })
+        Some(unsafe { read_ring(rings.used + 4 + 8 * u64::from(rings.size)) })
+    }
+
+    /// `queue`'s available index as the driver published it, the `idx` after
+    /// the available ring's flags (VirtIO 1.2, 2.7.6): what the device reads,
+    /// not a copy the driver keeps beside it (#1623's review). None for a
+    /// queue not set up or not kept.
+    pub fn avail_idx(&self, queue: u16) -> Option<u16> {
+        let rings = (*self.rings.get(usize::from(queue))?)?;
+        // SAFETY: the available ring was allocated by the driver's
+        // Hal::dma_alloc in the direct map, `4 + 2 * size` bytes at least, and
+        // lives while the queue does; `idx` is 2-aligned.
+        Some(unsafe { read_ring(rings.available + 2) })
     }
 
     /// Gives `queue` MSI-X table entry `entry` when it is set up; every other
@@ -185,14 +205,18 @@ impl Transport for SplitTransport {
         self.write64(QUEUE_DESC, descriptors);
         self.write64(QUEUE_DRIVER, driver_area);
         self.write64(QUEUE_DEVICE, device_area);
-        if let Some(kept) = self.used_rings.get_mut(usize::from(queue)) {
-            *kept = Some((device_area, size));
+        if let Some(kept) = self.rings.get_mut(usize::from(queue)) {
+            *kept = Some(Rings {
+                available: driver_area,
+                used: device_area,
+                size,
+            });
         }
         self.write16(QUEUE_ENABLE, 1);
     }
 
     fn queue_unset(&mut self, queue: u16) {
-        if let Some(kept) = self.used_rings.get_mut(usize::from(queue)) {
+        if let Some(kept) = self.rings.get_mut(usize::from(queue)) {
             *kept = None;
         }
         self.inner.queue_unset(queue)
@@ -221,4 +245,14 @@ impl Transport for SplitTransport {
     ) -> Result<()> {
         self.inner.write_config_space(offset, value)
     }
+}
+
+/// The 16 bits at `phys` in a ring, through the direct map.
+///
+/// # Safety
+/// `phys` must be a 2-aligned address inside a ring allocated in the direct map
+/// and still in use.
+unsafe fn read_ring(phys: u64) -> u16 {
+    // SAFETY: the caller's.
+    unsafe { ((crate::memory::hhdm() + phys) as *const u16).read_volatile() }
 }
