@@ -547,7 +547,7 @@ mod tests {
                 resets,
                 ..case("judged", "test=power-off")
             };
-            let (args, port) = input_args(&judged).unwrap();
+            let (args, port) = input_args(&judged, false).unwrap();
             assert!(port.is_some());
             assert!(args.iter().any(|arg| arg == "-qmp"));
             let typed = TestCase {
@@ -556,10 +556,34 @@ mod tests {
                 keys: &[&["@{\"execute\":\"stop\"}"]],
                 ..case("typed", "test=power-off")
             };
-            let refused = input_args(&typed).unwrap_err();
+            let refused = input_args(&typed, false).unwrap_err();
             assert!(refused.contains("cannot send @ lines"), "{refused}");
         }
-        assert_eq!(input_args(&case("plain", "test=x")).unwrap().1, None);
+        assert_eq!(input_args(&case("plain", "test=x"), false).unwrap().1, None);
+    }
+
+    /// G56: with no 8042, a case that types keys gets a USB keyboard; one that
+    /// types none, or brings its own, gets no other.
+    #[test]
+    fn with_no_8042_a_case_that_types_gets_a_usb_keyboard() {
+        let keyboards = |case: &TestCase, no_8042| {
+            let (args, _) = input_args(case, no_8042).unwrap();
+            args.iter()
+                .filter(|arg| arg.starts_with("usb-kbd,"))
+                .count()
+        };
+        let typed = TestCase {
+            keys: &[&["k", "a", "i", "ret"]],
+            ..case("typed", "test=sched")
+        };
+        assert_eq!(keyboards(&typed, true), 1);
+        assert_eq!(keyboards(&typed, false), 0);
+        assert_eq!(keyboards(&case("plain", "test=x"), true), 0);
+        let own = TestCase {
+            usb: &["usb-kbd", "usb-tablet"],
+            ..typed
+        };
+        assert_eq!(keyboards(&own, true), 1);
     }
 
     /// A stamped line matches as the same line without its stamp; a program's

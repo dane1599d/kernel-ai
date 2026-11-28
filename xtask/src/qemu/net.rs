@@ -65,11 +65,22 @@ pub fn net_behind_bridge(args: &mut Vec<String>) {
 /// The `qemu-xhci` controller with the case's USB devices, and a QMP socket
 /// when the case sends `@` lines, powers off or resets (its SHUTDOWN reason);
 /// the port goes to the test run.
-pub fn input_args(case: &TestCase) -> Result<(Vec<String>, Option<u16>), String> {
+///
+/// With `no_8042` (G56's board shape), a case that types keys and has no USB
+/// keyboard of its own gets one, as a board with no 8042 has: QEMU's monitor
+/// keys then reach the guest over xHCI, which the kernel turns into the same
+/// scancodes, so `sched` measures the USB interrupt's wake-up instead of
+/// failing with nowhere for its keys to go.
+pub fn input_args(case: &TestCase, no_8042: bool) -> Result<(Vec<String>, Option<u16>), String> {
     let mut args = Vec::new();
-    if !case.usb.is_empty() {
+    let wants_keyboard = no_8042 && !case.keys.is_empty() && !case.usb.contains(&"usb-kbd");
+    let keyboard: &[&str] = match wants_keyboard {
+        true => &["usb-kbd"],
+        false => &[],
+    };
+    if !case.usb.is_empty() || !keyboard.is_empty() {
         args.extend(["-device".into(), "qemu-xhci,id=xhci".into()]);
-        for device in case.usb {
+        for device in case.usb.iter().chain(keyboard) {
             args.extend(["-device".into(), format!("{device},bus=xhci.0")]);
         }
     }
