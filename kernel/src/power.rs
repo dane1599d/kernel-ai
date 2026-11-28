@@ -38,6 +38,10 @@ pub(crate) fn map_reset(reset: Reset) -> Result<(), &'static str> {
 /// off, on the console's screen again if `desktop` held it, and halts this
 /// CPU with interrupts off (ADR 0007 section 8). Never returns.
 pub fn safe_to_switch_off() -> ! {
+    // Every CPU is about to stop with interrupts off, which an armed trial's
+    // watchdog would turn into a reset (#1571's review). Before the others
+    // halt, so none of them holds the watchdog's lock.
+    crate::watchdog::disarm();
     x86_64::instructions::interrupts::disable();
     // Every other CPU stops too, so neither `fs` nor an app runs on while the
     // screen says it is safe. Nothing is half written: POWER_OFF was refused

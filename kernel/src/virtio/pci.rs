@@ -218,14 +218,15 @@ fn bind(
 ) -> Option<Outcome> {
     if driver == "i6300esb" {
         let config = access.address(at.bus, at.device, at.function, 0);
-        let bound = memory_bar0(root, at).and_then(|(bar, bar_len)| {
+        // The watchdog does no DMA: memory decoding alone.
+        let bound = memory_bar0(root, at, false).and_then(|(bar, bar_len)| {
             let config = config.ok_or("its configuration space is not mapped")?;
-            crate::watchdog::bind(config, bar, bar_len)?;
-            Ok(bar)
+            let state = crate::watchdog::bind(config, bar, bar_len)?;
+            Ok((bar, state))
         });
         return Some(match bound {
-            Ok(bar) => {
-                log!("pci: {driver} at {at}, BAR0 {bar:#x}: the watchdog, stopped");
+            Ok((bar, state)) => {
+                log!("pci: {driver} at {at}, BAR0 {bar:#x}: the watchdog, {state}");
                 Outcome::Running(None)
             }
             Err(message) => {
@@ -235,7 +236,7 @@ fn bind(
         });
     }
     if matches!(driver, "nvme" | "xhci") {
-        return match memory_bar0(root, at) {
+        return match memory_bar0(root, at, true) {
             Ok((bar, bar_len)) => {
                 log!(
                     "pci: {driver} at {at}, BAR0 {bar:#x} ({} KiB)",
@@ -409,20 +410,24 @@ fn split_transport(
     Ok(SplitTransport::new(transport, common))
 }
 
-/// BAR0 of an NVMe or xHCI controller, with memory decoding and bus mastering
-/// turned on.
+/// BAR0 of a function being bound (an NVMe or xHCI controller, the
+/// watchdog), with memory decoding turned on, and bus mastering too for one
+/// that does DMA (`dma`).
 fn memory_bar0(
     root: &mut PciRoot<EcamAccess>,
     function: DeviceFunction,
+    dma: bool,
 ) -> Result<(u64, u64), &'static str> {
     let (_, command) = root.get_status_command(function);
     // Sizing a BAR rewrites it: keep decoding off meanwhile.
     root.set_command(function, command - Command::MEMORY_SPACE);
     let bar = memory_bar(root, function, 0);
-    root.set_command(
-        function,
-        command | Command::MEMORY_SPACE | Command::BUS_MASTER,
-    );
+    let master = if dma {
+        Command::BUS_MASTER
+    } else {
+        Command::empty()
+    };
+    root.set_command(function, command | Command::MEMORY_SPACE | master);
     bar.ok_or("BAR0 is not an assigned memory BAR")
 }
 
