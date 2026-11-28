@@ -167,19 +167,30 @@ fn lint(file: &str, text: &str) -> (Vec<String>, usize) {
     (errors, seen)
 }
 
-/// Whether `cond` is false on a tag whatever else holds. With `${{ }}` and
-/// outer parentheses taken off it must be one term or a chain of terms joined
-/// by `&&`, with no `||` at the top level, and one term must be
-/// `!startsWith(github.ref, 'refs/tags/...')` or `github.ref_type != 'tag'`.
-/// A substring match is not enough: `always() || !startsWith(...)` and
-/// `!startsWith(...) || x` both run on a tag. Anything else (a negated group,
-/// say) counts as running on a tag.
+/// Whether `cond` is false on a tag whatever else holds. Its one `${{ }}`
+/// (or none), YAML double quotes and outer parentheses taken off, it must be
+/// one term or a chain of terms joined by `&&`, with no `||` at the top level,
+/// and one term must be exactly `!startsWith(github.ref, 'refs/tags/')` or
+/// `github.ref_type != 'tag'`, or itself such a chain in parentheses. A
+/// substring match is not enough: `always() || !startsWith(...)`, `... || x`
+/// and `a && (!startsWith(...) || x)` all run on a tag, and so does
+/// `refs/tags/v`, which a tag `x1` passes. Two `${{ }}` blocks make the value
+/// a string, always true. Anything else (a negated group, say) counts as
+/// running on a tag.
 fn not_on_a_tag(cond: &str) -> bool {
     let cond = cond.trim();
+    let cond = cond
+        .strip_prefix('"')
+        .and_then(|c| c.strip_suffix('"'))
+        .unwrap_or(cond)
+        .trim();
     let cond = cond
         .strip_prefix("${{")
         .and_then(|c| c.strip_suffix("}}"))
         .unwrap_or(cond);
+    if cond.contains("${{") || cond.contains("}}") {
+        return false;
+    }
     // Spaces outside quotes carry no meaning in an expression.
     let mut quoted = false;
     let cond: String = cond
@@ -189,13 +200,21 @@ fn not_on_a_tag(cond: &str) -> bool {
             quoted || !c.is_whitespace()
         })
         .collect();
-    let Some(terms) = and_terms(unwrap_parens(&cond)) else {
+    chain_off_a_tag(&cond)
+}
+
+/// An `&&` chain (no top-level `||`) with a not-a-tag term, the term itself
+/// perhaps such a chain in parentheses; spaces already gone.
+fn chain_off_a_tag(expr: &str) -> bool {
+    let not_a_tag = format!("{}')", NOT_A_TAG.replace(' ', ""));
+    let Some(terms) = and_terms(unwrap_parens(expr)) else {
         return false;
     };
     terms.into_iter().map(unwrap_parens).any(|t| {
-        (t.starts_with(&NOT_A_TAG.replace(' ', "")) && t.ends_with("')"))
+        t == not_a_tag
             || t == "github.ref_type!='tag'"
             || t == "'tag'!=github.ref_type"
+            || (t.contains("&&") && t != expr && chain_off_a_tag(t))
     })
 }
 
@@ -470,7 +489,7 @@ runs:
         key: model-1
         lookup-only: true
     - uses: actions/cache@v4 # v4
-      if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+      if: ${{ !startsWith(github.ref, 'refs/tags/') }}
       with:
         key: tuftool-0.17.0-Linux
     - uses: actions/cache/save@v4
@@ -686,7 +705,9 @@ fn the_tag_walk_follows_nested_uses_and_local_actions_and_ends_on_a_cycle() {
 fn only_an_and_chain_with_a_not_a_tag_term_keeps_a_step_off_a_tag() {
     for cond in [
         "${{ !startsWith(github.ref, 'refs/tags/') }}",
-        "!startsWith(github.ref,'refs/tags/v')",
+        "!startsWith(github.ref,'refs/tags/')",
+        "\"${{ !startsWith(github.ref, 'refs/tags/') }}\"",
+        "a && (b && github.ref_type != 'tag')",
         "steps.c.outputs.cache-hit != 'true' && !startsWith(github.ref, 'refs/tags/')",
         "${{ always() && github.ref_type != 'tag' }}",
         "('tag' != github.ref_type)",
@@ -704,6 +725,15 @@ fn only_an_and_chain_with_a_not_a_tag_term_keeps_a_step_off_a_tag() {
         "!(startsWith(github.ref, 'refs/tags/') || always())",
         "(!startsWith(github.ref, 'refs/tags/')) || true",
         "contains(github.ref, 'x || y') || github.ref_type != 'tag'",
+        // A group with `||` inside the chain still runs on a tag.
+        "a && (!startsWith(github.ref, 'refs/tags/') || startsWith(github.ref, 'refs/heads/'))",
+        "a && (github.ref_type != 'tag' || always())",
+        "a && (b && (github.ref_type != 'tag' || x))",
+        // Only refs/tags/ itself: a tag not starting `v` passes refs/tags/v.
+        "!startsWith(github.ref, 'refs/tags/v')",
+        // Two blocks make a string, which is always true.
+        "${{ always() }} && ${{ github.ref_type != 'tag' }}",
+        "\"${{ always() }} && ${{ github.ref_type != 'tag' }}\"",
     ] {
         assert!(!not_on_a_tag(cond), "{cond}");
     }
