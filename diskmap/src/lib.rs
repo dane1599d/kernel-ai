@@ -18,7 +18,11 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
+/// The sector size of every disk unless [`Disk::sector_size`] says otherwise,
+/// and the only one the constants below are for.
 pub const SECTOR: usize = 512;
+/// The largest sector size read or written: 4 KiB, as 4Kn disks have.
+pub const MAX_SECTOR: usize = 4096;
 
 /// A GUID as GPT stores it: the first three fields little-endian.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -55,10 +59,26 @@ pub const KAI_B_TYPE: Guid = Guid([
 /// Entries in the array this crate writes, and at most this many are read.
 pub const ENTRIES: u32 = 128;
 pub const ENTRY_BYTES: u32 = 128;
-/// Sectors the written entry array takes.
-pub const ENTRY_SECTORS: u64 = (ENTRIES * ENTRY_BYTES) as u64 / SECTOR as u64;
-/// The first usable LBA of a disk this crate writes.
-pub const FIRST_USABLE: u64 = 2 + ENTRY_SECTORS;
+/// Sectors the written entry array takes, on a disk of 512-byte sectors.
+pub const ENTRY_SECTORS: u64 = entry_sectors(SECTOR);
+/// The first usable LBA of a disk of 512-byte sectors this crate writes.
+pub const FIRST_USABLE: u64 = first_usable(SECTOR);
+
+/// Sectors of `sector` bytes the written entry array takes: 32 of 512 bytes,
+/// 4 of 4 KiB.
+pub const fn entry_sectors(sector: usize) -> u64 {
+    (ENTRIES * ENTRY_BYTES) as u64 / sector as u64
+}
+
+/// The first usable LBA of a disk of `sector`-byte sectors this crate writes.
+pub const fn first_usable(sector: usize) -> u64 {
+    2 + entry_sectors(sector)
+}
+
+/// Whether diskmap reads and writes disks of `sector`-byte sectors.
+pub const fn sector_ok(sector: usize) -> bool {
+    sector == SECTOR || sector == MAX_SECTOR
+}
 /// Longest entry array read, in bytes.
 const MAX_ARRAY: u64 = 64 * 1024;
 const HEADER_BYTES: u32 = 92;
@@ -125,14 +145,20 @@ pub enum Error {
     BadPartitions,
     /// A layout to write does not fit the disk or overlaps itself.
     BadLayout,
+    /// The disk's sectors are neither 512 bytes nor 4 KiB.
+    SectorSize,
 }
 
 /// Reads sectors of a disk.
 pub trait Disk {
-    /// Size in 512-byte sectors.
+    /// Size in sectors of [`Disk::sector_size`] bytes.
     fn sectors(&self) -> u64;
     /// Fills `out`, whole sectors, from `lba`.
     fn read(&mut self, lba: u64, out: &mut [u8]) -> Result<(), Error>;
+    /// The bytes in one sector, one LBA: 512, or 4096 on a 4Kn disk.
+    fn sector_size(&self) -> usize {
+        SECTOR
+    }
 }
 
 fn u32_at(b: &[u8], at: usize) -> u32 {
@@ -165,10 +191,10 @@ fn header(sector: &[u8], at: u64, sectors: u64) -> Option<Header> {
         return None;
     }
     let size = u32_at(sector, 12);
-    if !(HEADER_BYTES..=SECTOR as u32).contains(&size) {
+    if !(HEADER_BYTES..=sector.len() as u32).contains(&size) {
         return None;
     }
-    let mut copy = [0u8; SECTOR];
+    let mut copy = [0u8; MAX_SECTOR];
     copy[..size as usize].copy_from_slice(&sector[..size as usize]);
     copy[16..20].fill(0);
     if crc32(&copy[..size as usize]) != u32_at(sector, 16) || u64_at(sector, 24) != at {
@@ -184,7 +210,7 @@ fn header(sector: &[u8], at: u64, sectors: u64) -> Option<Header> {
         entries_crc: u32_at(sector, 88),
     };
     let array = u64::from(h.entries) * u64::from(h.entry_bytes);
-    let array_sectors = array.div_ceil(SECTOR as u64);
+    let array_sectors = array.div_ceil(sector.len() as u64);
     let sane = h.entry_bytes >= 128
         && h.entry_bytes.is_power_of_two()
         && h.entry_bytes <= 4096
@@ -237,12 +263,13 @@ fn partitions(h: &Header, array: &[u8]) -> Result<Vec<Partition>, Error> {
     Ok(out)
 }
 
-fn read_table(disk: &mut dyn Disk, at: u64, sectors: u64) -> Result<Table, Error> {
-    let mut sector = [0u8; SECTOR];
-    disk.read(at, &mut sector)?;
-    let h = header(&sector, at, sectors).ok_or(Error::NoTable)?;
+fn read_table(disk: &mut dyn Disk, at: u64, sectors: u64, size: usize) -> Result<Table, Error> {
+    let mut buf = [0u8; MAX_SECTOR];
+    let sector = &mut buf[..size];
+    disk.read(at, sector)?;
+    let h = header(sector, at, sectors).ok_or(Error::NoTable)?;
     let bytes = (u64::from(h.entries) * u64::from(h.entry_bytes)) as usize;
-    let mut array = vec![0u8; bytes.next_multiple_of(SECTOR)];
+    let mut array = vec![0u8; bytes.next_multiple_of(size)];
     disk.read(h.entries_at, &mut array)?;
     array.truncate(bytes);
     if crc32(&array) != h.entries_crc {
@@ -257,20 +284,27 @@ fn read_table(disk: &mut dyn Disk, at: u64, sectors: u64) -> Result<Table, Error
     })
 }
 
-/// Reads a disk's partition table: the primary, or else the backup.
+/// Reads a disk's partition table: the primary, or else the backup. LBAs are
+/// the disk's, in sectors of [`Disk::sector_size`] bytes.
 pub fn read(disk: &mut dyn Disk) -> Result<Table, Error> {
     let sectors = disk.sectors();
-    if sectors < 2 * (1 + ENTRY_SECTORS) + 2 {
+    let size = disk.sector_size();
+    if !sector_ok(size) {
+        return Err(Error::SectorSize);
+    }
+    if sectors < 2 * (1 + entry_sectors(size)) + 2 {
         return Err(Error::Small);
     }
-    match read_table(disk, 1, sectors) {
+    match read_table(disk, 1, sectors, size) {
         Ok(table) => Ok(table),
         Err(Error::Read) => Err(Error::Read),
         // With no backup either, say what was wrong with the primary.
-        Err(primary) => read_table(disk, sectors - 1, sectors).map_err(|backup| match backup {
-            Error::NoTable => primary,
-            other => other,
-        }),
+        Err(primary) => {
+            read_table(disk, sectors - 1, sectors, size).map_err(|backup| match backup {
+                Error::NoTable => primary,
+                other => other,
+            })
+        }
     }
 }
 
@@ -284,14 +318,27 @@ pub struct Spec<'a> {
     pub name: &'a str,
 }
 
-/// The first LBA at or after `lba` on a 1 MiB boundary.
+/// The first LBA at or after `lba` on a 1 MiB boundary, on a disk of 512-byte
+/// sectors.
 pub fn align(lba: u64) -> u64 {
-    lba.next_multiple_of(2048)
+    align_in(SECTOR, lba)
 }
 
-/// The last usable LBA of a disk of `sectors` this crate writes.
+/// The first LBA at or after `lba` on a 1 MiB boundary, on a disk of
+/// `sector`-byte sectors.
+pub fn align_in(sector: usize, lba: u64) -> u64 {
+    lba.next_multiple_of((1 << 20) / sector as u64)
+}
+
+/// The last usable LBA of a disk of `sectors` 512-byte sectors this crate writes.
 pub fn last_usable(sectors: u64) -> u64 {
-    sectors - 2 - ENTRY_SECTORS
+    last_usable_in(SECTOR, sectors)
+}
+
+/// The last usable LBA of a disk of `sectors` sectors of `sector` bytes this
+/// crate writes.
+pub fn last_usable_in(sector: usize, sectors: u64) -> u64 {
+    sectors - 2 - entry_sectors(sector)
 }
 
 /// Every partition type GUID this crate names. They are fixed for good: the
@@ -320,14 +367,30 @@ pub fn layout(
     disk_guid: Guid,
     parts: &[Spec<'_>],
 ) -> Result<Vec<(u64, Vec<u8>)>, Error> {
-    if sectors < 2 * (1 + ENTRY_SECTORS) + 2 || parts.len() > ENTRIES as usize {
+    layout_in(SECTOR, sectors, disk_guid, parts)
+}
+
+/// [`layout`] for a disk of `sectors` sectors of `sector` bytes (512 or
+/// 4096): LBAs, the partitions' included, are the disk's, and each sector
+/// written is `sector` bytes.
+pub fn layout_in(
+    sector: usize,
+    sectors: u64,
+    disk_guid: Guid,
+    parts: &[Spec<'_>],
+) -> Result<Vec<(u64, Vec<u8>)>, Error> {
+    if !sector_ok(sector) {
+        return Err(Error::SectorSize);
+    }
+    let entry_sectors = entry_sectors(sector);
+    if sectors < 2 * (1 + entry_sectors) + 2 || parts.len() > ENTRIES as usize {
         return Err(Error::BadLayout);
     }
     let not_unique = |g: Guid| g == Guid::default() || TYPES.contains(&g);
     if not_unique(disk_guid) {
         return Err(Error::BadLayout);
     }
-    let last = last_usable(sectors);
+    let last = last_usable_in(sector, sectors);
     let mut array = vec![0u8; (ENTRIES * ENTRY_BYTES) as usize];
     for (i, (part, entry)) in parts
         .iter()
@@ -338,7 +401,7 @@ pub fn layout(
             .iter()
             .any(|p| part.first <= p.last && p.first <= part.last);
         if part.first > part.last
-            || part.first < FIRST_USABLE
+            || part.first < first_usable(sector)
             || part.last > last
             || overlaps
             || part.kind == Guid::default()
@@ -358,15 +421,22 @@ pub fn layout(
         }
     }
     let crc = crc32(&array);
-    let backup_array = sectors - 1 - ENTRY_SECTORS;
+    let backup_array = sectors - 1 - entry_sectors;
+    let whole = |mut bytes: Vec<u8>| {
+        bytes.resize(bytes.len().next_multiple_of(sector), 0);
+        bytes
+    };
     Ok(vec![
-        (0, protective_mbr(sectors).to_vec()),
-        (1, header_sector(sectors, true, crc, disk_guid).to_vec()),
+        (0, whole(protective_mbr(sectors).to_vec())),
+        (
+            1,
+            whole(header_sector(sector, sectors, true, crc, disk_guid).to_vec()),
+        ),
         (2, array.clone()),
         (backup_array, array),
         (
             sectors - 1,
-            header_sector(sectors, false, crc, disk_guid).to_vec(),
+            whole(header_sector(sector, sectors, false, crc, disk_guid).to_vec()),
         ),
     ])
 }
@@ -385,11 +455,17 @@ fn protective_mbr(sectors: u64) -> [u8; SECTOR] {
     s
 }
 
-fn header_sector(sectors: u64, primary: bool, entries_crc: u32, disk: Guid) -> [u8; SECTOR] {
+fn header_sector(
+    sector: usize,
+    sectors: u64,
+    primary: bool,
+    entries_crc: u32,
+    disk: Guid,
+) -> [u8; SECTOR] {
     let last = sectors - 1;
     let (mine, other, entries_at) = match primary {
         true => (1, last, 2),
-        false => (last, 1, last - ENTRY_SECTORS),
+        false => (last, 1, last - entry_sectors(sector)),
     };
     let mut s = [0u8; SECTOR];
     s[..8].copy_from_slice(b"EFI PART");
@@ -397,8 +473,8 @@ fn header_sector(sectors: u64, primary: bool, entries_crc: u32, disk: Guid) -> [
     s[12..16].copy_from_slice(&HEADER_BYTES.to_le_bytes());
     s[24..32].copy_from_slice(&mine.to_le_bytes());
     s[32..40].copy_from_slice(&other.to_le_bytes());
-    s[40..48].copy_from_slice(&FIRST_USABLE.to_le_bytes());
-    s[48..56].copy_from_slice(&last_usable(sectors).to_le_bytes());
+    s[40..48].copy_from_slice(&first_usable(sector).to_le_bytes());
+    s[48..56].copy_from_slice(&last_usable_in(sector, sectors).to_le_bytes());
     s[56..72].copy_from_slice(&disk.0);
     s[72..80].copy_from_slice(&entries_at.to_le_bytes());
     s[80..84].copy_from_slice(&ENTRIES.to_le_bytes());

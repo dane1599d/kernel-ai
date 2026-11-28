@@ -88,6 +88,7 @@ pub fn current(disk: &mut dyn Disk) -> Current {
         Err(diskmap::Error::Small) => "the disk is too small for a GPT",
         Err(diskmap::Error::BadPartitions) => "a GPT header names partitions that are not valid",
         Err(diskmap::Error::BadLayout) => "the GPT cannot be read",
+        Err(diskmap::Error::SectorSize) => "the disk's sectors are not 512 bytes",
     };
     let sectors = disk.sectors();
     let head = HEAD.min(sectors);

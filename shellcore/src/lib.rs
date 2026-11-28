@@ -50,6 +50,7 @@ pub mod door;
 mod effects;
 mod engine;
 mod eval;
+mod goalkeep;
 mod goalqueue;
 mod goalrows;
 mod goalscope;

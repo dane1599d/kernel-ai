@@ -11,8 +11,13 @@
 //!   `image: outside SHA`         the bytes in no partition (MBR, GPT, gaps)
 //!   `image: part NAME FIRST SECTORS SHA`
 //!   `image: file PART PATH LEN SHA`   each file of a FAT32 partition
+//!   `image: module PART FILE#MODULE LEN SHA`   each module of a `.bundle` file
 //!
-//! `kai-data` is not FAT32: it has its `part` line alone.
+//! `kai-data` is not FAT32: it has its `part` line alone. Boot modules travel
+//! packed in `boot/kai.bundle`, so a `module` line names the one inside it that
+//! differs. A file or module path may hold spaces (`compare` takes the value
+//! from the end of the line); a partition name may not (the release image's are
+//! `kai-r`, `kai-a`, `kai-b` and `kai-data`).
 
 use crate::sha256_hex;
 use sha2::{Digest, Sha256};
@@ -91,11 +96,22 @@ pub fn list(path: &Path) -> Result<Vec<String>, String> {
             part.sectors(),
             hex(hash.finalize().as_slice())
         ));
-        for (name, len, sha) in fat32_files(&mut file, from)? {
-            lines.push(format!("image: file {} {name} {len} {sha}", part.name));
-        }
+        lines.extend(file_lines(&part.name, &fat32_files(&mut file, from)?));
     }
     Ok(lines)
+}
+
+/// A partition's `file` lines, each followed by its bundle's `module` lines.
+fn file_lines(part: &str, files: &[FatFile]) -> Vec<String> {
+    let mut lines = Vec::new();
+    for file in files {
+        let (path, len, sha) = (&file.path, file.len, &file.sha);
+        lines.push(format!("image: file {part} {path} {len} {sha}"));
+        for (module, len, sha) in &file.modules {
+            lines.push(format!("image: module {part} {path}#{module} {len} {sha}"));
+        }
+    }
+    lines
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -123,12 +139,34 @@ fn hash_range<R: Read + Seek>(
     Ok(())
 }
 
-/// Every file of the FAT32 volume at byte `base` of `disk` as (path, length,
-/// SHA-256), in path order; none if the partition is not FAT32.
-fn fat32_files<R: Read + Seek>(
-    disk: &mut R,
-    base: u64,
-) -> Result<Vec<(String, u32, String)>, String> {
+/// One file of a FAT32 volume: its path, length and SHA-256, and, for a
+/// `kai-bundle 1` (a name ending `.bundle` that parses), each module's path,
+/// length and SHA-256 in path order.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct FatFile {
+    path: String,
+    len: u32,
+    sha: String,
+    modules: Vec<(String, usize, String)>,
+}
+
+/// A bundle's modules as (path, length, SHA-256), in path order; none if the
+/// bytes are not a bundle (its `file` line still shows any difference).
+fn bundle_modules(bytes: &[u8]) -> Vec<(String, usize, String)> {
+    let Ok(bundle) = kaibundle::parse(bytes) else {
+        return Vec::new();
+    };
+    let mut modules: Vec<_> = bundle
+        .entries()
+        .map(|e| (e.path.to_string(), e.data.len(), sha256_hex(e.data)))
+        .collect();
+    modules.sort();
+    modules
+}
+
+/// Every file of the FAT32 volume at byte `base` of `disk`, in path order; none
+/// if the partition is not FAT32.
+fn fat32_files<R: Read + Seek>(disk: &mut R, base: u64) -> Result<Vec<FatFile>, String> {
     let mut boot = [0u8; 512];
     disk.seek(SeekFrom::Start(base))
         .map_err(|e| e.to_string())?;
@@ -230,7 +268,16 @@ fn fat32_files<R: Read + Seek>(
                 true => dirs.push((format!("{path}/"), first)),
                 false => {
                     let bytes = read_chain(disk, first, Some(len as u64))?;
-                    files.push((path, len, sha256_hex(&bytes)));
+                    let modules = match path.ends_with(".bundle") {
+                        true => bundle_modules(&bytes),
+                        false => Vec::new(),
+                    };
+                    files.push(FatFile {
+                        sha: sha256_hex(&bytes),
+                        path,
+                        len,
+                        modules,
+                    });
                 }
             }
         }
@@ -249,8 +296,9 @@ fn short_name(entry: &[u8]) -> String {
 }
 
 /// The pieces that differ between the listings: each `part`, `file`, `outside`
-/// or `size` line whose rest is not the same in all of them, or that one lacks.
-/// A partition is named before its files. Empty when all agree.
+/// `module` or `size` line whose rest is not the same in all of them, or that
+/// one lacks. Partitions come before files, files before modules. Empty when
+/// all agree.
 pub fn compare(listings: &[(String, String)]) -> Vec<String> {
     let parsed: Vec<(&str, BTreeMap<String, String>)> = listings
         .iter()
@@ -271,6 +319,15 @@ pub fn compare(listings: &[(String, String)]) -> Vec<String> {
                 Some((part, path)) => format!("file {path} in partition {part}"),
                 None => key.clone(),
             },
+            Some(("module", rest)) => match rest.split_once(' ') {
+                Some((part, inside)) => match inside.split_once(".bundle#") {
+                    Some((file, module)) => {
+                        format!("module {module} in {file}.bundle in partition {part}")
+                    }
+                    None => key.clone(),
+                },
+                None => key.clone(),
+            },
             Some(("outside", _)) | None => "the bytes outside the partitions".into(),
             Some(_) => key.clone(),
         };
@@ -287,23 +344,25 @@ pub fn compare(listings: &[(String, String)]) -> Vec<String> {
 }
 
 /// A listing's lines by key (all but the value) to value: a `part` line's key
-/// is `part NAME` (the value is first sector, sectors and hash), a `file` line's
-/// `file PART PATH` (length and hash); `size` and `outside` have one value.
+/// is `part NAME` (the value is first sector, sectors and hash), a `file`
+/// line's `file PART PATH` and a `module` line's `module PART FILE#MODULE`
+/// (length and hash); `size` and `outside` have one value. The value is the
+/// last words, so a name with spaces stays whole in the key.
 fn keyed(text: &str) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     for line in text.lines().filter_map(|l| l.strip_prefix("image: ")) {
         let words: Vec<&str> = line.split(' ').collect();
-        let (keep, value) = match words.first() {
-            Some(&"part") if words.len() == 5 => (2, 3),
-            Some(&"file") if words.len() == 5 => (3, 2),
-            Some(&"size" | &"outside") if words.len() == 2 => (1, 1),
+        let (least, value) = match words.first() {
+            Some(&"part") => (5, 3),
+            Some(&"file" | &"module") => (5, 2),
+            Some(&"size" | &"outside") if words.len() == 2 => (2, 1),
             _ => continue,
         };
-        let key = match words[0] {
-            "size" | "outside" => words[0].to_string(),
-            _ => words[..keep].join(" "),
-        };
-        map.insert(key, words[words.len() - value..].join(" "));
+        if words.len() < least {
+            continue;
+        }
+        let split = words.len() - value;
+        map.insert(words[..split].join(" "), words[split..].join(" "));
     }
     map
 }
@@ -314,7 +373,8 @@ fn order(key: &str) -> (u8, String) {
         Some("size") => 0,
         Some("outside") => 1,
         Some("part") => 2,
-        _ => 3,
+        Some("file") => 3,
+        _ => 4,
     };
     (rank, key.to_string())
 }
@@ -347,13 +407,21 @@ mod tests {
     }
 
     fn tree(kernel: &[u8]) -> Vec<Node> {
+        tree_with(kernel, &[7; 5000], "boot")
+    }
+
+    fn tree_with(kernel: &[u8], bundle: &[u8], dir: &str) -> Vec<Node> {
         vec![
             Node::Dir {
-                name: "boot".into(),
-                children: vec![file("kernel", kernel), file("kai.bundle", &[7; 5000])],
+                name: dir.into(),
+                children: vec![file("kernel", kernel), file("kai.bundle", bundle)],
             },
             file("NOTICES.txt", b"notices"),
         ]
+    }
+
+    fn bundle(build_time: &[u8]) -> Vec<u8> {
+        kaibundle::build(&[("build-time.txt", build_time), ("init", b"init's bytes")]).unwrap()
     }
 
     /// The FAT32 reader finds every file, long names and subdirectories
@@ -362,11 +430,13 @@ mod tests {
     fn the_fat32_walk_lists_each_file_with_its_hash() {
         let bytes = volume(70_000, 0, 1, &tree(b"kernel one")).unwrap();
         let files = fat32_files(&mut Cursor::new(bytes), 0).unwrap();
-        let names: Vec<&str> = files.iter().map(|f| f.0.as_str()).collect();
+        let names: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
         assert_eq!(names, ["NOTICES.txt", "boot/kai.bundle", "boot/kernel"]);
-        assert_eq!(files[2].1, 10);
-        assert_eq!(files[2].2, sha256_hex(b"kernel one"));
-        assert_eq!(files[1].2, sha256_hex(&[7; 5000]));
+        assert_eq!(files[2].len, 10);
+        assert_eq!(files[2].sha, sha256_hex(b"kernel one"));
+        assert_eq!(files[1].sha, sha256_hex(&[7; 5000]));
+        // Not a bundle's bytes: the file alone, no modules.
+        assert!(files.iter().all(|f| f.modules.is_empty()));
     }
 
     #[test]
@@ -379,7 +449,11 @@ mod tests {
     }
 
     fn listing(kernel: &[u8], part: &str) -> String {
-        let bytes = volume(70_000, 0, 1, &tree(kernel)).unwrap();
+        listing_of(&tree(kernel), part)
+    }
+
+    fn listing_of(tree: &[Node], part: &str) -> String {
+        let bytes = volume(70_000, 0, 1, tree).unwrap();
         let mut lines = vec![
             "image: size 100".to_string(),
             "image: outside aa".to_string(),
@@ -388,9 +462,8 @@ mod tests {
             "image: part kai-a 2048 70000 {}",
             sha256_hex(&bytes)
         ));
-        for (name, len, sha) in fat32_files(&mut Cursor::new(bytes), 0).unwrap() {
-            lines.push(format!("image: file {part} {name} {len} {sha}"));
-        }
+        let files = fat32_files(&mut Cursor::new(bytes), 0).unwrap();
+        lines.extend(file_lines(part, &files));
         lines.join("\n")
     }
 
@@ -428,5 +501,47 @@ mod tests {
         assert_eq!(report.len(), 1);
         assert!(report[0].contains("file NOTICES.txt in partition kai-a"));
         assert!(report[0].contains("b: (missing)"));
+    }
+
+    /// A bundle's modules are listed, and one that differs is named inside it:
+    /// the bundle, the file holding it and the partition are named too.
+    #[test]
+    fn a_difference_inside_the_bundle_names_the_module() {
+        let one = listing_of(&tree_with(b"kernel", &bundle(b"1"), "boot"), "kai-a");
+        let two = listing_of(&tree_with(b"kernel", &bundle(b"2"), "boot"), "kai-a");
+        assert!(one.contains(&format!(
+            "image: module kai-a boot/kai.bundle#init 12 {}",
+            sha256_hex(b"init's bytes")
+        )));
+        let report = compare(&[("a".to_string(), one), ("b".to_string(), two)]);
+        let named: Vec<&str> = report.iter().map(|r| r.lines().next().unwrap()).collect();
+        assert_eq!(
+            named,
+            [
+                "DIFFERS: partition kai-a",
+                "DIFFERS: file boot/kai.bundle in partition kai-a",
+                "DIFFERS: module build-time.txt in boot/kai.bundle in partition kai-a",
+            ]
+        );
+        assert!(report[2].contains(&format!("a: 1 {}", sha256_hex(b"1"))));
+    }
+
+    /// A path with spaces is one key: its line differs as one piece and its
+    /// length and hash are the value, in the report whole.
+    #[test]
+    fn a_name_with_spaces_stays_whole() {
+        let one = listing_of(&tree_with(b"kernel one", &[7; 50], "EFI Boot"), "kai-a");
+        let two = listing_of(&tree_with(b"kernel two", &[7; 50], "EFI Boot"), "kai-a");
+        assert!(one.contains("image: file kai-a EFI Boot/kernel 10 "));
+        let report = compare(&[("a".to_string(), one), ("b".to_string(), two)]);
+        let named: Vec<&str> = report.iter().map(|r| r.lines().next().unwrap()).collect();
+        assert_eq!(
+            named,
+            [
+                "DIFFERS: partition kai-a",
+                "DIFFERS: file EFI Boot/kernel in partition kai-a"
+            ]
+        );
+        assert!(report[1].contains(&format!("b: 10 {}", sha256_hex(b"kernel two"))));
     }
 }

@@ -108,7 +108,7 @@ pub fn slot_image(esp: &Path, record: &str) -> Result<Vec<u8>, String> {
 /// What a slot disk does with a volume larger than its partition's
 /// [`PARTITION_MIB`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Room {
+pub(super) enum Room {
     /// The release disk refuses it: an install keeps the partitions it was
     /// written with.
     Fixed,
@@ -139,17 +139,17 @@ fn partition_sectors(name: &str, mib: u64, need: u32, room: Room) -> Result<u64,
 /// A slot disk laid out: its size in sectors, its GPT's sectors, each
 /// partition's volume by its first LBA, each partition as (first LBA,
 /// sectors) in disk order, and `kai-data`'s place if it has one.
-struct Plan {
+pub(super) struct Plan {
     sectors: u64,
     gpt: Vec<(u64, Vec<u8>)>,
     volumes: Vec<(u64, Vec<u8>)>,
     partitions: Vec<(u64, u64)>,
-    data: Option<(u64, u64)>,
+    pub(super) data: Option<(u64, u64)>,
 }
 
 impl Plan {
     /// The disk's size in bytes.
-    fn bytes(&self) -> u64 {
+    pub(super) fn bytes(&self) -> u64 {
         self.sectors * u64::from(SECTOR)
     }
 
@@ -166,13 +166,14 @@ impl Plan {
 /// gets, with `record` as each slot's `boot/slot`, and after the slots a
 /// `kai-data` partition of `data_mib` MiB if asked for. The partitions are
 /// [`PARTITION_MIB`]; `room` says what a larger volume does.
-fn plan(
+pub(super) fn plan(
     esp: &Path,
     cmdline: &str,
     record: &str,
     data_mib: Option<u64>,
     room: Room,
     image_id: &str,
+    sector: usize,
 ) -> Result<Plan, String> {
     let boot = esp.join("boot");
     let mut esp_files = vec![
@@ -253,8 +254,8 @@ fn plan(
         .collect();
     let sectors = gpt::disk_sectors(first - gpt::FIRST_LBA);
     let disk_guid = diskmap::Guid(gpt::unique(image_id, "disk"));
-    let gpt = diskmap::layout(sectors, disk_guid, &parts)
-        .map_err(|e| format!("the slot disk does not lay out: {e:?}"))?;
+    let gpt = gpt::layout_on(sector, sectors, disk_guid, &parts)
+        .map_err(|e| format!("the slot disk: {e}"))?;
     Ok(Plan {
         sectors,
         gpt,
@@ -267,27 +268,30 @@ fn plan(
 /// Writes `plan`'s disk to `out` as a new file: the GPT and each volume where
 /// the layout puts it, a piece at a time, and zeros everywhere else, left
 /// sparse where the system allows. The disk is gigabytes, most of them the
-/// slots' free room, and is never held in memory. With `keep_b`, slot B's
-/// whole partition is that disk's, as it is, in place of a new volume.
-fn write(plan: &Plan, out: &Path, keep_b: Option<&Path>) -> Result<(), String> {
+/// slots' free room, and is never held in memory. With `keep`, the range
+/// `(first, sectors)` is that disk's, as it is, in place of a new volume.
+pub(super) fn write(
+    plan: &Plan,
+    out: &Path,
+    keep: Option<(&Path, (u64, u64))>,
+) -> Result<(), String> {
     use std::io::{Seek, SeekFrom, Write};
     let shown = out.display();
     let fail = |e: std::io::Error| format!("cannot write {shown}: {e}");
-    let (b_first, b_sectors) = plan.slot_b()?;
     let mut file = fs::File::create(out).map_err(fail)?;
     file.set_len(plan.bytes()).map_err(fail)?;
     let volumes = plan
         .volumes
         .iter()
-        .filter(|(lba, _)| keep_b.is_none() || *lba != b_first);
+        .filter(|(lba, _)| keep.is_none_or(|(_, (first, _))| *lba != first));
     for (lba, bytes) in plan.gpt.iter().chain(volumes) {
         file.seek(SeekFrom::Start(lba * u64::from(SECTOR)))
             .and_then(|_| file.write_all(bytes))
             .map_err(fail)?;
     }
-    if let Some(old) = keep_b {
+    if let Some((old, (first, sectors))) = keep {
         let sector = u64::from(SECTOR);
-        copy_range(old, &mut file, b_first * sector, b_sectors * sector)?;
+        copy_range(old, &mut file, first * sector, sectors * sector)?;
     }
     file.sync_all().map_err(fail)
 }
@@ -323,7 +327,7 @@ fn copy_range(old: &Path, to: &mut fs::File, at: u64, len: u64) -> Result<(), St
 /// of `updated` has the slot it was writing as it left it, so a resumed download
 /// finds the chunks the first run wrote; `build` makes every boot's slots anew.
 pub fn build_keeping_b(esp: &Path, out: &Path, cmdline: &str, record: &str) -> Result<u64, String> {
-    let plan = plan(esp, cmdline, record, None, Room::Grow, DISK_NAME)?;
+    let plan = plan(esp, cmdline, record, None, Room::Grow, DISK_NAME, 512)?;
     let same = fs::metadata(out).is_ok_and(|old| old.len() == plan.bytes());
     if !same {
         write(&plan, out, None)?;
@@ -331,14 +335,20 @@ pub fn build_keeping_b(esp: &Path, out: &Path, cmdline: &str, record: &str) -> R
     }
     // The new disk beside the old, whose B it copies, then in its place.
     let next = out.with_extension("next");
-    write(&plan, &next, Some(out))?;
+    write(&plan, &next, Some((out, plan.slot_b()?)))?;
     fs::rename(&next, out).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
     Ok(plan.bytes())
 }
 
-/// Writes the slot disk to `out`; its size.
-pub fn build(esp: &Path, out: &Path, cmdline: &str, record: &str) -> Result<u64, String> {
-    let plan = plan(esp, cmdline, record, None, Room::Grow, DISK_NAME)?;
+/// Writes the slot disk to `out`, for a disk of `sector`-byte sectors; its size.
+pub fn build(
+    esp: &Path,
+    out: &Path,
+    cmdline: &str,
+    record: &str,
+    sector: usize,
+) -> Result<u64, String> {
+    let plan = plan(esp, cmdline, record, None, Room::Grow, DISK_NAME, sector)?;
     write(&plan, out, None)?;
     Ok(plan.bytes())
 }
@@ -422,6 +432,7 @@ pub fn build_release(
         Some(data_mib),
         Room::Fixed,
         image_id,
+        512,
     )?;
     for line in fill_lines(&plan) {
         println!("{line}");
@@ -559,7 +570,7 @@ mod tests {
         assert!(same(&one, &two, 0, len), "two builds differ");
         // Its first four partitions hold the slot disk's own bytes.
         let slots = esp.join("slots.img");
-        build(&esp, &slots, "", RECORD).unwrap();
+        build(&esp, &slots, "", RECORD, 512).unwrap();
         let parts = partitions(&one);
         let names: Vec<&str> = parts.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
@@ -717,7 +728,7 @@ mod tests {
         // The command line is the new boot's, in the ESP.
         assert!(read_at(&out, at(0), 64 * MIB as usize) != esp_bytes);
         // `build` makes every slot anew.
-        build(&esp, &out, "test=update", RECORD).unwrap();
+        build(&esp, &out, "test=update", RECORD, 512).unwrap();
         assert_eq!(read_at(&out, at(3) + 4096, 8), fresh_b);
         assert_eq!(read_at(&out, past, 8), [0u8; 8]);
         // A disk of another size is not carried over.
@@ -756,7 +767,7 @@ mod tests {
     fn the_release_disk_reports_each_slots_fill() {
         let esp = fake_esp("fill");
         let record = "kai-slot 1\nrelease_seq 1\nepoch 1\nversion 0.1.0\ncommit x\nchannel dev\n";
-        let plan = plan(&esp, "", record, Some(16), Room::Fixed, DISK_NAME).unwrap();
+        let plan = plan(&esp, "", record, Some(16), Room::Fixed, DISK_NAME, 512).unwrap();
         let lines = fill_lines(&plan);
         assert_eq!(lines.len(), 3);
         for (line, name) in lines.iter().zip(SLOTS) {
@@ -770,7 +781,7 @@ mod tests {
     fn the_disk_has_four_partitions_in_order_with_the_slot_types_and_the_adrs_sizes() {
         let esp = fake_esp("slots-test");
         let out = esp.join("slots.img");
-        build(&esp, &out, "", RECORD).unwrap();
+        build(&esp, &out, "", RECORD, 512).unwrap();
         let parts = partitions(&out);
         let names: Vec<&str> = parts.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["EFI system partition", "kai-r", "kai-a", "kai-b"]);

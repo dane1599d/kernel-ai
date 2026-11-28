@@ -537,7 +537,7 @@ fn execute(options: &Options) -> Result<(), String> {
             }
             if let Some(data) = case.data {
                 if fresh {
-                    blklog::prepare_sized(&target_dir, data, case.data_mib)?;
+                    blklog::prepare_sized(&target_dir, data, case.data_mib, case.four_k)?;
                     if let Some(model) = &store {
                         let image = target_dir.join(blklog::IMAGE);
                         store_model(&image, model.path())?;
@@ -546,7 +546,7 @@ fn execute(options: &Options) -> Result<(), String> {
                         }
                     }
                 }
-                args.extend(blklog::qemu_args(data));
+                args.extend(blklog::qemu_args_in(data, case.four_k));
             }
             if case.image {
                 qemu::boot_from_image(&mut args, &esp, &target_dir)?;
@@ -558,7 +558,12 @@ fn execute(options: &Options) -> Result<(), String> {
                     &target_dir,
                     &cmdline,
                     &record,
-                    case.keeps_slot_b,
+                    case.keeps_slot_b || (case.boot_data && !fresh),
+                    qemu::BootDisk {
+                        nvme: case.boot_nvme,
+                        four_k: case.four_k,
+                        data: case.boot_data,
+                    },
                 )?;
             }
             if let Some(name) = &update_disk {

@@ -68,7 +68,16 @@ pub(crate) fn scope(
         }
         rows.push(row.name.to_string());
     }
-    if let Some(path) = negated_path(line) {
+    // A word after "and" that is a row's one-word cue starts another order
+    // ("... and trash the drafts").
+    let starts_order = |word: &str| {
+        agentabi::ROWS
+            .iter()
+            .filter(|row| considered(row))
+            .flat_map(|row| row.cues.iter())
+            .any(|cue| !cue.contains(' ') && plain(cue).trim() == word)
+    };
+    if let Some(path) = crate::goalkeep::kept_off(line, starts_order) {
         return Err(format!(
             "\"{path}\" is said not to be touched; name only the folders the goal works in"
         ));
@@ -222,39 +231,6 @@ fn outside_names(words: &str, row: &Action) -> String {
         kept.extend([lead, trail].into_iter().filter(|p| !p.is_empty()));
     }
     kept.join(" ")
-}
-
-/// Words that say a folder after them in its clause is not to be touched.
-/// Not "no" or "without", which describe files ("move the files with no tag
-/// into notes/untagged").
-const KEEP_OFF: &[&str] = &["dont", "don't", "not", "never", "avoid", "except"];
-
-/// The first path written in `line` after a word of [`KEEP_OFF`] in its
-/// clause: "don't touch notes/q3, delete the drafts in notes/old" says not to
-/// touch notes/q3, so no goal may hold it (#1577's review). A clause ends at
-/// `,` `;` `:` `.` `!` or `?`.
-fn negated_path(line: &str) -> Option<String> {
-    let line = line
-        .replace(['\u{2018}', '\u{2019}'], "'")
-        .to_ascii_lowercase();
-    for clause in line.split(|c: char| ",;:!?".contains(c)) {
-        let mut off = false;
-        for raw in clause.split_whitespace() {
-            let word = raw.trim_matches(|c: char| "\"'()".contains(c));
-            if word.contains('/') {
-                if off {
-                    return Some(word.trim_end_matches('.').to_string());
-                }
-                continue;
-            }
-            let word = word.trim_end_matches('.');
-            off |= KEEP_OFF.contains(&word);
-            if raw.ends_with('.') {
-                off = false;
-            }
-        }
-    }
-    None
 }
 
 /// Whether cue `cue` is words of `words` ([`plain`]'s form), whole, or with a

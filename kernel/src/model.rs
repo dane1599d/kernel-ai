@@ -165,9 +165,11 @@ impl Source<'_> {
         match self {
             Source::Disk(disk) => {
                 let sectors = disk.sectors();
-                // QEMU rounds the file up to whole sectors; model_len= says where it ends.
+                // QEMU rounds the file up to whole sectors; model_len= says where it
+                // ends. On a disk of 4 KiB blocks the file is padded to whole blocks.
+                let block = disk.block_sectors();
                 match attached {
-                    Some(len) if sectors_for(len) == sectors => Ok(len),
+                    Some(len) if sectors_for(len).next_multiple_of(block) == sectors => Ok(len),
                     Some(len) => Err(format!(
                         "model_len={len} does not fit a disk of {sectors} sectors"
                     )),
