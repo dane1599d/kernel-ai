@@ -53,8 +53,9 @@ pub struct Options {
     pub local: Option<String>,
     /// `run --store DIR`: the model store `--local` reads, as `setup --store`.
     pub store: Option<String>,
-    /// `--cpus N`, `--mem SIZE`, `--cpu-model NAME` and `--no-8042`: the VM's
-    /// vCPUs, memory, CPU model and 8042, for `run`, `test` and `soak`.
+    /// `--cpus N`, `--mem SIZE`, `--cpu-model NAME`, `--no-8042` and
+    /// `--no-hpet`: the VM's vCPUs, memory, CPU model, 8042 and HPET, for
+    /// `run`, `test` and `soak`.
     pub sizing: Sizing,
     /// `icount --shift N`: each guest instruction takes 2^N virtual nanoseconds.
     pub shift: u32,
@@ -108,6 +109,9 @@ pub struct Sizing {
     /// `--no-8042`: q35 with `i8042=off`, so the FADT says there is none, as on
     /// boards without a legacy keyboard controller (G56).
     pub no_8042: bool,
+    /// `--no-hpet`: q35 with `hpet=off`, so the kernel's reference clock is
+    /// the FADT's PM timer (G57).
+    pub no_hpet: bool,
 }
 
 /// The most vCPUs `--cpus` and the host-sized runs give a VM, kept at 8 so
@@ -265,6 +269,9 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
             }
             "--no-8042" if task != Task::Build && task != Task::Smoke => {
                 options.sizing.no_8042 = true;
+            }
+            "--no-hpet" if task != Task::Build && task != Task::Smoke => {
+                options.sizing.no_hpet = true;
             }
             "--mem" if task != Task::Build && task != Task::Smoke => {
                 let size = rest
@@ -546,6 +553,12 @@ mod tests {
         assert_eq!(
             (shaped.cpu_model, shaped.no_8042),
             (Some("EPYC-Genoa"), true)
+        );
+        assert!(
+            parse_args(&args(&["run", "--no-hpet"]))
+                .unwrap()
+                .sizing
+                .no_hpet
         );
         let run = parse_args(&args(&["run", "--mem", "2048"])).unwrap();
         assert_eq!(run.sizing.mem_mib, Some(2048));

@@ -1,5 +1,10 @@
 //! HPET main counter: the kernel's reference clock.
 //!
+//! A machine with no HPET (some boards ship it off or hidden; P6 G57) uses the
+//! FADT's ACPI PM timer in its place: 3.579545 MHz, 24 or 32 bits, read through
+//! an I/O port and carried into 64 bits like a 32-bit HPET. Everything below
+//! that says the HPET means that counter then, and the log names it.
+//!
 //! With the TSC as the clock, `nanos` reads it instead, scaled by a rate measured
 //! against the HPET at boot. Every timer tick reads the clock a few times, and
 //! every HPET read is a trip to the hypervisor: under VirtualBox on Hyper-V, with
@@ -28,6 +33,7 @@
 
 use crate::percpu::{self, MAX_CPUS};
 use crate::{log, memory};
+use acpitables::fadt::PM_TIMER_HZ;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use x86_64::structures::paging::PageTableFlags;
 
@@ -73,6 +79,13 @@ static SPLIT_READS: AtomicU64 = AtomicU64::new(0);
 /// Whether the main counter is 64 bits wide (CAPABILITIES bit 13); a 32-bit one
 /// is carried into 64 bits ([`acpitables::hpet_counter::extend32`]).
 static WIDE: AtomicBool = AtomicBool::new(true);
+/// The PM timer's port when it stands in for a missing HPET; 0 with an HPET.
+static PM_PORT: AtomicU64 = AtomicU64::new(0);
+/// The PM timer counts 32 bits (TMR_VAL_EXT), not 24.
+static PM_BITS32: AtomicBool = AtomicBool::new(false);
+/// The PM timer's period: 10^15 / 3,579,545 Hz, within 0.1 ppb.
+const PM_PERIOD_FS: u64 = 279_365_115;
+const _: () = assert!(PM_PERIOD_FS.abs_diff(1_000_000_000_000_000 / PM_TIMER_HZ) <= 1);
 
 fn read(offset: u64) -> u64 {
     // SAFETY: BASE maps the HPET register block uncached.
@@ -100,8 +113,39 @@ pub fn tsc_clock() -> bool {
     TSC_MULT.load(Ordering::Acquire) != 0
 }
 
+/// The PM timer's count as read, 24 or 32 bits.
+fn pm_raw(port: u16) -> u32 {
+    let mut register = x86_64::instructions::port::PortReadOnly::<u32>::new(port);
+    // SAFETY: the FADT names this port as the PM timer's, a read-only counter.
+    let raw = unsafe { register.read() };
+    match PM_BITS32.load(Ordering::Relaxed) {
+        true => raw,
+        false => raw & 0xFF_FFFF,
+    }
+}
+
+/// The PM timer's count, read and then carried into 64 bits from the last good
+/// value. The port is read first: a reader preempted between loading
+/// LAST_TICKS and the read would carry a count more than half a wrap ahead as
+/// one behind, 4.69 s in the past (#1660's review). Read in this order, the
+/// last value can only be a little ahead, which the carry allows.
+fn pm_counter(port: u16) -> u64 {
+    let raw = pm_raw(port);
+    let last = LAST_TICKS.load(Ordering::Relaxed);
+    match PM_BITS32.load(Ordering::Relaxed) {
+        true => acpitables::hpet_counter::extend32(raw, last),
+        false => acpitables::hpet_counter::extend24(raw, last),
+    }
+}
+
 fn main_counter() -> u64 {
     READS.fetch_add(1, Ordering::Relaxed);
+    let pm = PM_PORT.load(Ordering::Relaxed) as u16;
+    if pm != 0 {
+        let ticks = pm_counter(pm);
+        LAST_TICKS.fetch_max(ticks, Ordering::Relaxed);
+        return ticks;
+    }
     let last = LAST_TICKS.load(Ordering::Relaxed);
     let (ticks, split) = if WIDE.load(Ordering::Relaxed) {
         acpitables::hpet_counter::read(
@@ -127,9 +171,10 @@ pub fn split_reads() -> u64 {
     SPLIT_READS.load(Ordering::Relaxed)
 }
 
-/// From CPU 0's tick: with a 32-bit counter and the TSC as the clock, reads the
-/// HPET once a second so the carry never misses a wrap. The HPET clock reads it
-/// every tick anyway; a 64-bit counter needs nothing.
+/// From CPU 0's tick: with a 32-bit counter (or the PM timer's 24 bits, which
+/// wrap every 4.7 s) and the TSC as the clock, reads the counter once a second
+/// so the carry never misses a wrap. The HPET clock reads it every tick anyway;
+/// a 64-bit counter needs nothing.
 pub fn on_tick(tick: u64) {
     if !WIDE.load(Ordering::Relaxed) && tsc_clock() && tick.is_multiple_of(crate::timer::rate_hz())
     {
@@ -142,7 +187,38 @@ fn write(offset: u64, value: u64) {
     unsafe { ((BASE.load(Ordering::Relaxed) + offset) as *mut u64).write_volatile(value) }
 }
 
-pub fn init(phys: u64) -> Result<(), &'static str> {
+/// The reference counter: the HPET when the firmware has one, else the FADT's
+/// PM timer (P6 G57).
+pub fn init(platform: &acpitables::Platform) -> Result<(), &'static str> {
+    if let Some(phys) = platform.hpet.filter(|&phys| phys != 0) {
+        return init_hpet(phys);
+    }
+    let Some(pm) = platform.pm_timer else {
+        return Err("no HPET and no ACPI PM timer; a PIT fallback is not implemented yet");
+    };
+    PM_BITS32.store(pm.bits32, Ordering::Relaxed);
+    PERIOD_FS.store(PM_PERIOD_FS, Ordering::Relaxed);
+    WIDE.store(false, Ordering::Relaxed);
+    // The carry starts from where the counter is now, as for a 32-bit HPET.
+    LAST_TICKS.store(u64::from(pm_raw(pm.port)), Ordering::Relaxed);
+    PM_PORT.store(u64::from(pm.port), Ordering::Release);
+    log!(
+        "hpet: none; the ACPI PM timer at port {:#x} ({} bits, {PM_TIMER_HZ} Hz) is the reference clock",
+        pm.port,
+        if pm.bits32 { 32 } else { 24 }
+    );
+    Ok(())
+}
+
+/// What the reference counter is, for the log: "HPET" or "PM timer".
+pub fn reference() -> &'static str {
+    match PM_PORT.load(Ordering::Relaxed) {
+        0 => "HPET",
+        _ => "PM timer",
+    }
+}
+
+fn init_hpet(phys: u64) -> Result<(), &'static str> {
     let flags = PageTableFlags::PRESENT
         | PageTableFlags::WRITABLE
         | PageTableFlags::NO_CACHE
@@ -204,6 +280,7 @@ fn settled(rate: u64, last: u64, reported_hz: Option<u64>) -> bool {
 /// Picks the clock (see the module's docs) and logs which, and why. Runs on the
 /// boot CPU before the others start.
 pub fn select_clock(cmdline: &str) {
+    let r = reference();
     let said = |word: &str| cmdline.split_whitespace().any(|w| w == word);
     if said("clock=icount") {
         set_zero(0);
@@ -212,7 +289,7 @@ pub fn select_clock(cmdline: &str) {
         return;
     }
     if said("clock=hpet") {
-        log!("clock: the HPET (clock=hpet)");
+        log!("clock: the {r} (clock=hpet)");
         return;
     }
     let why = match said("clock=tsc") {
@@ -224,7 +301,7 @@ pub fn select_clock(cmdline: &str) {
         ) {
             cpufeat::DefaultClock::Tsc(why) => why,
             cpufeat::DefaultClock::Hpet(why) => {
-                log!("clock: the HPET ({why})");
+                log!("clock: the {r} ({why})");
                 return;
             }
         },
@@ -239,6 +316,7 @@ pub fn select_clock(cmdline: &str) {
 /// it; with none in [`WINDOWS`] the HPET stays the clock. A settled rate must
 /// then hold within [`DRIFT_PPM`] between two windows of [`DRIFT_WINDOW_NS`].
 fn try_tsc(why: &str) {
+    let r = reference();
     let reported_hz = cpufeat::hypervisor_tsc_khz().map(|khz| u64::from(khz) * 1000);
     let mut last = measure();
     for window in 2..=WINDOWS {
@@ -253,7 +331,7 @@ fn try_tsc(why: &str) {
             let ppm = cpufeat::drift_ppm(base, check);
             if ppm > DRIFT_PPM {
                 log!(
-                    "clock: the HPET: the TSC settled at {} MHz but then drifted {ppm} ppm against the HPET over {} ms, over {DRIFT_PPM} ({why})",
+                    "clock: the {r}: the TSC settled at {} MHz but then drifted {ppm} ppm against the {r} over {} ms, over {DRIFT_PPM} ({why})",
                     rate / 1_000_000,
                     DRIFT_WINDOW_NS / 1_000_000
                 );
@@ -264,7 +342,7 @@ fn try_tsc(why: &str) {
             // Last, so a reader that sees the rate also sees the zero points.
             TSC_MULT.store(mult.max(1), Ordering::Release);
             log!(
-                "clock: the TSC, {} MHz, settled after {window} windows and within {ppm} ppm of the HPET over {} ms ({why}; hypervisor says {} MHz)",
+                "clock: the TSC, {} MHz, settled after {window} windows and within {ppm} ppm of the {r} over {} ms ({why}; hypervisor says {} MHz)",
                 check / 1_000_000,
                 DRIFT_WINDOW_NS / 1_000_000,
                 reported_hz.map_or(0, |hz| hz / 1_000_000)
@@ -274,7 +352,7 @@ fn try_tsc(why: &str) {
         last = rate;
     }
     log!(
-        "clock: the HPET: the TSC never settled (last {} MHz) ({why})",
+        "clock: the {r}: the TSC never settled (last {} MHz) ({why})",
         last / 1_000_000
     );
 }

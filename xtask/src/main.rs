@@ -2,7 +2,7 @@
 //!
 //! cargo xtask build [--release] [--spikes] [--out DIR]
 //! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--cpus N] [--mem SIZE] [--llm IP:PORT] [--model NAME] [--edit] [--gpu] [--headless] [--model-disk PATH | --local ID [--store DIR]] [--workload A|B|C [--seed N]]
-//! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS] [--cpus N] [--mem SIZE] [--cpu-model NAME] [--no-8042] [--shard K/N] [--prebuilt DIR --prebuilt-sha SHA]
+//! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS] [--cpus N] [--mem SIZE] [--cpu-model NAME] [--no-8042] [--no-hpet] [--shard K/N] [--prebuilt DIR --prebuilt-sha SHA]
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
 //! (`--accel wsl` on Windows: QEMU with KVM inside WSL2; see wsl/launch.rs)
 //! cargo xtask smoke   (the live, edit and boot manifest scenarios on the host only, no QEMU)
@@ -539,6 +539,7 @@ fn execute(options: &Options) -> Result<(), String> {
                     .max(model_mib.map(cases::with_case_room)),
                 cpus: case.cpus.or(options.sizing.cpus),
                 no_8042: case.no_8042 || options.sizing.no_8042,
+                no_hpet: case.no_hpet || options.sizing.no_hpet,
                 ..options.sizing
             };
             let mut args = qemu::args(&firmware, accel, true, disk.as_ref(), sizing);
@@ -644,7 +645,7 @@ fn execute(options: &Options) -> Result<(), String> {
                 false => result,
             };
             let result = result
-                .and_then(|()| differs(&run, &mut sample))
+                .and_then(|()| differs(&run, &mut sample, case.near_pct))
                 .and_then(|()| after(&service))
                 .and_then(|()| match case.data {
                     Some(
@@ -730,8 +731,13 @@ const SLOT_RELEASE_SEQ: u32 = 1;
 const SLOT_VARS: &str = "slot-vars.fd";
 
 /// A case's `differs` line: kept from its first boot, and on the next boot it
-/// must not be the same (two boots' ENTROPY samples).
-fn differs(run: &qemu::TestRun, sample: &mut Option<String>) -> Result<(), String> {
+/// must not be the same (two boots' ENTROPY samples), or with `near_pct`, must
+/// start with a number that close to the first's.
+fn differs(
+    run: &qemu::TestRun,
+    sample: &mut Option<String>,
+    near_pct: Option<u64>,
+) -> Result<(), String> {
     let Some((text, slot)) = &run.capture else {
         return Ok(());
     };
@@ -743,6 +749,9 @@ fn differs(run: &qemu::TestRun, sample: &mut Option<String>) -> Result<(), Strin
         return Err(format!("FAIL: no kernel line contained {text:?}"));
     };
     match sample.replace(got.clone()) {
+        Some(previous) if near_pct.is_some() => {
+            cases::near(text, &previous, &got, near_pct.unwrap_or(0))
+        }
         Some(previous) if previous == got => Err(format!(
             "FAIL: both boots printed {text:?} with the same {got:?}"
         )),
