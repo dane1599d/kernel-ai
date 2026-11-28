@@ -16,16 +16,18 @@
 //! `test=slot` drives the lever from the command line for the `slot-ab` case:
 //! `slot-do=commit`, `slot-do=stage` (the other slot, as `slot-seq=`),
 //! `slot-do=panic` (before the checks) and `slot-do=efi-fault` (a fault inside
-//! a firmware call, before the checks), each ending the boot in a reset; and
-//! the hangs only the watchdog ends, interrupts off for good: `slot-do=hang`
-//! (on the lever's CPU, before the checks), `slot-do=hang-cpu1` (on CPU 1,
-//! before the checks, so CPU 0 still ticks) and `slot-do=hang-up` (after *up*,
-//! on probation).
+//! a firmware call, before the checks), each ending the boot in a reset;
+//! `slot-do=wait`, which stays up twice the watchdog's time before its reset;
+//! and the hangs only the watchdog ends, interrupts off for good:
+//! `slot-do=hang` (on the lever's CPU, before the checks), `slot-do=hang-cpu1`
+//! (on CPU 1, before the checks, so CPU 0 still ticks) and `slot-do=hang-up`
+//! (after *up*, before probation starts).
 //!
 //! A boot of A or B runs with the hardware watchdog armed
 //! ([`crate::watchdog`]) from the PCI bind. Once the lever has read the record
 //! it stays armed for a trial, until probation commits it, and is disarmed
-//! for a committed slot or a boot the lever leaves.
+//! for a committed slot, no record or one that does not decode. A firmware
+//! read error leaves it armed: the read may pass on the next boot.
 
 use crate::efi::{self, Guid, KAI, NV_BS_RT};
 use crate::{bootfiles, ipc, log, threads};
@@ -91,16 +93,34 @@ pub fn this_slot() -> Option<Slot> {
 /// R stays up and writes nothing (ADR 0008), so the floors and the commits it
 /// held are never rebuilt from nothing, and a system slot boots without the
 /// lever and commits nothing.
-fn read_record() -> Result<Option<Record>, &'static str> {
+fn read_record() -> Result<Option<Record>, Unread> {
     let mut bytes = [0u8; 128];
     let found = match efi::get_variable(&KAI, RECORD, &mut bytes) {
         Ok(len) => Some(&bytes[..len]),
         Err(efi::Error::NotFound) => None,
-        Err(_) => return Err("slots: cannot read KaiBootState"),
+        Err(_) => return Err(Unread::Firmware),
     };
-    bootslot::read(found).map_err(|bootslot::Undecodable| {
-        "slots: KaiBootState does not decode (a bad CRC or a newer version); R stays up"
-    })
+    bootslot::read(found).map_err(|bootslot::Undecodable| Unread::Undecodable)
+}
+
+/// Why [`read_record`] has no record to give.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Unread {
+    /// GetVariable failed.
+    Firmware,
+    /// The bytes are there and do not decode.
+    Undecodable,
+}
+
+impl Unread {
+    fn message(self) -> &'static str {
+        match self {
+            Unread::Firmware => "slots: cannot read KaiBootState",
+            Unread::Undecodable => {
+                "slots: KaiBootState does not decode (a bad CRC or a newer version); R stays up"
+            }
+        }
+    }
 }
 
 /// Writes what `after` changed from `before`: the record, then the one-shot.
@@ -165,12 +185,16 @@ fn finish(after: &Nv, written: Result<(), efi::Error>) -> ! {
     efi::reset()
 }
 
+/// A hang has logged its line.
+static HUNG: AtomicBool = AtomicBool::new(false);
+
 /// The hangs' end: interrupts off on this CPU for good.
 fn hang() -> ! {
     log!(
         "slots: slot-do=hang: interrupts off on CPU {} for good",
         crate::percpu::index()
     );
+    HUNG.store(true, Ordering::Release);
     loop {
         x86_64::instructions::interrupts::disable();
         x86_64::instructions::hlt();
@@ -204,6 +228,7 @@ pub enum Action {
     Hang,
     HangCpu1,
     HangUp,
+    Wait,
 }
 
 fn action() -> Action {
@@ -216,6 +241,7 @@ fn action() -> Action {
         Some("hang") => Action::Hang,
         Some("hang-cpu1") => Action::HangCpu1,
         Some("hang-up") => Action::HangUp,
+        Some("wait") => Action::Wait,
         _ => Action::Restart,
     }
 }
@@ -251,9 +277,14 @@ fn lever(test: bool) {
     };
     let record = match read_record() {
         Ok(record) => record,
-        Err(message) => {
-            log!("{message}; booting without the lever");
-            crate::watchdog::disarm();
+        Err(unread) => {
+            log!("{}; booting without the lever", unread.message());
+            // A record that does not decode never will, and R stays up on
+            // it; a failed read may pass next time, so a trial that hangs
+            // still resets (#1632's review).
+            if unread == Unread::Undecodable {
+                crate::watchdog::disarm();
+            }
             return;
         }
     };
@@ -297,11 +328,22 @@ fn lever(test: bool) {
         hang();
     }
     if action == Action::HangCpu1 {
-        // Only CPU 1 stops: CPU 0's tick, which pets, goes on, so only the
-        // rule that every online CPU ticks resets this boot.
-        if let Err(why) = threads::spawn_pinned(1, "hang", |_| hang(), 0) {
+        // Only CPU 1 stops: CPU 0's tick, which pets, goes on, as the line
+        // after a second shows, so only the rule that every online CPU ticks
+        // resets this boot.
+        let pinned = threads::pin_current(Some(0))
+            .and_then(|()| threads::spawn_pinned(1, "hang", |_| hang(), 0));
+        if let Err(why) = pinned {
             crate::fail(&alloc::format!("slots: slot-do=hang-cpu1: {why}"));
         }
+        while !HUNG.load(Ordering::Acquire) {
+            threads::sleep_ms(10);
+        }
+        threads::sleep_ms(1_000);
+        log!(
+            "slots: slot-do=hang-cpu1: CPU {} still ticks 1 s after CPU 1 stopped",
+            crate::percpu::index()
+        );
         loop {
             threads::sleep_ms(60_000);
         }
@@ -361,7 +403,8 @@ fn lever(test: bool) {
         | Action::EfiFault
         | Action::Hang
         | Action::HangCpu1
-        | Action::HangUp => {}
+        | Action::HangUp
+        | Action::Wait => {}
     }
     // In [`bootslot::up_writes`]'s order: the fault path is told *up*'s
     // record before it is written, as BOOTREC_SET tells it, so a fault after
@@ -382,12 +425,20 @@ fn lever(test: bool) {
     );
     let written = written.map_err(|(UpFailed::Record(error) | UpFailed::OneShot(error))| error);
     if action == Action::HangUp {
-        // The one-shot still names a trial with tries left: the watchdog's
-        // reset boots it again, and that boot's *up* spends the next try.
+        // While tries are left, the one-shot names this slot again: the
+        // watchdog's reset boots it, and that boot's *up* spends the next
+        // try. After the last, R boots next.
         if let Err(error) = written {
             log!("slots: SetVariable failed: {error:?}");
         }
         hang();
+    }
+    if action == Action::Wait {
+        // Up past twice the watchdog's time: a disarm that left the device
+        // counting would reset this boot first (#1632's review).
+        let seconds = 2 * u64::from(crate::watchdog::trial_s()) + 2;
+        threads::sleep_ms(seconds * 1000);
+        log!("slots: slot-do=wait: up {seconds} s past the lever, with no reset");
     }
     if test {
         finish(&nv, written);
@@ -591,7 +642,7 @@ const UPDATE_CASE_MS: u64 = 240_000;
 
 /// `KaiBootState` as the firmware holds it, for BOOTREC_GET.
 pub fn record() -> Result<Option<Record>, &'static str> {
-    read_record()
+    read_record().map_err(Unread::message)
 }
 
 /// Whether this boot's slot is committed, for SLOT_WRITE's rule on R.

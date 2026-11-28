@@ -292,15 +292,16 @@ const A_PROBATION: TestCase = TestCase {
     )
 };
 /// Probation's idle rule: no requests, so 4 times `probation_ms` and 2 checks.
-/// The trial runs about 12 s against a 5 s watchdog, so the petting is what
-/// keeps it up (#1571's review): a watchdog reset fails the boot.
+/// The trial runs about 24 s against a 10 s watchdog, so the petting is what
+/// keeps it up (#1571's review): a watchdog reset fails the boot. 10 s, not
+/// 5, rides out a few seconds' vCPU stall (#1632's review).
 const A_IDLE: TestCase = TestCase {
     resets: false,
     ..boot(
-        "slot-idle (2: an idle kai-a commits, petted past a 5 s watchdog)",
-        "test=probation probation_calls=1000 probation_ms=3000 watchdog_s=5 panic=reset",
+        "slot-idle (2: an idle kai-a commits, petted past a 10 s watchdog)",
+        "test=probation probation_calls=1000 probation_ms=6000 watchdog_s=10 panic=reset",
         &[
-            "watchdog: armed for 5 s",
+            "watchdog: armed for 10 s",
             "probation: sent the shell 0 requests",
             "slots: kai-a passed probation (0 requests, ",
             "watchdog: disarmed",
