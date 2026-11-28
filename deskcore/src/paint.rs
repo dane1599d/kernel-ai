@@ -101,6 +101,9 @@ pub struct Painter {
     /// What the shadows drawn in the last [`Painter::paint`] left of the light
     /// at each px of the frame (255: none), for [`Painter::shade`].
     pub(crate) shade: alloc::vec::Vec<u8>,
+    /// Whether [`Painter::paint`] keeps [`Painter::shade`]: on unless
+    /// [`Painter::track_shade`] says no client's own px need it.
+    tracks_shade: bool,
 }
 
 /// `0xFF` alpha on a token.
@@ -141,6 +144,7 @@ impl Painter {
             monograms: alloc::vec::Vec::new(),
             covered: alloc::vec::Vec::new(),
             shade: alloc::vec::Vec::new(),
+            tracks_shade: true,
         })
     }
 
@@ -184,12 +188,23 @@ impl Painter {
         &self.shade
     }
 
-    /// Draws the shadow of a window at `r` into `c` and into [`Painter::shade`].
+    /// Whether the next [`Painter::paint`]s keep [`Painter::shade`]. Only a
+    /// client drawn at the screen's scale reads it, so `desktop` turns it off
+    /// when none is shown: the pass costs the full composite with Start and
+    /// the pane open a third. The buffer is left as it was, which is right
+    /// where it is read: a px a client owns was painted with it on.
+    pub fn track_shade(&mut self, on: bool) {
+        self.tracks_shade = on;
+    }
+
+    /// Draws the shadow of a window at `r` into `c`, and into
+    /// [`Painter::shade`] when that is kept.
     pub(crate) fn cast(&mut self, c: &mut Canvas<'_>, r: Rect, clip: Rect) {
-        let width = c.width as usize;
         for shadow in [&self.far, &self.near] {
-            shadow.draw(c, g(r), g(clip));
-            shadow.shade(&mut self.shade, width, g(r), g(clip));
+            match self.tracks_shade {
+                true => shadow.draw_shaded(c, &mut self.shade, g(r), g(clip)),
+                false => shadow.draw(c, g(r), g(clip)),
+            }
         }
     }
 
@@ -227,15 +242,17 @@ impl Painter {
     ) {
         let desk = scene.desk;
         self.covered.clear();
-        let (width, height) = (c.width as usize, c.height as usize);
-        if self.shade.len() != width * height {
-            self.shade = alloc::vec![255; width * height];
-        }
-        let cut = g(clip).intersect(&c.bounds());
-        for y in cut.y..cut.bottom() {
-            let from = y as usize * width + cut.x as usize;
-            if let Some(row) = self.shade.get_mut(from..from + cut.w as usize) {
-                row.fill(255);
+        if self.tracks_shade {
+            let (width, height) = (c.width as usize, c.height as usize);
+            if self.shade.len() != width * height {
+                self.shade = alloc::vec![255; width * height];
+            }
+            let cut = g(clip).intersect(&c.bounds());
+            for y in cut.y..cut.bottom() {
+                let from = y as usize * width + cut.x as usize;
+                if let Some(row) = self.shade.get_mut(from..from + cut.w as usize) {
+                    row.fill(255);
+                }
             }
         }
         c.fill(g(clip), opaque(self.palette.desk));

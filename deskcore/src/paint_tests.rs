@@ -668,3 +668,30 @@ fn the_arrow_covers_its_own_px_and_nothing_round_it() {
         }
     }
 }
+
+/// With no client drawn at the screen's scale the shadows' light is not kept:
+/// the frame is the same px, and the buffer is not written.
+#[test]
+fn the_frame_is_the_same_when_the_shadows_light_is_not_kept() {
+    let (w, h) = (1280, 720);
+    let mut desk = Desk::new(w, h);
+    let size = Size { w: 600, h: 400 };
+    desk.open(1, "app", "App", size, true);
+    desk.open(2, "app", "Other", size, true);
+    let (panel, chat) = (Panel::new(), crate::chat::Chat::default());
+    let scene = scene_of(&desk, &panel, &chat);
+    let mut frames = Vec::new();
+    for tracked in [true, false] {
+        let mut painter = Painter::new(FONTS).expect("the fonts parse");
+        painter.track_shade(tracked);
+        let mut content = |_: crate::desk::WindowId, _: &mut gfx2d::Canvas<'_>, _: Rect| true;
+        let image = painted(&mut painter, &scene, w, h, &mut content);
+        assert_eq!(
+            painter.shade().iter().any(|&v| v < 255),
+            tracked,
+            "tracked: {tracked}"
+        );
+        frames.push(image.px);
+    }
+    assert!(frames[0] == frames[1], "the frames differ");
+}

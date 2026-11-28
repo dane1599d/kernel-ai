@@ -1,0 +1,8 @@
+needed-by: P3, built 2026-11-28 (lane G; the manager's ask after (g) at 1920x1080 went over its budget on the first run in most KVM jobs and split batch #1686)
+decision: the painter keeps the shadows' light only while a client drawn at the screen's scale is shown, and does it in the shadow's own pass; (g)'s budget is unchanged
+---
+(g)'s p50 at 1920x1080 on the 20 ms-reference runners (Xeon, one family) was 5.4 to 6.2 ms and (a)'s 4.1 ms in every main run of 2026-11-26 up to 20:10Z (commit 40d6ddeb). The run at 22:13Z (c6a70bb3, batch #1468) had (g) 8.08 and (a) 4.99, and every run after has (g) 7.2 to 8.1 and (a) about 5.0 on the same family: (g) 1.30 to 1.40 times higher, (a) 1.2 times, with the reference unchanged (20.1 to 21.3 ms). #1468's H6-19 made every shadow draw (the focused window's, the pane's, Start's, two layers each) walk its px a second time to keep how much light is left, for the overlay, which only a client drawn at the screen's scale reads. At 1x, as the perf cases run at 1920x1080, there is none.
+
+`Painter::track_shade` (on by default) is turned off by `desktop` unless the scale is not 1x and a window is shown drawn at it, and with it on `Shadow::draw_shaded` does the draw and the light in one pass. A host timing of a 1920x1080 frame with two windows: 1.29 to 1.44 ms with the light kept, 1.00 to 1.06 ms without. The frame's px are the same either way (`the_frame_is_the_same_when_the_shadows_light_is_not_kept`), and the H6-19 tests still pass with it on.
+
+The budget stays: no step in (g)'s work grew beyond this pass, and the runs before #1468 had it within 8.00 ms with room. If the CI runs of the PR still show (g) near 7.5 ms on 1.0x runners, the rest of #1468's batch (H6-20's damage merging) is the next to look at.
