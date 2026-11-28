@@ -212,6 +212,12 @@ impl Files for Replaced<'_> {
     }
 }
 
+/// The image check with `replaced` in place of the sample repository's `path`.
+pub fn check_replaced(path: &str, replaced: &[u8]) -> Result<image::Checked, String> {
+    let mut files = Replaced { path, replaced };
+    image::check(&mut files, PROVIDED).map_err(|e| format!("{e:?}"))
+}
+
 /// The image check over the sample repository, every package kept.
 pub fn check_sample() -> image::Checked {
     let mut files = Replaced {
@@ -241,12 +247,43 @@ pub fn tuf_metadata(bytes: &[u8]) {
         replaced: rest,
     };
     if let Ok(checked) = image::check(&mut files, PROVIDED) {
+        same_signed_bytes(path, rest);
         // Only what the signed metadata names is kept, each package whole.
         for (entry, bytes) in &checked.packages {
             assert_eq!(kaipkg::sha256(bytes), entry.sha, "{}", entry.name);
             assert!(bundle::files(bytes).is_ok(), "{}", entry.name);
         }
     }
+}
+
+/// The canonical bytes of the signed part of metadata file `path`, which its
+/// signatures cover, read as its role; None when `bytes` is not that role's.
+pub fn signed_bytes(path: &str, bytes: &[u8]) -> Option<Vec<u8>> {
+    let name = path.strip_prefix("metadata/")?;
+    let role = name.rsplit('.').nth(1)?;
+    match role {
+        "root" => Root::parse(bytes).ok().map(|m| m.canonical),
+        "timestamp" => Timestamp::parse(bytes).ok().map(|m| m.canonical),
+        "snapshot" => Snapshot::parse(bytes).ok().map(|m| m.canonical),
+        // The delegated roles (packages, models) are targets files too.
+        "targets" | "packages" | "models" => Targets::parse(bytes).ok().map(|m| m.canonical),
+        _ => None,
+    }
+}
+
+/// The image check took `replaced` in place of the sample repository's file
+/// `path`. A metadata file it took says exactly what the original's signed
+/// part said: TUF signs canonical bytes, so a re-spaced or re-ordered copy may
+/// pass, and no other change may.
+pub fn same_signed_bytes(path: &str, replaced: &[u8]) {
+    let Some(original) = signed_bytes(path, &repository()[path]) else {
+        return;
+    };
+    assert_eq!(
+        signed_bytes(path, replaced).as_deref(),
+        Some(original.as_slice()),
+        "{path}: the image check took metadata whose signed part changed"
+    );
 }
 
 fn canonical<T>(meta: Result<Meta<T>, kaituf::Error>) {
