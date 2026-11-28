@@ -486,6 +486,17 @@ fn check(handle: Handle) -> Result<(), String> {
             "refused: {active:?} is a trial and {other:?} is committed; staging {other:?} would leave nothing to fall back to"
         ));
     }
+    // Before anything is staged: the running slot's image at its own size, as
+    // an update writes one. That is its FAT32 volume, not the whole partition,
+    // which is larger (ADR 0008 §1), rounded up to whole blocks ([`BLOCK`]);
+    // past the volume is the partition's.
+    let sectors = image_sectors(handle, active as u64)?.next_multiple_of(BLOCK / SECTOR);
+    let room = info(other as u64)?.sectors;
+    if sectors > room {
+        return Err(format!(
+            "the running slot's image is {sectors} sectors, more than {other:?}'s {room}"
+        ));
+    }
     let mut bad = nv.record.encode();
     bad[10] ^= 0xFF;
     if sys::bootrec_set(handle, &bad, NONE, false) != Err(Error::Invalid) {
@@ -498,15 +509,6 @@ fn check(handle: Handle) -> Result<(), String> {
     set(handle, &nv, false)?;
     println!("updated: BOOTREC_SET refuses a bad record and arming a slot being written");
 
-    // The running slot's image at its own size, as an update writes one: its
-    // FAT32 volume, not the whole partition, which is larger (ADR 0008 §1).
-    let sectors = image_sectors(handle, active as u64)?;
-    let room = info(other as u64)?.sectors;
-    if sectors > room {
-        return Err(format!(
-            "the running slot's image is {sectors} sectors, more than {other:?}'s {room}"
-        ));
-    }
     copy(handle, active as u64, other as u64, sectors)?;
     bootslot::stage_end(&mut nv, other, STAGED_RELEASE);
     bootslot::restart_into(&mut nv, other);
@@ -582,9 +584,8 @@ fn image_sectors(handle: Handle, slot: u64) -> Result<u64, String> {
 }
 
 /// Copies `sectors` sectors of slot `from` into slot `to`, flushes, and reads
-/// them back, in whole blocks ([`BLOCK`]): past the volume is the partition's.
+/// them back. `sectors` is whole blocks, so every write is.
 fn copy(handle: Handle, from: u64, to: u64, sectors: u64) -> Result<(), String> {
-    let sectors = sectors.next_multiple_of(BLOCK / SECTOR);
     let step = MAX_IO / SECTOR;
     let mut buf = vec![0u8; MAX_IO as usize];
     let mut back = vec![0u8; MAX_IO as usize];

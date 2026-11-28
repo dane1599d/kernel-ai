@@ -291,35 +291,9 @@ pub(super) fn write(
     }
     if let Some((old, (first, sectors))) = keep {
         let sector = u64::from(SECTOR);
-        copy_range(old, &mut file, first * sector, sectors * sector)?;
+        super::slot_data::copy_range(old, &mut file, first * sector, sectors * sector)?;
     }
     file.sync_all().map_err(fail)
-}
-
-/// Copies the `len` bytes at `at` of the file `old` into `to`, a new file of
-/// zeros, at the same place, a MiB at a time. A MiB of zeros is not written,
-/// so it stays sparse in `to`.
-fn copy_range(old: &Path, to: &mut fs::File, at: u64, len: u64) -> Result<(), String> {
-    use std::io::{Read, Seek, SeekFrom, Write};
-    let shown = old.display();
-    let mut from = fs::File::open(old).map_err(|e| format!("cannot read {shown}: {e}"))?;
-    from.seek(SeekFrom::Start(at))
-        .map_err(|e| format!("cannot read {shown}: {e}"))?;
-    let zeros = vec![0u8; MIB as usize];
-    let mut piece = vec![0u8; MIB as usize];
-    let mut done = 0;
-    while done < len {
-        let n = (len - done).min(MIB) as usize;
-        from.read_exact(&mut piece[..n])
-            .map_err(|e| format!("cannot read {shown}: {e}"))?;
-        if piece[..n] != zeros[..n] {
-            to.seek(SeekFrom::Start(at + done))
-                .and_then(|_| to.write_all(&piece[..n]))
-                .map_err(|e| format!("cannot copy slot B from {shown}: {e}"))?;
-        }
-        done += n as u64;
-    }
-    Ok(())
 }
 
 /// [`build`], but slot B keeps the bytes it holds in the disk already at `out`

@@ -19,8 +19,9 @@ pub const READ_BACK: &str = "the slot reads back other than the signed image";
 /// How much of the slot one read-back step reads: the kernel's `MAX_IO`.
 const STEP: usize = 1 << 20;
 
-/// The idle slot, by byte offset. A write may be a partial last sector: the
-/// implementation pads it with zeros.
+/// The idle slot, by byte offset. A write starts on a 4 KiB block
+/// ([`crate::blocks::BLOCK`]), and its partial last block is padded with zeros
+/// by the implementation ([`crate::blocks::write_blocks`]).
 pub trait SlotIo {
     fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), &'static str>;
     /// Fills `buf` from `offset`.

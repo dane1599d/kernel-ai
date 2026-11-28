@@ -869,20 +869,18 @@ fn update_disk(
     efi: &Path,
     update: cases::UpdateDisk,
 ) -> Result<String, String> {
-    let (image, release) = update_image(root, target_dir, kernel, modules, efi)?;
+    let (mut image, release) = update_image(root, target_dir, kernel, modules, efi)?;
+    image.resize(image.len() + 512 * usize::from(update.uneven), 0);
     let disk =
         image::update_disk::TestRoot::signed_disk(&image, release, update.tampered, update.signer)?;
     let name = String::from("update.img");
     fs::write(target_dir.join(&name), &disk).map_err(|e| format!("cannot write {name}: {e}"))?;
+    let flipped = [", one byte of the image flipped", ""][usize::from(!update.tampered)];
     println!(
-        "xtask: update disk {name}: release {release}, {} MiB, signed under {:?}{}",
+        "xtask: update disk {name}: release {release}, {} bytes of image, {} MiB, signed under {:?}{flipped}",
+        image.len(),
         disk.len() >> 20,
         update.signer,
-        if update.tampered {
-            ", one byte of the image flipped"
-        } else {
-            ""
-        }
     );
     Ok(name)
 }

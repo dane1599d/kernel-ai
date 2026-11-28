@@ -38,6 +38,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
+pub mod blocks;
 pub mod net;
 pub mod plan;
 pub mod slot;

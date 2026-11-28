@@ -33,11 +33,12 @@ use alloc::vec;
 use alloc::vec::Vec;
 use bootslot::{Nv, Record, Slot};
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP};
-use kabi::update::{BLOCK, MAX_IO, SECTOR};
+use kabi::update::{MAX_IO, SECTOR};
 use kainet::chunks::{CHUNK, MAX_LIST};
 use kainet::download::Report;
 use kainet::http::{Keep, TlsConnect, Url};
 use kaipkg::online::{Hosts, Online};
+use updatenet::blocks;
 use updatenet::net::Over;
 use updatenet::plan::{self, Job, Machine};
 use updatenet::slot::{Checkpoint, Mark, SlotIo, SlotPartial};
@@ -95,8 +96,10 @@ fn netdest() -> Option<Handle> {
         .map(|info| Handle(info.handle))
 }
 
-/// The slot `slot`, as `updatenet` writes and reads it: by byte offset, on
-/// sectors, in the kernel's largest I/O.
+/// The slot `slot`, as `updatenet` writes and reads it: by byte offset, in the
+/// kernel's largest I/O. A write starts on a 4 KiB block and its partial last
+/// block is padded with zeros ([`blocks::write_blocks`]); a read starts on a
+/// sector.
 struct Slots<'a> {
     handle: Handle,
     slot: u64,
@@ -106,26 +109,14 @@ struct Slots<'a> {
 
 impl SlotIo for Slots<'_> {
     fn write(&mut self, offset: u64, bytes: &[u8]) -> Result<(), &'static str> {
-        if !offset.is_multiple_of(BLOCK) {
-            return Err("a slot write starts on a block");
-        }
-        let mut done = 0;
-        while done < bytes.len() {
+        let (handle, slot, split) = (self.handle, self.slot, self.split);
+        blocks::write_blocks(offset, bytes, &mut self.buf, |sector, piece| {
             let began = sys::time_ns();
-            let n = (bytes.len() - done).min(MAX_IO as usize);
-            let padded = n.next_multiple_of(BLOCK as usize);
-            // A last partial block is written whole, zero past the image's end.
-            self.buf[..n].copy_from_slice(&bytes[done..done + n]);
-            self.buf[n..padded].fill(0);
-            let sector = (offset + done as u64) / SECTOR;
-            sys::slot_write(self.handle, self.slot, sector, &self.buf[..padded])
-                .map_err(|_| "SLOT_WRITE failed")?;
-            self.split
-                .wrote(began, sys::time_ns().saturating_sub(began));
-            done += n;
-            pause(sector + (n as u64).div_ceil(SECTOR));
-        }
-        Ok(())
+            sys::slot_write(handle, slot, sector, piece).map_err(|_| "SLOT_WRITE failed")?;
+            split.wrote(began, sys::time_ns().saturating_sub(began));
+            pause(sector + piece.len() as u64 / SECTOR);
+            Ok(())
+        })
     }
 
     fn read(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), &'static str> {

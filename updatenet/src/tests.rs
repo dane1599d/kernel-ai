@@ -122,6 +122,7 @@ fn signed(r: &Release7) -> impl FnMut() -> Result<(TargetFile, TargetFile), Refu
     move || Ok(pair.clone())
 }
 
+mod blocks;
 mod recheck;
 mod stage;
 
@@ -286,6 +287,14 @@ fn an_image_longer_than_the_slot_or_already_staged_is_refused() {
             room: bytes.len() as u64 - 1
         })
     );
+    // The last write is padded to a whole 4 KiB block, which must fit too.
+    m.room = bytes.len() as u64;
+    assert!(matches!(
+        plan::plan(&target, &list, &m, &hosts()),
+        Err(Refused::Room { .. })
+    ));
+    m.room = crate::blocks::padded(bytes.len() as u64);
+    assert!(plan::plan(&target, &list, &m, &hosts()).is_ok());
     // The idle slot holds release 7 as a trial: staged already.
     let mut staged = record;
     staged.slots[Slot::B as usize] = SlotState {

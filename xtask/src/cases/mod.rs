@@ -218,6 +218,9 @@ pub struct UpdateDisk {
     pub tampered: bool,
     /// The test root that signs its metadata.
     pub signer: crate::image::update_disk::Signer,
+    /// The image gets one more 512-byte sector of zeros before it is signed,
+    /// so it is not whole 4 KiB blocks and `updated` pads its last write (G58).
+    pub uneven: bool,
 }
 
 impl UpdateDisk {
@@ -225,6 +228,12 @@ impl UpdateDisk {
     pub const ROOT1: Self = Self {
         tampered: false,
         signer: crate::image::update_disk::Signer::Root1,
+        uneven: false,
+    };
+    /// [`Self::ROOT1`], one sector past whole 4 KiB blocks.
+    pub const UNEVEN: Self = Self {
+        uneven: true,
+        ..Self::ROOT1
     };
     /// [`Self::ROOT1`] with one byte of the image flipped after signing.
     pub const TAMPERED: Self = Self {

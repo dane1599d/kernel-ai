@@ -220,7 +220,8 @@ const UPDATE_3: TestCase = TestCase {
 const UPDATE_2: TestCase = TestCase {
     then: Some(&UPDATE_3),
     data: Some(VIRTIO),
-    update: Some(UpdateDisk::ROOT1),
+    // One sector past whole blocks: the last write is padded.
+    update: Some(UpdateDisk::UNEVEN),
     ..slot(
         "update-4k (2: updated writes kai-b from the disk)",
         "test=update updated=update panic=reset",

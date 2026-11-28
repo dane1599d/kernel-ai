@@ -222,7 +222,7 @@ pub fn plan(
             newest,
         });
     }
-    if release.length == 0 || release.length > machine.room {
+    if release.length == 0 || crate::blocks::padded(release.length) > machine.room {
         return Err(Refused::Room {
             need: release.length,
             room: machine.room,
