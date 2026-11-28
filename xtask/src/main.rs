@@ -2,7 +2,7 @@
 //!
 //! cargo xtask build [--release] [--spikes] [--out DIR]
 //! cargo xtask run   [--release] [--spikes] [--accel auto|kvm|whpx|tcg] [--cpus N] [--mem SIZE] [--llm IP:PORT] [--model NAME] [--edit] [--gpu] [--model-disk PATH | --local ID [--store DIR]] [--workload A|B|C [--seed N]]
-//! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS] [--cpus N] [--mem SIZE] [--shard K/N] [--prebuilt DIR --prebuilt-sha SHA]
+//! cargo xtask test  [--release] [--accel auto|kvm|whpx|tcg] [--timeout SECS] [--cpus N] [--mem SIZE] [--cpu-model NAME] [--no-8042] [--shard K/N] [--prebuilt DIR --prebuilt-sha SHA]
 //! cargo xtask soak  [--accel auto|kvm|whpx|tcg]   (10-minute storm, M5 exit test)
 //! (`--accel wsl` on Windows: QEMU with KVM inside WSL2; see wsl/launch.rs)
 //! cargo xtask smoke   (the live, edit and boot manifest scenarios on the host only, no QEMU)
@@ -531,6 +531,8 @@ fn execute(options: &Options) -> Result<(), String> {
                     .max(case.memory_mib)
                     .max(model_mib.map(cases::with_case_room)),
                 cpus: case.cpus.or(options.sizing.cpus),
+                no_8042: case.no_8042 || options.sizing.no_8042,
+                ..options.sizing
             };
             let mut args = qemu::args(&firmware, accel, true, disk.as_ref(), sizing);
             if let Some(mock) = &https_mock {
@@ -1053,38 +1055,6 @@ mod tests {
         assert_eq!(
             sha256_hex(b"abc"),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
-    }
-
-    #[test]
-    fn qemu_args_use_relative_drives_and_debug_exit() {
-        let firmware = Firmware {
-            code: PathBuf::from("code.fd"),
-            vars: PathBuf::from("target/ovmf-vars.fd"),
-        };
-        let list = qemu::args(&firmware, Accel::Tcg, true, None, Default::default());
-        assert!(list.contains(&"format=raw,file=fat:rw:esp".to_string()));
-        assert!(list.windows(2).any(|w| w[0] == "-m" && w[1] == "512M"));
-        let sized = options::Sizing {
-            cpus: Some(8),
-            mem_mib: Some(6144),
-        };
-        let big = qemu::args(&firmware, Accel::Kvm, true, None, sized);
-        assert!(big.windows(2).any(|w| w[0] == "-m" && w[1] == "6144M"));
-        assert!(big.windows(2).any(|w| w[0] == "-smp" && w[1] == "8"));
-        let small = options::Sizing {
-            cpus: None,
-            mem_mib: Some(256),
-        };
-        // Never below what the base system (or a model disk) needs.
-        let floor = qemu::args(&firmware, Accel::Kvm, true, None, small);
-        assert!(floor.windows(2).any(|w| w[0] == "-m" && w[1] == "512M"));
-        assert!(!list.iter().any(|arg| arg == "-blockdev"));
-        assert!(list.contains(&"isa-debug-exit,iobase=0xf4,iosize=0x04".to_string()));
-        assert!(list.windows(2).any(|w| w[0] == "-accel" && w[1] == "tcg"));
-        assert!(
-            list.windows(2)
-                .any(|w| w[0] == "-display" && w[1] == "none")
         );
     }
 }

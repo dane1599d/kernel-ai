@@ -212,6 +212,19 @@ pub(super) const CASES: &[TestCase] = &[
         ],
         ..case("usb-tablet", "test=usb")
     },
+    // G56: a board with no 8042, as many AM5 boards are. QEMU's FADT says so,
+    // the kernel skips the 8042, and the USB keyboard still types.
+    TestCase {
+        usb: &["usb-kbd", "usb-tablet"],
+        keys: &[USB_TABLET],
+        no_8042: true,
+        expect: &[
+            "i8042: the FADT says this machine has no 8042; skipped",
+            ": keyboard 0627:0001, ",
+            "usb: received \"kai\" over USB",
+        ],
+        ..case("no-8042", "test=usb")
+    },
     // P7: a keyboard and a relative mouse (boot protocol) on xHCI.
     TestCase {
         usb: &["usb-kbd", "usb-mouse"],
