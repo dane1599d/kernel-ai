@@ -35,6 +35,11 @@ const RING_HOLD_AT: u64 = 4 * 1024 * 1024;
 /// kick (its `avail_event`) before it gets buffers back.
 const DRY_WITHIN_MS: u64 = 10_000;
 const DRY_FOR_MS: u64 = 100;
+/// [`ring_download`] fails when this long passes with no data, the time the
+/// buffers are withheld aside: its own deadline, not [`FIRST_BYTE_MS`] for all
+/// [`RING_BYTES`], so a slow run (TCG) fails on its floor, not here (#1633's
+/// review).
+const RING_STALL_MS: u64 = 20_000;
 /// Reads that returned data whose polls [`ring_check`] counts.
 const POLL_SAMPLES: usize = 16;
 
@@ -86,7 +91,9 @@ pub fn check(cmdline: &str) -> Result<(), &'static str> {
 /// (a poll before the read too would make it two). Then the card is given no
 /// receive buffers back until it holds none, however many frames the sender
 /// keeps in flight; it must hold none, and once it gets them back it must be
-/// kicked and the download must reach [`RING_BYTES`].
+/// kicked and the download must reach [`RING_BYTES`]. The card must offer
+/// EVENT_IDX: without it every batch kicks, and the dry ring would pass
+/// without testing `avail_event` (#1633's review).
 fn ring_check(server: core::net::Ipv4Addr, port: u16) -> Result<(), &'static str> {
     let id = stream::connect(OWNER, server, port, true, None, None)
         .map_err(|_| "net-throughput: cannot connect to the blob server again")?;
@@ -96,6 +103,11 @@ fn ring_check(server: core::net::Ipv4Addr, port: u16) -> Result<(), &'static str
     let _ = stream::close(OWNER, id);
     let ring = result?;
     let (_, event_idx) = net::card_ring().ok_or("net-throughput: the card is gone")?;
+    if !event_idx {
+        return Err(
+            "net-throughput: the card did not offer EVENT_IDX, so the dry ring tests no kick",
+        );
+    }
     log!(
         "net-throughput: the fewest polls of {POLL_SAMPLES} reads with data was {}; event_idx={event_idx}; the card held {} receive buffers once dry; rx kicks {} before the buffers went back, {} after; {} frames came by the first read with data after",
         ring.fewest_polls,
@@ -142,10 +154,12 @@ fn ring_download(id: u64) -> Result<Ring, &'static str> {
     let mut first_frames = None;
     let mut dry_since: Option<u64> = None;
     let mut withheld_at = None;
-    let start = hpet::nanos();
+    // The last data, or the buffers going back: a stall counts from there.
+    let mut moving = hpet::nanos();
     while bytes < RING_BYTES {
         let now = hpet::nanos();
-        if now.saturating_sub(start) >= FIRST_BYTE_MS * 1_000_000 {
+        let withheld = withheld_at.is_some() && given_back.is_none();
+        if !withheld && now.saturating_sub(moving) >= RING_STALL_MS * 1_000_000 {
             return Err("net-throughput: the second download stalled");
         }
         if let Some(at) = withheld_at
@@ -162,6 +176,7 @@ fn ring_download(id: u64) -> Result<Ring, &'static str> {
                 let (frames, kicks, _) = net::card_counts();
                 given_back = Some((held, kicks, frames));
                 net::withhold_receive_buffers(false);
+                moving = now;
                 if !dry_long {
                     break;
                 }
@@ -172,6 +187,7 @@ fn ring_download(id: u64) -> Result<Ring, &'static str> {
             Ok(0) => return Err("net-throughput: the second download ended early"),
             Ok(n) => {
                 bytes += n as u64;
+                moving = hpet::nanos();
                 if let Some((_, _, frames)) = given_back
                     && first_frames.is_none()
                 {
