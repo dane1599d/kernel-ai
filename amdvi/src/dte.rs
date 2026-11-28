@@ -10,7 +10,7 @@
 //! | 51:12   | Host Page Table Root Pointer, bits 51:12       |
 //! | 61, 62  | IR, IW: reads and writes are allowed           |
 //! | 79:64   | DomainID                                       |
-//! | 96      | I: the device's IOTLB is used (ATS)            |
+//! | 96      | I: the device's IOTLB is used (ATS); refused until IOTLB invalidation exists |
 //! | 97, 98  | SE, SA: suppress the device's events, or all   |
 //!
 //! The interrupt fields (bits 128-191) are left zero, IV clear: interrupt
@@ -63,6 +63,9 @@ pub enum DteError {
     Levels(u8),
     /// A root not 4 KiB aligned, or above bit 51.
     Root(u64),
+    /// The I bit: a device IOTLB needs ATS and its own invalidations
+    /// (INVALIDATE_IOTLB_PAGES), which this crate does not send yet.
+    Iotlb,
 }
 
 impl DeviceEntry {
@@ -101,8 +104,17 @@ impl DeviceEntry {
         Ok(entry)
     }
 
+    /// A confined device's entry for `table`: its root and its levels.
+    pub fn paged_for(domain: u16, table: &crate::pagetable::IoPageTable) -> Self {
+        Self::paged(domain, table.levels(), table.root())
+            .expect("an IoPageTable's root and levels fit an entry")
+    }
+
     /// The four words, in the order they sit in the table.
     pub fn encode(&self) -> Result<[u64; 4], DteError> {
+        if self.iotlb {
+            return Err(DteError::Iotlb);
+        }
         let (mode, root) = match self.paging {
             Paging::Off => (0, 0),
             Paging::Tables { levels, root } => {

@@ -5,6 +5,7 @@ use amdvi::dte::{DeviceEntry, DteError, ENTRY_BYTES, Paging, table_bytes};
 
 #[path = "../../testkit/hostile.rs"]
 mod hostile;
+mod kit;
 
 const IR_IW: u64 = 1 << 61 | 1 << 62;
 
@@ -49,7 +50,6 @@ fn each_flag_has_its_own_bit() {
     assert_eq!(one(|e| e.translation_valid = true), [1 << 1, 0, 0, 0]);
     assert_eq!(one(|e| e.read = true), [1 << 61, 0, 0, 0]);
     assert_eq!(one(|e| e.write = true), [1 << 62, 0, 0, 0]);
-    assert_eq!(one(|e| e.iotlb = true), [0, 1 << 32, 0, 0]);
     assert_eq!(one(|e| e.suppress_events = true), [0, 1 << 33, 0, 0]);
     assert_eq!(one(|e| e.suppress_all = true), [0, 1 << 34, 0, 0]);
     assert_eq!(one(|e| e.domain = 0xffff), [0, 0xffff, 0, 0]);
@@ -89,6 +89,10 @@ fn any_words_decode_to_what_they_encode() {
             assert_eq!(words[0] >> 9 & 7, 7);
             continue;
         };
+        if entry.iotlb {
+            assert_eq!(entry.encode(), Err(DteError::Iotlb));
+            continue;
+        }
         let again = entry.encode().unwrap();
         let mut low = words[0] & KNOWN0;
         if entry.paging == Paging::Off {
@@ -98,6 +102,34 @@ fn any_words_decode_to_what_they_encode() {
         assert_eq!(again, [low, words[1] & KNOWN1, 0, 0]);
         assert_eq!(DeviceEntry::decode(again), Ok(entry));
     }
+}
+
+/// The I bit is read but never written: a device IOTLB needs ATS and its
+/// own invalidations first.
+#[test]
+fn an_iotlb_entry_is_refused() {
+    let entry = DeviceEntry {
+        iotlb: true,
+        ..DeviceEntry::pass_through(1)
+    };
+    assert_eq!(entry.encode(), Err(DteError::Iotlb));
+    assert!(DeviceEntry::decode([1, 1 << 32, 0, 0]).unwrap().iotlb);
+}
+
+/// An entry made for a page table carries its root and levels.
+#[test]
+fn an_entry_for_a_page_table_names_its_root_and_levels() {
+    let mut dma = kit::FakeDma::new();
+    let table = amdvi::pagetable::IoPageTable::new(&mut dma, 4).unwrap();
+    let entry = DeviceEntry::paged_for(5, &table);
+    assert_eq!(
+        entry.paging,
+        Paging::Tables {
+            levels: 4,
+            root: table.root()
+        }
+    );
+    assert_eq!(entry.encode().unwrap()[0] >> 9 & 7, 4);
 }
 
 #[test]

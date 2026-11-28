@@ -14,9 +14,14 @@
 //! | 62    | IW: writes allowed (likewise)                          |
 //!
 //! Only 4 KiB pages are written. A PDE allows both reads and writes, so a
-//! page's own PTE decides. After [`IoPageTable::unmap`], the caller must
-//! send INVALIDATE_IOMMU_PAGES for the domain and wait for it
-//! ([`crate::command`]) before it reuses the frames.
+//! page's own PTE decides.
+//!
+//! The IOMMU caches PDEs, so a table taken out of the tree may still be
+//! walked through an old IOVA. Such a table is never freed here: it goes to
+//! [`DmaAlloc::retire`], and the caller frees it only after an
+//! INVALIDATE_IOMMU_PAGES with PDE set for the domain and a COMPLETION_WAIT
+//! after it have completed ([`crate::command`]). The unmapped pages need the
+//! same invalidation before their frames are reused.
 
 use crate::{ADDRESS_MASK, bit, field, page_address};
 
@@ -35,8 +40,11 @@ const IW: u32 = 62;
 pub trait DmaAlloc {
     /// A zeroed frame's physical address, or `None` when memory is short.
     fn alloc(&mut self) -> Option<u64>;
-    /// Gives back a frame [`DmaAlloc::alloc`] gave.
-    fn free(&mut self, phys: u64);
+    /// Takes back a table [`DmaAlloc::alloc`] gave, now out of the tree.
+    /// It must not be reused until the domain's PDE cache is invalidated
+    /// and a COMPLETION_WAIT after that has completed: the IOMMU may still
+    /// walk it through an old IOVA until then.
+    fn retire(&mut self, phys: u64);
     /// Entry `index` of the table at `phys`.
     fn read(&self, phys: u64, index: usize) -> u64;
     fn write(&mut self, phys: u64, index: usize, value: u64);
@@ -188,7 +196,9 @@ impl IoPageTable {
 
     /// Maps `pages` pages from `iova` to the frames from `phys`, all or
     /// none: nothing in the range may be mapped already, and a shortage of
-    /// tables part way undoes the pages it mapped.
+    /// tables part way undoes the pages it mapped. The tables that undoing
+    /// empties are retired, so an `Err(NoMemory)` needs the same
+    /// invalidation as an unmap before they are freed.
     pub fn map(
         &mut self,
         a: &mut impl DmaAlloc,
@@ -220,7 +230,7 @@ impl IoPageTable {
                 // Tables made for this page before the shortage are empty.
                 self.prune(a, page);
                 for done in (iova..page).step_by(PAGE as usize) {
-                    self.unmap_one(a, done);
+                    let _ = self.unmap_one(a, done);
                 }
                 return Err(e);
             }
@@ -254,35 +264,38 @@ impl IoPageTable {
     }
 
     /// Unmaps `pages` pages from `iova`, all or none: each must be mapped.
-    /// A table left empty is freed, except the root.
+    /// A table left empty is retired, except the root. `Ok(true)` when any
+    /// was: the invalidation must then have PDE set.
     pub fn unmap(
         &mut self,
         a: &mut impl DmaAlloc,
         iova: u64,
         pages: usize,
-    ) -> Result<(), MapError> {
+    ) -> Result<bool, MapError> {
         let end = self.span(iova, pages)?;
         for page in (iova..end).step_by(PAGE as usize) {
             if let Walk::Missing(..) = self.walk(a, page)? {
                 return Err(MapError::NotMapped(page));
             }
         }
+        let mut retired = false;
         for page in (iova..end).step_by(PAGE as usize) {
-            self.unmap_one(a, page);
+            retired |= self.unmap_one(a, page);
         }
-        Ok(())
+        Ok(retired)
     }
 
-    fn unmap_one(&mut self, a: &mut impl DmaAlloc, iova: u64) {
+    /// Clears `iova`'s PTE and prunes its path: whether a table was retired.
+    fn unmap_one(&mut self, a: &mut impl DmaAlloc, iova: u64) -> bool {
         if let Ok(Walk::Page(table, at)) = self.walk(a, iova) {
             a.write(table, at, 0);
         }
-        self.prune(a, iova);
+        self.prune(a, iova)
     }
 
-    /// Frees the empty tables on `iova`'s path, deepest first, and clears
-    /// the entries that pointed at them. The root stays.
-    fn prune(&mut self, a: &mut impl DmaAlloc, iova: u64) {
+    /// Retires the empty tables on `iova`'s path, deepest first, and clears
+    /// the entries that pointed at them. The root stays. Whether any was.
+    fn prune(&mut self, a: &mut impl DmaAlloc, iova: u64) -> bool {
         // (parent table, index there, the table it points at), from the root.
         let mut path = [(0u64, 0usize, 0u64); 6];
         let mut depth = 0;
@@ -298,28 +311,34 @@ impl IoPageTable {
             depth += 1;
             table = next;
         }
+        let mut retired = false;
         for &(parent, at, table) in path[..depth].iter().rev() {
             if (0..ENTRIES).any(|i| a.read(table, i) != 0) {
-                return;
+                break;
             }
             a.write(parent, at, 0);
-            a.free(table);
+            a.retire(table);
+            retired = true;
         }
+        retired
     }
 
-    /// Frees every table, the root included.
+    /// Retires every table, the root included, once no device table entry
+    /// points at the root any more. Only entries this crate writes are
+    /// followed: a PDE whose Next Level is not one below its own is not.
     pub fn destroy(self, a: &mut impl DmaAlloc) {
-        fn free(a: &mut impl DmaAlloc, table: u64, level: u8) {
+        fn retire(a: &mut impl DmaAlloc, table: u64, level: u8) {
             if level > 1 {
                 for at in 0..ENTRIES {
                     let entry = a.read(table, at);
-                    if entry & PR != 0 {
-                        free(a, entry & ADDRESS_MASK, level - 1);
+                    let next = field(entry, NEXT_LEVEL, NEXT_LEVEL + 2);
+                    if entry & PR != 0 && next == u64::from(level - 1) {
+                        retire(a, entry & ADDRESS_MASK, level - 1);
                     }
                 }
             }
-            a.free(table);
+            a.retire(table);
         }
-        free(a, self.root, self.levels);
+        retire(a, self.root, self.levels);
     }
 }

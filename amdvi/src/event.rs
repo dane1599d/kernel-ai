@@ -69,7 +69,10 @@ impl Flags {
     pub fn translation_request(self) -> bool {
         self.at(24)
     }
-    /// Type (26:25) of a hardware error: what the IOMMU was reading.
+    /// Type (26:25) of a hardware error: what the IOMMU was reading. For
+    /// INVALID_DEVICE_REQUEST the type field's width is unsure (it may run
+    /// to bit 27); only bits 26:25 are read here until QEMU or the spec
+    /// settles it.
     pub fn kind(self) -> u8 {
         (u32::from(self.0) >> 9 & 3) as u8
     }

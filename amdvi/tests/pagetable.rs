@@ -67,10 +67,10 @@ fn a_range_across_tables_maps_and_unmaps_back_to_the_root() {
         t.translate(&dma, 0x4000_0000),
         Some((0x40_1000, Access::READ_WRITE))
     );
-    t.unmap(&mut dma, 0x1f_f000, 2).unwrap();
+    assert!(t.unmap(&mut dma, 0x1f_f000, 2).unwrap());
     // Its two level-1 tables go; the level-2 one holds the other range.
     assert_eq!(dma.live(), 6);
-    t.unmap(&mut dma, 0x3fff_f000, 2).unwrap();
+    assert!(t.unmap(&mut dma, 0x3fff_f000, 2).unwrap());
     assert_eq!(dma.live(), 1, "only the root is left");
     assert_eq!(t.translate(&dma, 0x4000_0000), None);
     t.destroy(&mut dma);
@@ -197,7 +197,7 @@ impl DmaAlloc for Garbage {
     fn alloc(&mut self) -> Option<u64> {
         (self.0.below(4) != 0).then(|| (self.0.next() & 0xfff_ffff_f000) | 0x1000)
     }
-    fn free(&mut self, _: u64) {}
+    fn retire(&mut self, _: u64) {}
     fn read(&self, phys: u64, index: usize) -> u64 {
         // The same word each time for the same place.
         let mut rng = hostile::XorShift::new(self.1 ^ phys ^ (index as u64) << 52);
@@ -225,4 +225,87 @@ fn walks_of_hostile_tables_end() {
             let _ = t.unmap(&mut a, iova, 2);
         }
     }
+}
+
+/// A table taken out of the tree is retired, not freed: until the caller's
+/// invalidation releases it, no new table is made from it.
+#[test]
+fn a_retired_table_is_not_reused_until_its_invalidation() {
+    let mut dma = FakeDma::new();
+    let mut t = table(&mut dma);
+    t.map(&mut dma, 0, 0x5000, 2, Access::READ).unwrap();
+    // One page of two: its level-1 table still holds the other.
+    assert!(!t.unmap(&mut dma, 0x1000, 1).unwrap());
+    assert!(dma.retired.is_empty());
+    assert!(t.unmap(&mut dma, 0, 1).unwrap());
+    assert_eq!(dma.retired.len(), 3);
+    let retired = dma.retired.clone();
+    t.map(&mut dma, 1 << 40, 0x9000, 1, Access::READ).unwrap();
+    assert!(dma.frames.keys().all(|f| !retired.contains(f)));
+    assert_eq!(t.translate(&dma, 0), None);
+    // Released, poisoned and given again: zeroed, and the new path works.
+    dma.release_retired();
+    t.map(&mut dma, 1 << 41, 0xa000, 1, Access::READ).unwrap();
+    assert!(dma.frames.keys().filter(|f| retired.contains(f)).count() == 3);
+    assert_eq!(t.translate(&dma, 1 << 41), Some((0xa000, Access::READ)));
+    assert_eq!(t.translate(&dma, 1 << 40), Some((0x9000, Access::READ)));
+    for frame in &retired {
+        assert!(dma.frames[frame].iter().all(|&e| e != kit::POISON));
+    }
+}
+
+/// Five and six levels: the top IOVAs map, translate and unmap back to the
+/// root, one table per level.
+#[test]
+fn five_and_six_levels_round_trip() {
+    // Six levels index bits 63:57 at the top; the very last page is out, as
+    // a range's end cannot be 2^64.
+    for (levels, iova) in [(5u8, (1u64 << 57) - PAGE), (6, (1 << 63) - PAGE)] {
+        let mut dma = FakeDma::new();
+        let mut t = IoPageTable::new(&mut dma, levels).unwrap();
+        assert_eq!(t.limit(), (levels == 5).then_some(1 << 57));
+        t.map(&mut dma, iova, 0x7000, 1, Access::READ_WRITE)
+            .unwrap();
+        assert_eq!(dma.live(), usize::from(levels));
+        assert_eq!(
+            t.translate(&dma, iova + 8),
+            Some((0x7008, Access::READ_WRITE))
+        );
+        assert_eq!(t.translate(&dma, iova - PAGE), None);
+        assert!(t.unmap(&mut dma, iova, 1).unwrap());
+        assert_eq!(dma.live(), 1);
+        t.destroy(&mut dma);
+        assert_eq!((dma.live(), dma.retired.len()), (0, usize::from(levels)));
+    }
+}
+
+/// A shortage beside a mapping it shares tables with: the mapping stays,
+/// every table it uses stays, and only what the failed map made is retired.
+#[test]
+fn a_shortage_beside_an_existing_mapping_leaves_it_whole() {
+    let mut dma = FakeDma::with_frames(4);
+    let mut t = table(&mut dma);
+    t.map(&mut dma, 0x1f_f000, 0x5000, 1, Access::READ).unwrap();
+    let before = dma.frames.clone();
+    // The next page needs a second level-1 table, and none is left.
+    assert_eq!(
+        t.map(&mut dma, 0x20_0000, 0x6000, 1, Access::READ),
+        Err(MapError::NoMemory)
+    );
+    assert_eq!(dma.frames, before);
+    assert!(dma.retired.is_empty());
+    assert_eq!(t.translate(&dma, 0x1f_f000), Some((0x5000, Access::READ)));
+    assert_eq!(t.translate(&dma, 0x20_0000), None);
+    // With room for one more table but not two: the one made is retired.
+    let mut dma = FakeDma::with_frames(5);
+    let mut t = table(&mut dma);
+    t.map(&mut dma, 0, 0x5000, 1, Access::READ).unwrap();
+    let before = dma.frames.clone();
+    assert_eq!(
+        t.map(&mut dma, 1 << 30, 0x6000, 1, Access::READ),
+        Err(MapError::NoMemory)
+    );
+    assert_eq!(dma.frames, before);
+    assert_eq!(dma.retired.len(), 1);
+    assert_eq!(t.translate(&dma, 0), Some((0x5000, Access::READ)));
 }
