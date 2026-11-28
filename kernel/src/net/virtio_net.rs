@@ -252,7 +252,11 @@ impl<H: Hal, T: Transport + EventIndex, const SIZE: usize> VirtioNet<H, T, SIZE>
 /// `avail_event` or the published index. How many were added.
 ///
 /// The range is the published index's, read from the ring, so a buffer added
-/// some other way than `add_receive` or `transmit_begin` is in it too.
+/// some other way than `add_receive` or `transmit_begin` is in it too, but
+/// only in a batch that also had an add through one of those: with none,
+/// `added` is 0 and the ring is not read, so such a buffer waits for the
+/// next batch that has one (#1633's review). Every buffer the driver adds
+/// goes through those two today.
 /// [`netcore::kick::need_event`] holds for under 65,536 adds between two
 /// checks; more than a queue's `SIZE` cannot come from one poll's refill, so
 /// that many kick without the check (#1623's review).

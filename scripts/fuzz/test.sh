@@ -40,6 +40,24 @@ check "a # inside quotes is kept" "h fuzz_targets/h#1.rs" \
   '[[bin]]\nname = "h"  # a comment\npath = "fuzz_targets/h#1.rs" # another\n'
 check "a commented-out [[bin]] is absent" "" \
   '# [[bin]]\n# name = "d"\n# path = "fuzz_targets/d.rs"\n'
+check "an escaped quote and backslash in a \"...\" value" 'q"1 fuzz_targets/q\1.rs' \
+  '[[bin]]\nname = "q\\"1"\npath = "fuzz_targets/q\\\\1.rs" # "x"\n'
+check "a '...' value has no escapes" 'r\\ fuzz_targets/r.rs' \
+  "[[bin]]\nname = 'r\\\\\\\\'\npath = 'fuzz_targets/r.rs'\n"
+
+fails_on() {  # $1 description, $2 the table text: bins.awk must exit 1 and print nothing
+  printf '%b' "$2" > "$T/Cargo.toml"
+  local got status
+  got=$(awk -f "$HERE/bins.awk" "$T/Cargo.toml" 2>/dev/null); status=$?
+  if [ "$status" = 1 ] && [ -z "$got" ]; then echo "ok   $1"; else
+    echo "FAIL $1: exit $status, printed '$got'"; fails=$((fails+1)); fi
+}
+fails_on "a \" value with no closing quote fails" \
+  '[[bin]]\nname = "a"\npath = "fuzz_targets/a.rs\n[[bin]]\nname = "b"\npath = "fuzz_targets/b.rs"\n'
+fails_on "a ' value with no closing quote fails" \
+  "[[bin]]\nname = 'a\npath = 'fuzz_targets/a.rs'\n"
+fails_on "an escaped closing quote does not close" \
+  '[[bin]]\nname = "a\\"\npath = "fuzz_targets/a.rs"\n'
 
 bins=$(awk -f "$HERE/bins.awk" "$ROOT/fuzz/Cargo.toml")
 for f in "$ROOT"/fuzz/fuzz_targets/*.rs; do
