@@ -98,6 +98,9 @@ pub enum Signer {
     /// The rotated root, v2, with `2.root.json` signed by v1's root key and
     /// v2's.
     Root2,
+    /// [`Self::Root2`], but `2.root.json` signed by v2's root key alone: a
+    /// rotation the device must refuse, since v1's root role never signed it.
+    Root2OneKey,
 }
 
 /// This run's throwaway test root: four keys and the time the metadata counts
@@ -298,11 +301,15 @@ impl TestRoot {
         let v1 = test_root()?;
         match signer {
             Signer::Root1 => v1.disk(image, release_seq, tampered),
-            Signer::Root2 => {
+            Signer::Root2 | Signer::Root2OneKey => {
                 let v2 = rotated()?;
+                let rotation = match signer {
+                    Signer::Root2 => v1.rotation(v2)?,
+                    _ => envelope_by(&v2.root_signed(2), &[&v2.root])?,
+                };
                 let roots = vec![
                     ("metadata/1.root.json".into(), v1.root_json()?),
-                    ("metadata/2.root.json".into(), v1.rotation(v2)?),
+                    ("metadata/2.root.json".into(), rotation),
                 ];
                 v2.disk_from(image, release_seq, tampered, roots)
             }
@@ -438,6 +445,13 @@ mod tests {
             v1.rotation(v2).unwrap(),
             "the root fell back"
         );
+
+        // The boot case's disk: a rotation signed by v2's root key alone.
+        let one = TestRoot::signed_disk(&image, 2, false, Signer::Root2OneKey).unwrap();
+        let mut fresh = Memory::default();
+        fresh.0.insert("root".into(), v1.root_json().unwrap());
+        let got = refresh(&one, &mut fresh).unwrap_err();
+        assert!(got.contains("threshold: root has 0 valid"), "{got}");
 
         // A rotation signed by v2's root key alone, or v1's alone.
         for keys in [[&v2.root], [&v1.root]] {
