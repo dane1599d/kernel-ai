@@ -15,13 +15,7 @@
 //!   touched", "notes/q3 isn't to be touched", "notes/q3 stays untouched",
 //!   "notes/q3 is off limits". Every negation counts, a negation of worry
 //!   ("don't bother with notes/q3") and one that describes files ("the files
-//!   that are not pdfs into notes/other") too. But one of the negations this
-//!   pass adds that only says how a folder is keeps nothing off: "isn't",
-//!   "aren't" or "wasn't", or "neither ... is", then a state word
-//!   ([`STATES`]): "notes/q3 isn't sorted yet, sort it", "neither notes/q3
-//!   nor notes/q4 is sorted yet" (#1650's review). Main keeps those goals too.
-//!   Its path is still the topic a later "it" points back to: "notes/q3 isn't
-//!   sorted, don't touch it" refuses.
+//!   that are not pdfs into notes/other") too.
 //! - **An exclusion** ([`EXCLUSIONS`], "apart from", "other than", "everything
 //!   but", "keep out of", "leave out" ...) keeps off the paths after it up to a
 //!   destination ("into", "to", "onto"): "trash notes/ except notes/q3" keeps
@@ -112,40 +106,6 @@ const NEGATIONS: &[&str] = &[
     "avoid",
     "avoiding",
 ];
-
-/// The negations #1650 added that only say how a folder is when a state word
-/// follows: "notes/q3 isn't sorted yet". Main's own ("not") are left as main
-/// reads them.
-const COPULAR_NEGATIONS: &[&str] = &["isnt", "isn't", "arent", "aren't", "wasnt", "wasn't"];
-
-/// Words that say how a folder is, not what is done to it: after one of
-/// [`COPULAR_NEGATIONS`], or after "neither ... is", the negation keeps
-/// nothing off. A word that could name the goal's own change ("touched",
-/// "moved", "renamed", "archived") is not one.
-const STATES: &[&str] = &[
-    "sorted",
-    "done",
-    "finished",
-    "ready",
-    "complete",
-    "completed",
-    "empty",
-    "tidy",
-    "tidied",
-    "organized",
-    "organised",
-    "clean",
-    "full",
-    "backed",
-    "synced",
-    "tagged",
-    "labelled",
-    "labeled",
-];
-
-/// Words that may stand between such a negation and its state word:
-/// "isn't yet sorted".
-const STATE_FILLER: &[&str] = &["yet", "quite", "fully", "all", "really", "properly"];
 
 /// Words that may lead a list item before a row's cue that ends the list:
 /// "don't touch the finals, just trash notes/old".
@@ -305,19 +265,14 @@ pub(super) fn kept_off(line: &str, starts_order: impl Fn(&str) -> bool) -> Optio
         if let Some(path) = in_clause(words) {
             return Some(path);
         }
-        let keeps_off_at = |i: usize| {
-            let w = &words[i];
-            (is_negation(&w.text) && !describes(words, i)) || EXCLUSIONS.contains(&w.text.as_str())
-        };
+        let keeps_off = |w: &Word| is_negation(&w.text) || EXCLUSIONS.contains(&w.text.as_str());
         // A pointer after the first word that keeps off points back; whether
         // only filler follows is read after the last, so a negation main did
         // not know ("the backup isn't done so don't, under any circumstances,
         // touch notes/q3") never turns its Open carry into a List (#1650's
         // review).
-        if let Some(first) = (0..words.len()).find(|&i| keeps_off_at(i)) {
-            let last = (0..words.len())
-                .rfind(|&i| keeps_off_at(i))
-                .unwrap_or(first);
+        if let Some(first) = words.iter().position(keeps_off) {
+            let last = words.iter().rposition(keeps_off).unwrap_or(first);
             let points_back = words[first + 1..]
                 .iter()
                 .any(|w| POINTERS.contains(&w.text.as_str()));
@@ -334,15 +289,10 @@ pub(super) fn kept_off(line: &str, starts_order: impl Fn(&str) -> bool) -> Optio
             // comma): the list may go on.
             carry = Carry::List;
         }
-        // A clause that only says how its one path is ("notes/q3 isn't
-        // sorted") makes it the topic too, so "..., don't touch it" keeps it
-        // off.
-        let says_how = (0..words.len()).any(|i| is_negation(&words[i].text) && describes(words, i));
         topic = match words.iter().filter(|w| w.path).count() {
-            1 if says_how
-                || words
-                    .iter()
-                    .all(|w| w.path || TOPIC_FILLER.contains(&w.text.as_str())) =>
+            1 if words
+                .iter()
+                .all(|w| w.path || TOPIC_FILLER.contains(&w.text.as_str())) =>
             {
                 words.iter().find(|w| w.path).map(|w| w.text.as_str())
             }
@@ -392,29 +342,6 @@ fn list_item(words: &[Word], starts_order: impl Fn(&str) -> bool) -> bool {
             .all(|w| !w.path && !is_negation(&w.text) && !EXCLUSIONS.contains(&w.text.as_str()))
 }
 
-/// Whether the negation at `at` only says how a folder is: one of
-/// [`COPULAR_NEGATIONS`], or "neither" and its "is", "are" or "was", then a
-/// [`STATES`] word ("notes/q3 isn't sorted yet", "neither notes/q3 nor
-/// notes/q4 is sorted").
-fn describes(words: &[Word], at: usize) -> bool {
-    let word = words[at].text.as_str();
-    let from = match word {
-        _ if COPULAR_NEGATIONS.contains(&word) => at + 1,
-        "neither" => match words[at + 1..]
-            .iter()
-            .position(|w| matches!(w.text.as_str(), "is" | "are" | "was"))
-        {
-            Some(copula) => at + 2 + copula,
-            None => return false,
-        },
-        _ => return false,
-    };
-    words[from.min(words.len())..]
-        .iter()
-        .find(|w| !STATE_FILLER.contains(&w.text.as_str()))
-        .is_some_and(|w| STATES.contains(&w.text.as_str()))
-}
-
 /// The first path one clause keeps off on its own.
 fn in_clause(words: &[Word]) -> Option<String> {
     let text = |i: usize| words.get(i).map_or("", |w| w.text.as_str());
@@ -425,7 +352,7 @@ fn in_clause(words: &[Word]) -> Option<String> {
             .take_while(|w| !DESTINATIONS.contains(&w.text.as_str()))
     };
     for (i, word) in words.iter().enumerate() {
-        if is_negation(&word.text) && !describes(words, i) {
+        if is_negation(&word.text) {
             if let Some(path) = words[i + 1..].iter().find(|w| w.path) {
                 return Some(path.text.clone());
             }

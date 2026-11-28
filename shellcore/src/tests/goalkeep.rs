@@ -453,59 +453,6 @@ fn a_negated_folder_is_refused_by_the_rows() {
     );
 }
 
-/// #1650's LOWs: a negation #1650 added that only says how a folder is
-/// ("isn't sorted yet", "neither ... is sorted yet") keeps the goal, as on
-/// main; the same words that keep a folder off still refuse.
-#[test]
-fn a_new_negation_that_says_how_a_folder_is_keeps_the_goal() {
-    for line in [
-        "notes/q3 isn't sorted yet, sort it by topic",
-        "neither notes/q3 nor notes/q4 is sorted yet, so sort both",
-        "notes/q3 isnt done yet, sort it",
-        "notes/q3 and notes/q4 aren't sorted, sort them",
-        "notes/q3 wasn't backed up, so sort it first",
-    ] {
-        assert_eq!(crate::goalkeep::kept_off(line, |_| false), None, "{line}");
-        let scope = crate::goalscope::scope(line, |_| Ok(()));
-        assert!(scope.is_ok(), "{line}: {scope:?}");
-    }
-    for (line, path) in [
-        (
-            "trash the drafts in notes/old; notes/q3 isn't to be touched",
-            "notes/q3",
-        ),
-        (
-            "trash the drafts in notes/old; notes/q3 isn't touched",
-            "notes/q3",
-        ),
-        (
-            "trash the drafts in notes/old; neither notes/q3 nor notes/q4 is to be touched",
-            "notes/q3",
-        ),
-        (
-            "trash the drafts in notes/old; neither notes/q3 nor notes/q4 should be touched",
-            "notes/q3",
-        ),
-        (
-            "trash the drafts in notes/old, notes/q3 isn't sorted, but leave notes/q3 alone",
-            "notes/q3",
-        ),
-        (
-            "trash the drafts in notes/old but notes/q3 isn't, ever",
-            "notes/q3",
-        ),
-        // Its path is still what a later "it" points back to.
-        ("notes/q3 isn't sorted, don't touch it", "notes/q3"),
-        ("notes/q3 isn't sorted yet; never touch it", "notes/q3"),
-    ] {
-        assert_eq!(
-            crate::goalscope::scope(line, |_| Ok(())),
-            Err(kept_off_refusal(path)),
-            "{line}"
-        );
-    }
-}
-
 /// #1650's LOWs: misses main also had. A row's cue inside a list item does
 /// not end the list, an Oxford comma does not either, and a child folder by
 /// its bare name is read as a negation's subject.
