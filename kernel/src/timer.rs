@@ -3,7 +3,10 @@
 //!
 //! Each tick re-arms the timer for an absolute deadline measured on the HPET, so
 //! interrupt latency never accumulates into drift. The same one-shot mechanism
-//! will later allow tickless idle. Under VirtualBox on Hyper-V every tick costs two
+//! will later allow tickless idle, but not as it stands: the hardware watchdog
+//! is petted only once every online CPU has ticked ([`crate::watchdog`]), so
+//! an idle CPU that stopped ticking would reset a healthy trial; tickless idle
+//! must have `watchdog::on_tick` skip idle CPUs first. Under VirtualBox on Hyper-V every tick costs two
 //! exits to VirtualBox's local APIC emulation, and 8 vCPUs ticking at 1 kHz leave
 //! the guest a few percent of its CPU time; `cargo xtask vbox` boots with `hz=250`.
 

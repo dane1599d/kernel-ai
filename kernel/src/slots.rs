@@ -16,12 +16,16 @@
 //! `test=slot` drives the lever from the command line for the `slot-ab` case:
 //! `slot-do=commit`, `slot-do=stage` (the other slot, as `slot-seq=`),
 //! `slot-do=panic` (before the checks) and `slot-do=efi-fault` (a fault inside
-//! a firmware call, before the checks), each ending the boot in a reset, and
-//! `slot-do=hang` (interrupts off for good, before the checks), which only the
-//! watchdog ends.
+//! a firmware call, before the checks), each ending the boot in a reset; and
+//! the hangs only the watchdog ends, interrupts off for good: `slot-do=hang`
+//! (on the lever's CPU, before the checks), `slot-do=hang-cpu1` (on CPU 1,
+//! before the checks, so CPU 0 still ticks) and `slot-do=hang-up` (after *up*,
+//! on probation).
 //!
-//! A trial boot runs with the hardware watchdog armed ([`crate::watchdog`])
-//! from the moment the lever finds it a trial until probation commits it.
+//! A boot of A or B runs with the hardware watchdog armed
+//! ([`crate::watchdog`]) from the PCI bind. Once the lever has read the record
+//! it stays armed for a trial, until probation commits it, and is disarmed
+//! for a committed slot or a boot the lever leaves.
 
 use crate::efi::{self, Guid, KAI, NV_BS_RT};
 use crate::{bootfiles, ipc, log, threads};
@@ -161,6 +165,18 @@ fn finish(after: &Nv, written: Result<(), efi::Error>) -> ! {
     efi::reset()
 }
 
+/// The hangs' end: interrupts off on this CPU for good.
+fn hang() -> ! {
+    log!(
+        "slots: slot-do=hang: interrupts off on CPU {} for good",
+        crate::percpu::index()
+    );
+    loop {
+        x86_64::instructions::interrupts::disable();
+        x86_64::instructions::hlt();
+    }
+}
+
 fn describe(record: &Record, slot: Slot) -> &'static str {
     let state = record.slot(slot);
     match (state.successful, state.tries) {
@@ -186,6 +202,8 @@ pub enum Action {
     Panic,
     EfiFault,
     Hang,
+    HangCpu1,
+    HangUp,
 }
 
 fn action() -> Action {
@@ -196,6 +214,8 @@ fn action() -> Action {
         Some("panic") => Action::Panic,
         Some("efi-fault") => Action::EfiFault,
         Some("hang") => Action::Hang,
+        Some("hang-cpu1") => Action::HangCpu1,
+        Some("hang-up") => Action::HangUp,
         _ => Action::Restart,
     }
 }
@@ -233,6 +253,7 @@ fn lever(test: bool) {
         Ok(record) => record,
         Err(message) => {
             log!("{message}; booting without the lever");
+            crate::watchdog::disarm();
             return;
         }
     };
@@ -257,22 +278,32 @@ fn lever(test: bool) {
                 "slots: no record in {}; booting without the lever",
                 entry_id(slot)
             );
+            crate::watchdog::disarm();
             return;
         }
         bootslot::Start::Slot(_) => {}
     }
     *BOOTED.lock() = Some((before, slot));
     // A trial that hangs with interrupts off resets, and R counts the lost
-    // boot (ADR 0008 §5).
-    if !before.record.slot(slot).successful && !crate::watchdog::arm(crate::watchdog::trial_s()) {
+    // boot (ADR 0008 §5). The bind armed it already; a committed slot needs
+    // none.
+    if before.record.slot(slot).successful {
+        crate::watchdog::disarm();
+    } else if !crate::watchdog::armed() && !crate::watchdog::arm(crate::watchdog::trial_s()) {
         log!("slots: no hardware watchdog for this trial");
     }
     let action = if test { action() } else { Action::Restart };
     if action == Action::Hang {
-        log!("slots: slot-do=hang: interrupts off on this CPU for good");
+        hang();
+    }
+    if action == Action::HangCpu1 {
+        // Only CPU 1 stops: CPU 0's tick, which pets, goes on, so only the
+        // rule that every online CPU ticks resets this boot.
+        if let Err(why) = threads::spawn_pinned(1, "hang", |_| hang(), 0) {
+            crate::fail(&alloc::format!("slots: slot-do=hang-cpu1: {why}"));
+        }
         loop {
-            x86_64::instructions::interrupts::disable();
-            x86_64::instructions::hlt();
+            threads::sleep_ms(60_000);
         }
     }
     if action == Action::Panic {
@@ -325,7 +356,12 @@ fn lever(test: bool) {
                 entry_id(other)
             );
         }
-        Action::Restart | Action::Panic | Action::EfiFault | Action::Hang => {}
+        Action::Restart
+        | Action::Panic
+        | Action::EfiFault
+        | Action::Hang
+        | Action::HangCpu1
+        | Action::HangUp => {}
     }
     // In [`bootslot::up_writes`]'s order: the fault path is told *up*'s
     // record before it is written, as BOOTREC_SET tells it, so a fault after
@@ -345,6 +381,14 @@ fn lever(test: bool) {
         || UP_LOST.store(true, Ordering::SeqCst),
     );
     let written = written.map_err(|(UpFailed::Record(error) | UpFailed::OneShot(error))| error);
+    if action == Action::HangUp {
+        // The one-shot still names a trial with tries left: the watchdog's
+        // reset boots it again, and that boot's *up* spends the next try.
+        if let Err(error) = written {
+            log!("slots: SetVariable failed: {error:?}");
+        }
+        hang();
+    }
     if test {
         finish(&nv, written);
     }

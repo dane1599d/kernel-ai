@@ -10,6 +10,9 @@ use super::{TestCase, UpdateDisk, case};
 use crate::blklog::Data;
 use crate::disk::Fixture;
 
+mod watchdog;
+use watchdog::{HC_HANGS, HU_COMMITS, WD_COMMITS};
+
 /// A `kai-data` disk for `fs`, so `updated` has `/system/trust` and
 /// `/system/updates`; one per chained case, kept across its boots.
 pub(super) const DATA: Data = Data {
@@ -128,106 +131,6 @@ const A_COMMITS: TestCase = TestCase {
         &[
             "slots: booted kai-a (record read)",
             "slots: up in kai-a (trial, 2 tries left)",
-            "slots: committed kai-a",
-            "slots: next boot kai-a",
-        ],
-    )
-};
-
-/// `watchdog-hang` (ADR 0008 §5): B, staged, hangs with interrupts off before
-/// its checks on each of its three tries. Only the i6300esb resets it, so R
-/// finds a boot that never came up, spends a try for it, and after the third
-/// moves to A. The watchdog gives a trial 5 s here.
-const fn hangs(name: &'static str) -> TestCase {
-    TestCase {
-        watchdog: true,
-        ..boot(
-            name,
-            "test=slot slot-do=hang watchdog_s=5 panic=reset",
-            &[
-                "slots: booted kai-b",
-                "watchdog: armed for 5 s",
-                "slots: slot-do=hang: interrupts off on this CPU for good",
-            ],
-        )
-    }
-}
-
-const WD_A_AGAIN: TestCase = boot(
-    "watchdog-hang (10: back on kai-a)",
-    "test=slot watchdog_s=5 panic=reset",
-    &[
-        "slots: booted kai-a (record read)",
-        "slots: up in kai-a (committed, 0 tries left)",
-        "slots: kai-b cannot boot (Unbootable)",
-        "slots: next boot kai-a",
-    ],
-);
-const WD_R_GIVES_UP: TestCase = TestCase {
-    then: Some(&WD_A_AGAIN),
-    ..boot(
-        "watchdog-hang (9: R moves to kai-a)",
-        "test=slot watchdog_s=5 panic=reset",
-        &[
-            "slots: booted recovery (record read)",
-            "slots: R arms kai-a (committed)",
-        ],
-    )
-};
-const WD_HANG_3: TestCase = TestCase {
-    then: Some(&WD_R_GIVES_UP),
-    ..hangs("watchdog-hang (8: kai-b hangs a third time)")
-};
-const WD_R_RETRIES_2: TestCase = TestCase {
-    then: Some(&WD_HANG_3),
-    ..boot(
-        "watchdog-hang (7: R tries kai-b again)",
-        "test=slot watchdog_s=5 panic=reset",
-        &[
-            "slots: booted recovery (record read)",
-            "slots: R arms kai-b (trial)",
-        ],
-    )
-};
-const WD_HANG_2: TestCase = TestCase {
-    then: Some(&WD_R_RETRIES_2),
-    ..hangs("watchdog-hang (6: kai-b hangs again)")
-};
-const WD_R_RETRIES: TestCase = TestCase {
-    then: Some(&WD_HANG_2),
-    ..boot(
-        "watchdog-hang (5: R tries kai-b again)",
-        "test=slot watchdog_s=5 panic=reset",
-        &[
-            "slots: booted recovery (record read)",
-            "slots: R arms kai-b (trial)",
-        ],
-    )
-};
-const WD_HANG: TestCase = TestCase {
-    then: Some(&WD_R_RETRIES),
-    ..hangs("watchdog-hang (4: kai-b hangs before its checks)")
-};
-const WD_STAGES_B: TestCase = TestCase {
-    then: Some(&WD_HANG),
-    ..boot(
-        "watchdog-hang (3: kai-a stages kai-b)",
-        "test=slot slot-do=stage slot-seq=2 watchdog_s=5 panic=reset",
-        &[
-            "slots: up in kai-a (committed, 0 tries left)",
-            "slots: staged kai-b as release 2; restarting into it",
-            "slots: next boot kai-b",
-        ],
-    )
-};
-const WD_COMMITS: TestCase = TestCase {
-    then: Some(&WD_STAGES_B),
-    ..boot(
-        "watchdog-hang (2: kai-a commits)",
-        "test=slot slot-do=commit watchdog_s=5 panic=reset",
-        &[
-            "slots: booted kai-a (record read)",
-            "watchdog: armed for 5 s",
             "slots: committed kai-a",
             "slots: next boot kai-a",
         ],
@@ -389,14 +292,18 @@ const A_PROBATION: TestCase = TestCase {
     )
 };
 /// Probation's idle rule: no requests, so 4 times `probation_ms` and 2 checks.
+/// The trial runs about 12 s against a 5 s watchdog, so the petting is what
+/// keeps it up (#1571's review): a watchdog reset fails the boot.
 const A_IDLE: TestCase = TestCase {
     resets: false,
     ..boot(
-        "slot-idle (2: an idle kai-a commits)",
-        "test=probation probation_calls=1000 probation_ms=1000 panic=reset",
+        "slot-idle (2: an idle kai-a commits, petted past a 5 s watchdog)",
+        "test=probation probation_calls=1000 probation_ms=3000 watchdog_s=5 panic=reset",
         &[
+            "watchdog: armed for 5 s",
             "probation: sent the shell 0 requests",
             "slots: kai-a passed probation (0 requests, ",
+            "watchdog: disarmed",
             "probation: kai-a is committed",
         ],
     )
@@ -619,6 +526,15 @@ pub(super) const CASES: &[TestCase] = &[
     TestCase {
         then: Some(&WD_COMMITS),
         ..boot("watchdog-hang", "test=slot panic=reset", INSTALL)
+    },
+    // The same on CPU 1 alone, and after *up* on probation (#1571's review).
+    TestCase {
+        then: Some(&HC_HANGS),
+        ..boot("watchdog-hang-cpu1", "test=slot panic=reset", INSTALL)
+    },
+    TestCase {
+        then: Some(&HU_COMMITS),
+        ..boot("watchdog-hang-up", "test=slot panic=reset", INSTALL)
     },
     // The Update kind (ADR 0008 §10): `updated` alone reaches the slots and the
     // boot record, and stages the slot that is not running.
