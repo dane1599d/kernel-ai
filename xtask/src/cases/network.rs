@@ -99,6 +99,8 @@ pub(super) const CASES: &[TestCase] = &[
             "net-stream: streams echoed through the handle, kept to its port and to 16, and closed",
             // QEMU's virtio-net has MSI-X: frames wake the net thread (P5 plan 3.2).
             "net-stream: the card raised ",
+            // G67: kicked only when the card asked to hear of the buffers.
+            "net-stream: the card was kicked for receive buffers under once in 8 frames",
             // Not "[netstream-b] holding 3 streams": the kernel kills b once
             // its own count shows 3 open, which can be before b's line reaches
             // the console (run 41942359956). That count is the proof b held them.
@@ -134,6 +136,7 @@ pub(super) const CASES: &[TestCase] = &[
             ", polled; ",
             "net-stream: streams echoed through the handle, kept to its port and to 16, and closed",
             "net-stream: the card was polled, with no receive interrupts",
+            "net-stream: the card was kicked for receive buffers under once in 8 frames",
             "net-stream: a process killed with 3 streams open left none",
             "net-stream: a revoke aborted the 3 streams on a granted NetDest and its narrowing at once; each use after answered Revoked",
             "net-stream: a refused HANDLE_REPLACE closed the stream with its handle: 17 in a row never met the limit of 16",

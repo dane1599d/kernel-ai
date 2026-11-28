@@ -315,6 +315,13 @@ pub fn parse_endpoint(text: &str) -> Option<(Ipv4Addr, u16)> {
     Some((host.parse().ok()?, port.parse().ok().filter(|&p| p > 0)?))
 }
 
+/// Frames the card received, and its kicks for receive buffers and for frames
+/// to send, since boot.
+pub fn card_counts() -> (u64, u64, u64) {
+    let (rx, tx) = virtio_net::kicks();
+    (device::received(), rx, tx)
+}
+
 /// Receive interrupts taken so far; None when the card is polled.
 pub fn interrupts_taken() -> Option<u64> {
     wake::is_on().then(wake::taken)
