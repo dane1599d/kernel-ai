@@ -236,6 +236,22 @@ struct Slot {
     record: SlotRecord,
     ep0: u64,
     cycle: bool,
+    /// Between Enable Slot and Disable Slot.
+    enabled: bool,
+    /// Interrupt endpoints' transfer rings, by DCI: where the next TRB is.
+    rings: BTreeMap<u8, (u64, bool)>,
+}
+
+impl Slot {
+    fn new() -> Self {
+        Self {
+            record: SlotRecord::default(),
+            ep0: 0,
+            cycle: true,
+            enabled: true,
+            rings: BTreeMap::new(),
+        }
+    }
 }
 
 struct Xhc {
@@ -273,7 +289,14 @@ pub struct Fake {
 impl Fake {
     /// A controller whose root ports 1, 2, ... have `ports` plugged in.
     pub fn new(ports: Vec<Option<Device>>) -> Self {
-        let root = vec![PortRegs::default(); ports.len()];
+        // As QEMU's are at start: a connected port has its connect change set.
+        let root = ports
+            .iter()
+            .map(|device| PortRegs {
+                change: u32::from(device.is_some()) * port::CONNECT_CHANGE,
+                ..PortRegs::default()
+            })
+            .collect();
         Self {
             state: Rc::new(RefCell::new(Xhc {
                 ports,
@@ -311,6 +334,72 @@ impl Fake {
     /// The commands the controller ran, by TRB type.
     pub fn commands(&self) -> Vec<u8> {
         self.state.borrow().commands.clone()
+    }
+
+    /// Whether slot `slot` is enabled (Enable Slot and no Disable Slot since).
+    pub fn enabled(&self, slot: u8) -> bool {
+        self.state.borrow().slots[usize::from(slot) - 1].enabled
+    }
+
+    /// DMA pages the driver was given.
+    pub fn pages(&self) -> usize {
+        self.state.borrow().pages.len()
+    }
+
+    /// Takes the device off root port `port`: it is no longer connected or
+    /// enabled, the connect change is set, and a Port Status Change event
+    /// written.
+    pub fn unplug(&self, port: u8) {
+        let mut state = self.state.borrow_mut();
+        let number = usize::from(port) - 1;
+        state.ports[number] = None;
+        state.root[number].enabled = false;
+        state.root[number].change |= port::CONNECT_CHANGE;
+        state.port_event(port);
+    }
+
+    /// Puts `device` on root port `port`, which is then connected but not
+    /// enabled until reset, with the connect change set and an event written.
+    pub fn plug(&self, port: u8, device: Device) {
+        let mut state = self.state.borrow_mut();
+        let number = usize::from(port) - 1;
+        state.ports[number] = Some(device);
+        state.root[number].enabled = false;
+        state.root[number].change |= port::CONNECT_CHANGE;
+        state.port_event(port);
+    }
+
+    /// Completes the transfer queued on `slot`'s interrupt endpoint `dci` with
+    /// `bytes` as the report. False when nothing is queued there.
+    pub fn report(&self, slot: u8, dci: u8, bytes: &[u8]) -> bool {
+        let mut state = self.state.borrow_mut();
+        let Some(&(at, cycle)) = state.slots[usize::from(slot) - 1].rings.get(&dci) else {
+            return false;
+        };
+        let entry = state.trb(at);
+        if entry.cycle() != cycle || entry.kind() != trb::NORMAL {
+            return false;
+        }
+        let buffer = entry.parameter();
+        for (offset, byte) in bytes.iter().enumerate() {
+            // SAFETY: the driver's report buffer, at least a report long.
+            unsafe { state.page_of(buffer + offset as u64).write_volatile(*byte) };
+        }
+        let len = entry.0[2] & 0x1_FFFF;
+        let residue = len.saturating_sub(bytes.len() as u32);
+        state.slots[usize::from(slot) - 1]
+            .rings
+            .insert(dci, (at + 16, cycle));
+        let control = (u32::from(trb::TRANSFER_EVENT) << 10)
+            | (u32::from(dci) << 16)
+            | (u32::from(slot) << 24);
+        let code = if residue > 0 {
+            trb::SHORT_PACKET
+        } else {
+            trb::SUCCESS
+        };
+        state.event(at, (u32::from(code) << 24) | residue, control);
+        true
     }
 }
 
@@ -369,6 +458,15 @@ impl Xhc {
         }
     }
 
+    fn port_event(&mut self, port: u8) {
+        let control = u32::from(trb::PORT_STATUS_CHANGE) << 10;
+        self.event(
+            u64::from(port) << 24,
+            u32::from(trb::SUCCESS) << 24,
+            control,
+        );
+    }
+
     fn complete(&mut self, command: u64, code: u8, slot: u8) {
         let control = (u32::from(trb::COMMAND_COMPLETION) << 10) | (u32::from(slot) << 24);
         self.event(command, u32::from(code) << 24, control);
@@ -391,13 +489,27 @@ impl Xhc {
             let slot = (command.0[3] >> 24) as u8;
             let (code, slot) = match command.kind() {
                 trb::ENABLE_SLOT => {
-                    self.slots.push(Slot {
-                        record: SlotRecord::default(),
-                        ep0: 0,
-                        cycle: true,
-                    });
-                    (trb::SUCCESS, self.slots.len() as u8)
+                    // A disabled slot is given out again first, as hardware may.
+                    match self.slots.iter().position(|s| !s.enabled) {
+                        Some(at) => {
+                            self.slots[at] = Slot::new();
+                            (trb::SUCCESS, at as u8 + 1)
+                        }
+                        None => {
+                            self.slots.push(Slot::new());
+                            (trb::SUCCESS, self.slots.len() as u8)
+                        }
+                    }
                 }
+                trb::DISABLE_SLOT => match self.slots.get_mut(usize::from(slot).wrapping_sub(1)) {
+                    Some(entry) if entry.enabled => {
+                        entry.enabled = false;
+                        entry.rings.clear();
+                        (trb::SUCCESS, slot)
+                    }
+                    // Slot Not Enabled.
+                    _ => (11, slot),
+                },
                 trb::ADDRESS_DEVICE => (self.address(command.parameter(), slot), slot),
                 trb::CONFIGURE_ENDPOINT => (self.configure(command.parameter(), slot), slot),
                 trb::SET_DEQUEUE => {
@@ -454,7 +566,17 @@ impl Xhc {
     fn configure(&mut self, input: u64, slot: u8) -> u8 {
         let add = self.read32(input + 4);
         let record = self.slot_context(input);
+        // Each interrupt endpoint added: its context's TR Dequeue Pointer.
+        let mut rings = Vec::new();
+        for dci in 2..32u8 {
+            if add & (1 << dci) != 0 {
+                let at = input + 32 * (u64::from(dci) + 1) + 8;
+                let pointer = u64::from(self.read32(at)) | (u64::from(self.read32(at + 4)) << 32);
+                rings.push((dci, (pointer & !0xF, pointer & 1 != 0)));
+            }
+        }
         let entry = &mut self.slots[usize::from(slot) - 1];
+        entry.rings.extend(rings);
         entry.record.configures += 1;
         if add & 1 != 0 {
             // The hub fields are what a Configure Endpoint may change.
@@ -552,6 +674,9 @@ impl Hal for Fake {
             o if o >= OPERATIONAL + PORTS => {
                 let number = (o - OPERATIONAL - PORTS) / 16;
                 match (state.ports.get(number), state.root.get(number)) {
+                    (Some(None), Some(regs)) if (o - OPERATIONAL - PORTS).is_multiple_of(16) => {
+                        regs.change | (u32::from(regs.powered) * port::POWER)
+                    }
                     (Some(Some(device)), Some(regs))
                         if (o - OPERATIONAL - PORTS).is_multiple_of(16) =>
                     {
@@ -612,6 +737,7 @@ impl Hal for Fake {
                 if value & port::RESET != 0 && attached {
                     regs.enabled = true;
                     regs.change |= port::RESET_CHANGE;
+                    state.port_event(number as u8 + 1);
                 }
             }
             o if (DOORBELLS..DOORBELLS + 4 * 256).contains(&o) => {

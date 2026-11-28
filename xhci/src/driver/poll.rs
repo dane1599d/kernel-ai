@@ -21,27 +21,40 @@ impl<H: Hal> Controller<H> {
             self.op_write(regs::USBSTS, regs::STS_EVENT);
         }
         let mut handled = 0;
-        while handled < POLL_LIMIT {
+        // What came while something was waited for, in the order it came.
+        for at in 0..self.deferred.len() {
+            if let Some(event) = self.deferred[at].take() {
+                handled += 1;
+                self.handle(event, &mut out);
+            }
+        }
+        let mut read = 0;
+        while read < POLL_LIMIT {
             let Some(event) = self.next_event() else {
                 break;
             };
-            handled += 1;
-            match event {
-                Event::Transfer {
-                    trb,
-                    residue,
-                    code,
-                    slot,
-                    dci,
-                } => self.on_transfer(slot, dci, trb, code, residue, &mut out),
-                Event::Command { trb, code, .. } => self.on_recovery_step(trb, code),
-                _ => {}
-            }
+            read += 1;
+            self.handle(event, &mut out);
         }
-        if handled > 0 {
+        if read > 0 {
             self.update_dequeue();
         }
-        handled
+        handled + read
+    }
+
+    fn handle(&mut self, event: Event, out: &mut impl FnMut(Input)) {
+        match event {
+            Event::Transfer {
+                trb,
+                residue,
+                code,
+                slot,
+                dci,
+            } => self.on_transfer(slot, dci, trb, code, residue, out),
+            Event::Command { trb, code, .. } => self.on_recovery_step(trb, code),
+            Event::PortStatus { port } => self.mark(port),
+            Event::Other { .. } => {}
+        }
     }
 
     fn on_transfer(

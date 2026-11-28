@@ -14,6 +14,7 @@ pub const DATA: u8 = 3;
 pub const STATUS: u8 = 4;
 pub const LINK: u8 = 6;
 pub const ENABLE_SLOT: u8 = 9;
+pub const DISABLE_SLOT: u8 = 10;
 pub const ADDRESS_DEVICE: u8 = 11;
 pub const CONFIGURE_ENDPOINT: u8 = 12;
 pub const EVALUATE_CONTEXT: u8 = 13;
@@ -108,6 +109,12 @@ impl Trb {
 
     pub fn enable_slot() -> Self {
         Self([0, 0, 0, control(ENABLE_SLOT)])
+    }
+
+    /// Frees `slot`: the controller stops its endpoints and lets go of its
+    /// contexts and rings.
+    pub fn disable_slot(slot: u8) -> Self {
+        Self([0, 0, 0, control(DISABLE_SLOT) | (u32::from(slot) << 24)])
     }
 
     /// A command on `slot` with the input context at `input`.

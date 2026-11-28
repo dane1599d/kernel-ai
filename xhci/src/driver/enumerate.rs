@@ -16,7 +16,7 @@ use crate::{Error, PAGE, hid};
 
 /// Settle time after power-up or a connect (USB 2.0 TATTDB, 100 ms) and after
 /// a reset (TRSTRCY, 10 ms).
-const SETTLE_NS: u64 = 100_000_000;
+pub(super) const SETTLE_NS: u64 = 100_000_000;
 const RESET_RECOVERY_NS: u64 = 10_000_000;
 /// Hubs deep a device may be: the route string has five nibbles (xHCI 8.9), so
 /// five hubs, and a device behind the fifth.
@@ -25,7 +25,7 @@ pub const MAX_TIERS: u8 = 5;
 /// most), and how long all the hub ports of one `enumerate` may spend waiting:
 /// a broken hub must not hold the boot.
 const HUB_RESET_TIMEOUT_NS: u64 = 250_000_000;
-const HUB_BUDGET_NS: u64 = 2_000_000_000;
+pub(super) const HUB_BUDGET_NS: u64 = 2_000_000_000;
 /// How often a hub port's status is read while it resets.
 const POLL_NS: u64 = 10_000_000;
 /// Report buffers are this long at most; HID reports are shorter.
@@ -73,9 +73,16 @@ impl<H: Hal> Controller<H> {
         self.hal.delay(SETTLE_NS);
         self.hub_deadline = self.hal.now_ns().saturating_add(HUB_BUDGET_NS);
         for number in 1..=self.caps.max_ports {
-            if self.hal.read32(self.caps.portsc(number)) & port::CONNECTED == 0 {
+            let at = self.caps.portsc(number);
+            let portsc = self.hal.read32(at);
+            if portsc & port::CONNECTED == 0 {
                 continue;
             }
+            // The connect is handled here: `service_ports` acts on a connect
+            // change only, so the port's events from this setup are not taken
+            // for a new device.
+            self.hal
+                .write32(at, port::write_value(portsc, portsc & port::CONNECT_CHANGE));
             let path = Path {
                 root_port: number,
                 ..Path::default()
@@ -97,7 +104,7 @@ impl<H: Hal> Controller<H> {
 
     /// Resets `number` if it is not enabled yet (USB 2 ports; USB 3 ports enable
     /// themselves) and returns its speed.
-    fn reset_port(&self, number: u8) -> Result<u8, Error> {
+    pub(super) fn reset_port(&self, number: u8) -> Result<u8, Error> {
         let at = self.caps.portsc(number);
         let portsc = self.hal.read32(at);
         if portsc & port::ENABLED == 0 {
@@ -117,14 +124,20 @@ impl<H: Hal> Controller<H> {
         Ok(port::speed(portsc))
     }
 
+    /// A zeroed page: a detached device's, or a new one.
     fn page(&mut self) -> Result<Dma, Error> {
+        if let Some(mut page) = self.spare.iter_mut().find_map(Option::take) {
+            let len = page.len();
+            page.zero(0, len);
+            return Ok(page);
+        }
         self.hal.dma(1, !self.caps.addr64).ok_or(Error::NoMemory)
     }
 
     /// Sets up the device at `path`, whose port is reset and at `speed`; `tier`
     /// is the number of hubs above it. What is behind it, if it is a hub, is
     /// reported through `report` before this returns.
-    fn attach(
+    pub(super) fn attach(
         &mut self,
         path: Path,
         speed: u8,
@@ -145,9 +158,11 @@ impl<H: Hal> Controller<H> {
         self.dcbaa.write64(usize::from(slot) * 8, output.phys());
         self.devices[index] = Some(Device {
             slot,
+            root_port: path.root_port,
+            route: path.route,
             ep0: Producer::new(ep0_mem.phys(), ring::ENTRIES),
             ep0_mem,
-            _output: output,
+            output,
             input: self.page()?,
             data: self.page()?,
             reports: self.page()?,
