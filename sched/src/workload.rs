@@ -218,6 +218,37 @@ pub fn iterations_per_ms(
     Some((iterations.saturating_mul(MS) / fastest).max(1))
 }
 
+/// Iterations per calibration run, and how many runs. A run must be far shorter
+/// than a tick: with 20,000-iteration runs (about 20 ms) every run of mix A's
+/// eight processes, all calibrating at once on one CPU, was preempted, so the
+/// speed came out about 4x low and a 2-4 ms build burst ran for 0.7 ms (M10).
+pub const CALIBRATION_ITERS: u64 = 200;
+pub const CALIBRATION_RUNS: usize = 64;
+/// The longest calibration runs, when shorter ones all timed under
+/// [`MIN_CALIBRATION_NS`]: still well under a tick.
+pub const MAX_CALIBRATION_ITERS: u64 = 1 << 14;
+
+/// `work`'s loop iterations per millisecond, with `time_run(n)` the nanoseconds
+/// a run of `n` iterations took: [`iterations_per_ms`] over
+/// [`CALIBRATION_RUNS`] runs of [`CALIBRATION_ITERS`], and while no run counts,
+/// again at twice the iterations, the last at [`MAX_CALIBRATION_ITERS`].
+/// `None` when even those runs all timed under [`MIN_CALIBRATION_NS`]: no speed
+/// is guessed (it once assumed 16,384,000 per ms there), and `work` exits
+/// saying so.
+pub fn calibrate(mut time_run: impl FnMut(u64) -> u64) -> Option<u64> {
+    let mut iterations = CALIBRATION_ITERS;
+    loop {
+        let runs = (0..CALIBRATION_RUNS).map(|_| time_run(iterations));
+        if let Some(speed) = iterations_per_ms(iterations, runs) {
+            return Some(speed);
+        }
+        if iterations >= MAX_CALIBRATION_ITERS {
+            return None;
+        }
+        iterations = (iterations * 2).min(MAX_CALIBRATION_ITERS);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,6 +297,39 @@ mod tests {
         assert_eq!(iterations_per_ms(200, []), None);
         // A very slow run still gives at least one iteration per ms.
         assert_eq!(iterations_per_ms(1, [u64::MAX]), Some(1));
+    }
+
+    #[test]
+    fn calibration_doubles_the_runs_until_the_clock_sees_them() {
+        // 10 ns per iteration: 200 iterations take 2 us and count at once.
+        let mut sizes = Vec::new();
+        let speed = calibrate(|n| {
+            sizes.push(n);
+            n * 10
+        });
+        assert_eq!(speed, Some(100_000));
+        assert!(sizes.iter().all(|&n| n == CALIBRATION_ITERS));
+        assert_eq!(sizes.len(), CALIBRATION_RUNS);
+        // A clock that sits still across runs under 1,600 iterations (2 ns
+        // each): 200, 400 and 800 read 0, and 1,600 is the size timed.
+        let mut sizes = Vec::new();
+        let speed = calibrate(|n| {
+            sizes.push(n);
+            if n < 1_600 { 0 } else { n * 2 }
+        });
+        let firsts: Vec<u64> = sizes.iter().step_by(CALIBRATION_RUNS).copied().collect();
+        assert_eq!(firsts, [200, 400, 800, 1_600]);
+        assert_eq!(speed, Some(500_000));
+        // A clock that never moves: no speed, after the largest runs.
+        let mut largest = 0;
+        assert_eq!(
+            calibrate(|n| {
+                largest = largest.max(n);
+                0
+            }),
+            None
+        );
+        assert_eq!(largest, MAX_CALIBRATION_ITERS);
     }
 
     #[test]
