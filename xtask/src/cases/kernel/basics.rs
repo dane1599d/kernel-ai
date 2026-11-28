@@ -158,6 +158,13 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
         ],
         ..case("runaway-stall", "test=runaway-stall")
     },
+    // The TSC clock's fall back to the HPET, forced while every CPU reads the
+    // clock (#1680's review): on KVM, where the TSC is the clock.
+    TestCase {
+        kvm_only: true,
+        expect: &["clock-switch: no CPU's time went back or stood still across the switch"],
+        ..case("clock-switch", "test=clock-switch clock=tsc")
+    },
     case("matvec", "test=matvec"),
     // The graft: the model window past 4 GiB, with RAM above 4 GiB for its copies.
     TestCase {

@@ -330,8 +330,12 @@ pub enum SelfTest {
     ThreadsKill,
     /// THREAD_PIN: a pinned thread stays, an unpinned one migrates.
     ThreadPin,
-    /// L6: a clock jump past a runaway's limit is not run time.
-    RunawayStall,
+    /// L6: a clock jump past a runaway's limit is not run time (`runaway-stall`);
+    /// with `switch`, the TSC clock's switch back to the HPET, forced while every
+    /// CPU reads the clock, never takes time back (`clock-switch`).
+    Clock {
+        switch: bool,
+    },
     /// L6: a matvec over the thread pool equals the single-thread result.
     Matvec,
     /// L6: keys reach their thread within 20 ms while ring-3 workers compute.

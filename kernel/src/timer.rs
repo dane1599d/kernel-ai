@@ -1,8 +1,9 @@
 //! The tick from the local APIC timer in one-shot mode: 1 kHz, or the rate `hz=`
 //! on the command line gives (100 to 1000).
 //!
-//! Each tick re-arms the timer for an absolute deadline measured on the HPET, so
-//! interrupt latency never accumulates into drift. The same one-shot mechanism
+//! Each tick re-arms the timer for an absolute deadline measured on the kernel
+//! clock (the TSC or the HPET, see `hpet`), so interrupt latency never
+//! accumulates into drift. The same one-shot mechanism
 //! will later allow tickless idle, but not as it stands: the hardware watchdog
 //! is petted only once every online CPU has ticked ([`crate::watchdog`]), so
 //! an idle CPU that stopped ticking would reset a healthy trial; tickless idle
@@ -130,7 +131,7 @@ pub fn align_to_second() -> u64 {
 }
 
 /// Sleeps (halting between interrupts) until `ticks` more ticks have passed or
-/// `timeout_ns` of HPET time has elapsed. Returns the HPET time it took.
+/// `timeout_ns` of kernel clock time has elapsed. Returns the clock time it took.
 pub fn wait_ticks(ticks: u64, timeout_ns: u64) -> Result<u64, &'static str> {
     let (target, start) = (self::ticks() + ticks, hpet::nanos());
     while self::ticks() < target {
@@ -142,7 +143,7 @@ pub fn wait_ticks(ticks: u64, timeout_ns: u64) -> Result<u64, &'static str> {
     Ok(hpet::nanos() - start)
 }
 
-/// Boot check: 100 ms of ticks take 100 ms of HPET time, within 20%.
+/// Boot check: 100 ms of ticks take 100 ms of kernel clock time, within 20%.
 pub fn boot_check() -> Result<(), &'static str> {
     let ticks = rate_hz() / 10;
     let elapsed = wait_ticks(ticks, 2_000_000_000)?;
@@ -150,13 +151,14 @@ pub fn boot_check() -> Result<(), &'static str> {
         return Err("timer: 100 ms of ticks did not take about 100 ms");
     }
     log!(
-        "self-test: {ticks} ticks in {} us of HPET time",
+        "self-test: {ticks} ticks in {} us of kernel clock time",
         elapsed / 1000
     );
     Ok(())
 }
 
-/// M3 exit test: 60 000 ticks must take 60 s of HPET time, within 2%.
+/// M3 exit test: 60 000 ticks must take 60 s of kernel clock time, within 2%,
+/// and on the TSC that clock must keep within 1000 ppm of the HPET's counter.
 pub fn sixty_second_check() -> Result<(), &'static str> {
     let ticks_60s = 60 * rate_hz();
     log!("timer: measure-start, counting {ticks_60s} ticks");
@@ -176,8 +178,9 @@ pub fn sixty_second_check() -> Result<(), &'static str> {
     // it against the HPET's own counter (#1628's review).
     let clock_ppm = acpitables::hpet_counter::recheck_ppm((0, elapsed), (0, counted));
     log!(
-        "timer: the clock is {clock_ppm} ppm from the HPET's counter (limit {})",
-        hpet::RECHECK_PPM
+        "timer: the clock is {clock_ppm} ppm from the HPET's counter (limit {}); the re-checks' largest {} ppm",
+        hpet::RECHECK_PPM,
+        hpet::recheck_max_ppm()
     );
     if hpet::tsc_clock() && clock_ppm > hpet::RECHECK_PPM {
         return Err("timer: the TSC clock drifted from the HPET over 60 s");

@@ -107,7 +107,65 @@ pub fn settled(rate: u64, last: u64, reported_hz: Option<u64>) -> bool {
 pub fn recheck_ppm(tsc: (u64, u64), hpet: (u64, u64)) -> u64 {
     let tsc_span = tsc.1.saturating_sub(tsc.0);
     let hpet_span = hpet.1.saturating_sub(hpet.0).max(1);
-    (u128::from(tsc_span.abs_diff(hpet_span)) * 1_000_000 / u128::from(hpet_span)) as u64
+    let ppm = u128::from(tsc_span.abs_diff(hpet_span)) * 1_000_000 / u128::from(hpet_span);
+    u64::try_from(ppm).unwrap_or(u64::MAX)
+}
+
+/// What a re-check of the TSC clock against the HPET found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verdict {
+    /// Within the limit: the TSC stays the clock.
+    Keep,
+    /// Past it once: measure again, from this sample, before acting.
+    Confirm,
+    /// Past it from that fresh start too.
+    Switch,
+}
+
+/// The run-time re-check's state: the sample its window starts from, whether
+/// the last window missed, and the largest drift any window showed. One sample
+/// is a TSC clock and HPET pair taken as [`best_pair`] takes a zero pair, so a
+/// slow HPET read costs little; a host stall of 10 ms between two samples is
+/// still 1000 ppm over 10 s, so a miss counts only when the next window, from
+/// a fresh start, misses too (#1680's review).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Recheck {
+    start: (u64, u64),
+    confirming: bool,
+    /// The largest drift seen, in ppm.
+    pub max_ppm: u64,
+}
+
+impl Recheck {
+    /// A re-check whose first window starts at `sample`, (TSC clock, HPET) ns.
+    pub const fn new(sample: (u64, u64)) -> Self {
+        Recheck {
+            start: sample,
+            confirming: false,
+            max_ppm: 0,
+        }
+    }
+
+    /// Ends the window at `sample`, which starts the next one, and judges it
+    /// against `limit` ppm.
+    pub fn step(&mut self, sample: (u64, u64), limit: u64) -> Verdict {
+        let ppm = recheck_ppm((self.start.0, sample.0), (self.start.1, sample.1));
+        self.start = sample;
+        self.max_ppm = self.max_ppm.max(ppm);
+        let missed = ppm > limit;
+        let verdict = match (missed, self.confirming) {
+            (false, _) => Verdict::Keep,
+            (true, false) => Verdict::Confirm,
+            (true, true) => Verdict::Switch,
+        };
+        self.confirming = missed;
+        verdict
+    }
+
+    /// Whether the next window is the confirming one.
+    pub fn confirming(&self) -> bool {
+        self.confirming
+    }
 }
 
 #[cfg(test)]
@@ -300,5 +358,32 @@ mod tests {
         // A clock that went back, or an HPET that did not move, cannot panic.
         assert_eq!(recheck_ppm((9, 1), (0, s)), 1_000_000);
         assert!(recheck_ppm((0, s), (5, 5)) > 1_000);
+    }
+
+    #[test]
+    fn one_stalled_window_is_confirmed_before_the_clock_switches() {
+        let s = 1_000_000_000;
+        let mut check = Recheck::new((0, 0));
+        assert_eq!(check.step((10 * s + 50, 10 * s), 1_000), Verdict::Keep);
+        // A 100 ms stall between one pair's TSC and HPET reads: a miss, and the
+        // fresh 1 s window after it is healthy, so the TSC stays.
+        assert_eq!(
+            check.step((20 * s, 20 * s + 100_000_000), 1_000),
+            Verdict::Confirm
+        );
+        assert!(check.confirming());
+        assert_eq!(
+            check.step((21 * s, 21 * s + 100_000_000), 1_000),
+            Verdict::Keep
+        );
+        assert!(!check.confirming());
+        assert_eq!(check.max_ppm, 9_900, "the stalled window: 100 ms in 10.1 s");
+        // A TSC that runs 0.2% fast misses twice in a row.
+        let (t, h) = (31 * s + 20_000_000, 31 * s + 100_000_000);
+        assert_eq!(check.step((t, h), 1_000), Verdict::Confirm);
+        assert_eq!(
+            check.step((t + s + 2_000_000, h + s), 1_000),
+            Verdict::Switch
+        );
     }
 }
