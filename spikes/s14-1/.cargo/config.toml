@@ -1,0 +1,8 @@
+# Every wasm build gets an 8 MiB stack, as a native main thread has: with
+# Rust's default 1 MiB, Blitz's recursive layout traps on the `deep` fixture
+# (200 nested blocks). build.sh adds simd128 for the SIMD builds.
+[target.wasm32-wasip1]
+rustflags = ["-C", "link-arg=-zstack-size=8388608"]
+
+[target.wasm32-wasip2]
+rustflags = ["-C", "link-arg=-zstack-size=8388608"]
