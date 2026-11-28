@@ -17,6 +17,27 @@ fn pass_through_is_valid_untranslated_with_reads_and_writes() {
     assert_eq!(blocked, [0b11, 3, 0, 0]);
 }
 
+/// IV (bit 128) stays clear in every entry this crate writes: IV set with
+/// no interrupt table would block the device's interrupts, so until
+/// interrupt remapping lands they pass as the device sends them.
+#[test]
+fn no_entry_sets_iv() {
+    let mut dma = kit::FakeDma::new();
+    let table = amdvi::pagetable::IoPageTable::new(&mut dma, 4).unwrap();
+    let entries = [
+        DeviceEntry::pass_through(1),
+        DeviceEntry::blocked(2),
+        DeviceEntry::paged_for(3, &table),
+    ];
+    for entry in entries {
+        let words = entry.encode().unwrap();
+        assert_eq!(words[2] & 1, 0, "{entry:?}");
+        // Nor any other interrupt field: words 2 and 3 are all zero.
+        assert_eq!(words[2..], [0, 0], "{entry:?}");
+        assert_eq!(entry.to_bytes().unwrap()[16], 0);
+    }
+}
+
 #[test]
 fn a_paged_entry_holds_its_mode_root_and_domain() {
     let entry = DeviceEntry::paged(7, 4, 0x000f_1234_5000).unwrap();
