@@ -50,13 +50,20 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
         ..case("boot-no-hpet", "test")
     },
     // ADR 0007 section 5, v0.3: the kernel reads QEMU's IVRS, gives its one
-    // IOMMU a pass-through device table and a command buffer, and one
-    // COMPLETION_WAIT comes back; the boot then goes on as any other.
+    // IOMMU a pass-through device table, a command buffer and an event log,
+    // and `iommu=check` proves amdvi's command and event-log formats against
+    // QEMU's amd-iommu: a store that lands, invalidations that log nothing,
+    // the Status bits, and a bad command decoded as ILLEGAL_COMMAND_ERROR.
     TestCase {
         iommu: true,
         expect: &[
             "iommu: 1 unit in the IVRS (0 entries not read)",
             "iommu: 00:02.0 at 0xfed80000: a completion wait came back in ",
+            "iommu-check: status ok",
+            "iommu-check: completion wait store ok",
+            "iommu-check: invalidations ok",
+            "iommu-check: illegal command event ok",
+            "iommu-check: every check passed",
             "boot-ok",
         ],
         forbid: &[
@@ -68,8 +75,9 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
             crate::cases::ROOM_WARNING,
             "; left off",
             "iommu: off on the command line",
+            "FAILED",
         ],
-        ..case("iommu", "test")
+        ..case("iommu", "test iommu=check")
     },
     // P6 row 1 (ADR 0006): the nesting census. The kernel logs the VMX, SVM,
     // NPT and NRIPS bits it sees; nesting-census.yml reads them per runner.
