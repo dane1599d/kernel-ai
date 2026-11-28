@@ -65,6 +65,76 @@ fn the_tuf_harness_returns_for_hostile_metadata() {
     }
 }
 
+/// A hostile mirror cannot change what signed metadata says and still pass:
+/// each byte of each metadata file of the sample repository, flipped two ways
+/// (every bit, and every bit but the lowest), is refused by the image check,
+/// unless the file's signed part still has the same canonical bytes (a
+/// re-spaced copy). Every byte, not a sample.
+#[test]
+fn no_flipped_byte_of_signed_metadata_passes_the_image_check() {
+    let repository = harness::repository();
+    let (mut refused, mut respaced) = (0usize, 0usize);
+    for (path, original) in repository
+        .iter()
+        .filter(|(p, _)| p.starts_with("metadata/"))
+    {
+        assert!(
+            harness::signed_bytes(path, original).is_some(),
+            "{path} is read as its role"
+        );
+        for at in 0..original.len() {
+            for mask in [0xff, 0xfe] {
+                let mut bytes = original.clone();
+                bytes[at] ^= mask;
+                match harness::check_replaced(path, &bytes) {
+                    Err(_) => refused += 1,
+                    Ok(_) => {
+                        // It passed: only if the signed part says the same.
+                        harness::same_signed_bytes(path, &bytes);
+                        respaced += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert!(refused > 0, "nothing was refused");
+    eprintln!("{refused} refused, {respaced} passed with the same signed bytes");
+}
+
+/// The flip test's allowance is live: a metadata file re-spaced (pretty
+/// printed) that the image check takes says the same signed bytes. The root
+/// and the targets roles are covered by signatures alone, so they pass; the
+/// snapshot is pinned by the timestamp's hash of its raw bytes, so a re-spaced
+/// one is refused.
+#[test]
+fn a_respaced_copy_passes_where_only_signatures_cover_it() {
+    let repository = harness::repository();
+    let mut passed = Vec::new();
+    for (path, original) in repository
+        .iter()
+        .filter(|(p, _)| p.starts_with("metadata/"))
+    {
+        let value: serde_json::Value = serde_json::from_slice(original).unwrap();
+        let pretty = serde_json::to_vec_pretty(&value).unwrap();
+        assert_ne!(&pretty, original, "{path} was re-spaced");
+        if harness::check_replaced(path, &pretty).is_ok() {
+            harness::same_signed_bytes(path, &pretty);
+            passed.push(path.as_str());
+        }
+    }
+    assert!(passed.contains(&"metadata/1.root.json"), "{passed:?}");
+    assert!(!passed.contains(&"metadata/1.snapshot.json"), "{passed:?}");
+}
+
+#[test]
+#[should_panic(expected = "the image check took metadata whose signed part changed")]
+fn the_assertion_refuses_metadata_that_says_something_else() {
+    let repository = harness::repository();
+    let other = &repository["metadata/1.packages.json"];
+    // Another role's file has other signed bytes, though it is valid JSON.
+    harness::same_signed_bytes("metadata/1.targets.json", other);
+}
+
 /// The targets' corpora, for `.github/workflows/fuzz.yml`: each seed in
 /// `$FUZZ_SEED_DIR/<target>/`.
 #[test]
