@@ -123,27 +123,27 @@ fn image(facts: &dyn Facts, sha: &str, short: &str) -> String {
         Ok(runs) => runs,
         Err(why) => return format!("MISSING: the Release runs could not be read: {why}"),
     };
-    let Some(run) = runs
-        .iter()
-        .find(|r| r.sha == sha && r.conclusion == "success")
-    else {
+    // A run from a push or a dispatch built REV's own tree; a pull_request
+    // run built REV merged into its base, so it is taken last, and named.
+    let at = release_check::own_tree_first(runs.into_iter().filter(|r| r.sha == sha).collect());
+    let Some(run) = at.iter().find(|r| r.conclusion == "success") else {
         return format!("MISSING: no green Release run at {short}");
     };
     let log = match facts.log(run.id) {
         Ok(log) => log,
-        Err(why) => return format!("MISSING: Release run {}'s log: {why}", run.id),
+        Err(why) => return format!("MISSING: Release run {}'s log: {why}", run.named()),
     };
     let sizes = sizes(&log);
     match sizes.as_slice() {
-        [] => format!("MISSING: Release run {} printed no image size", run.id),
+        [] => format!("MISSING: Release run {} printed no image size", run.named()),
         [(bytes, n)] => format!(
             "{bytes} bytes ({} MiB), Release run {}, {n} builds",
             bytes >> 20,
-            run.id
+            run.named()
         ),
         many => format!(
             "builds DIFFER, Release run {}: {}",
-            run.id,
+            run.named(),
             many.iter()
                 .map(|(b, n)| format!("{b} bytes x{n}"))
                 .collect::<Vec<_>>()

@@ -52,6 +52,15 @@ impl Facts for Fixture {
     }
 }
 
+fn run(id: u64, event: &str, conclusion: &str) -> Run {
+    Run {
+        id,
+        sha: "abc".into(),
+        event: event.into(),
+        conclusion: conclusion.into(),
+    }
+}
+
 const MODELS: &str = r#"{"default":"m1","models":[
   {"id":"m0","repo":"o/zero","file":"zero.gguf","revision":"r0","sha256":"00","size":1,"license":"MIT"},
   {"id":"m1","repo":"o/one","file":"one.gguf","revision":"r1","sha256":"ab12","size":42,"license":"Apache-2.0"}]}"#;
@@ -59,11 +68,7 @@ const MODELS: &str = r#"{"default":"m1","models":[
 fn ready() -> Fixture {
     let mut f = Fixture {
         seq: Some("2"),
-        release_runs: vec![Run {
-            id: 77,
-            sha: "abc".into(),
-            conclusion: "success".into(),
-        }],
+        release_runs: vec![run(77, "push", "success")],
         ..Fixture::default()
     };
     f.files.insert("xtask/models.json", MODELS.into());
@@ -90,10 +95,10 @@ fn the_draft_has_each_pin_the_notices_hash_the_size_and_the_checklist() {
         "## Files",
         // sha256("abc")
         "- NOTICES.txt: SHA-256 `ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad`, 3 bytes",
-        "- image: 1048576 bytes (1 MiB), Release run 77, 2 builds",
+        "- image: 1048576 bytes (1 MiB), Release run 77 (push), 2 builds",
         "## Checklist",
         "- met: release/seq above the last release's: 2, above v0.1.0-rc.1's 1",
-        "- met: NOTICES.txt the same in the image and the release: Release run 77 at abc passed",
+        "- met: NOTICES.txt the same in the image and the release: Release run 77 (push) at abc passed",
         "- founder's: the release signed by the founder's root",
     ] {
         assert!(text.contains(want), "{want:?} not in:\n{text}");
@@ -138,12 +143,37 @@ fn image_sizes_that_differ_are_listed_and_a_log_with_none_is_missing() {
     assert!(
         draft(&f, &f, "abc")
             .unwrap()
-            .contains("- image: builds DIFFER, Release run 77: 10 bytes x2, 12 bytes x1")
+            .contains("- image: builds DIFFER, Release run 77 (push): 10 bytes x2, 12 bytes x1")
     );
     f.logs.insert(77, "nothing here\n".into());
     assert!(
         draft(&f, &f, "abc")
             .unwrap()
-            .contains("MISSING: Release run 77 printed no image size")
+            .contains("MISSING: Release run 77 (push) printed no image size")
+    );
+}
+
+#[test]
+fn a_push_run_is_taken_over_a_pull_request_run_at_one_sha() {
+    let mut f = ready();
+    let log = |bytes: u64| format!("x xtask: size {bytes} bytes (0 MiB)\n");
+    // The pull_request run is newer and listed first; the push run is older.
+    f.release_runs = vec![
+        run(90, "pull_request", "success"),
+        run(80, "push", "success"),
+    ];
+    f.logs.insert(90, log(111));
+    f.logs.insert(80, log(222));
+    let text = draft(&f, &f, "abc").unwrap();
+    assert!(
+        text.contains("- image: 222 bytes (0 MiB), Release run 80 (push), 1 builds"),
+        "{text}"
+    );
+    // Alone, a pull_request run is used, and named for what it built.
+    f.release_runs = vec![run(90, "pull_request", "success")];
+    let text = draft(&f, &f, "abc").unwrap();
+    assert!(
+        text.contains("Release run 90 (pull_request: REV merged into its base)"),
+        "{text}"
     );
 }
