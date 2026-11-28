@@ -73,7 +73,10 @@ fn start(function: &Function, tone: bool) -> Result<Option<(KernelController, To
             "hda: {}: the output is open and silent (test=hda or hda=tone plays a tone)",
             function.name
         );
-        controller.stop();
+        // Stopped, no DMA left pointed at memory; the controller is dropped.
+        if let Err(why) = controller.stop() {
+            log!("hda: {}: stopping: {why:?}", function.name);
+        }
         return Ok(None);
     }
     controller.set_interrupts(function.vector.is_some());

@@ -52,6 +52,11 @@ pub fn connections(codec: &mut dyn Codec, nid: u8) -> Result<Connections, Error>
     };
     let length = codec.verb(nid, Verb::get_parameter(param::CONNECTION_LIST_LENGTH))?;
     let (count, long) = verb::connection_list_length(length);
+    // Every entry adds at least one node, so a longer list cannot fit: it is
+    // refused before a word of it is read.
+    if usize::from(count) > MAX_CONNECTIONS {
+        return Err(Error::Codec("a connection list longer than 32"));
+    }
     let per = if long { 2 } else { 4 };
     let (bits, range) = if long {
         (16, 1u32 << 15)
@@ -59,11 +64,12 @@ pub fn connections(codec: &mut dyn Codec, nid: u8) -> Result<Connections, Error>
         (8, 1u32 << 7)
     };
     let mut previous: Option<u32> = None;
+    // Each response holds `per` entries: it is asked for once.
+    let mut word = 0;
     for index in 0..count {
-        if usize::from(index) >= MAX_CONNECTIONS * 2 {
-            return Err(Error::Codec("a connection list longer than 32"));
+        if index % per == 0 {
+            word = codec.verb(nid, Verb::get_connection_list(index))?;
         }
-        let word = codec.verb(nid, Verb::get_connection_list(index - index % per))?;
         let entry = (word >> (bits * u32::from(index % per))) & ((1u32 << bits) - 1);
         let target = entry & !range;
         if target > 0xFF {

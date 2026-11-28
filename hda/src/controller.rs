@@ -49,8 +49,12 @@ impl Regs for Mmio {
 const RESET_NS: u64 = 100_000_000;
 /// How long a codec may take to answer one command.
 const RESPONSE_NS: u64 = 10_000_000;
-/// After CRST, codecs ask for an address within 521 µs (section 5.5.1).
-const CODEC_WAKE_NS: u64 = 1_000_000;
+/// After CRST, codecs ask for an address within 521 µs (section 5.5.1);
+/// STATESTS is polled for up to 100 ms.
+const CODEC_WAKE_NS: u64 = 100_000_000;
+/// The most commands one bring-up sends: a real codec's walk takes a few
+/// hundred, and a hostile one's would otherwise run to millions.
+pub const VERB_BUDGET: u32 = 4096;
 
 /// The stream tag the output stream and its DAC share (1 to 15).
 pub const STREAM_TAG: u8 = 1;
@@ -104,9 +108,15 @@ pub struct Controller<H: Host, R: Regs> {
     corb_wp: u16,
     rirb_rp: u16,
     codec: u8,
+    /// The stream descriptor programmed, from its reset on; the teardown
+    /// stops and clears it.
     stream: Option<u8>,
     /// Buffer completions interrupt (IOC, the stream's SIE and GIE).
     interrupts: bool,
+    /// The rings' bases are written and their DMA may run.
+    rings_on: bool,
+    /// Commands sent since the bring-up began, against [`VERB_BUDGET`].
+    verbs: u32,
 }
 
 impl<H: Host, R: Regs> Controller<H, R> {
@@ -123,6 +133,8 @@ impl<H: Host, R: Regs> Controller<H, R> {
             codec: 0,
             stream: None,
             interrupts: false,
+            rings_on: false,
+            verbs: 0,
         }
     }
 
@@ -147,8 +159,18 @@ impl<H: Host, R: Regs> Controller<H, R> {
 
     /// The controller out of reset, the rings running, and the first codec's
     /// output path powered, unmuted and its DAC pointed at the stream, still
-    /// silent: no stream runs yet.
+    /// silent: no stream runs yet. Its commands count against
+    /// [`VERB_BUDGET`]; on any error the rings are torn down.
     pub fn open(&mut self) -> Result<Opened, Error> {
+        self.verbs = 0;
+        let opened = self.bring_up();
+        if opened.is_err() {
+            let _ = self.teardown();
+        }
+        opened
+    }
+
+    fn bring_up(&mut self) -> Result<Opened, Error> {
         let version = (self.regs.read8(VMAJ), self.regs.read8(VMIN));
         let codecs = self.reset()?;
         if codecs == 0 {
@@ -172,9 +194,17 @@ impl<H: Host, R: Regs> Controller<H, R> {
         })
     }
 
-    /// The first output stream running on the tone, in `opened`'s format.
+    /// The first output stream running on the tone, in `opened`'s format. On
+    /// any error the stream and the rings are torn down, so no DMA is left
+    /// running.
     pub fn start_tone(&mut self, opened: &Opened) -> Result<Tone, Error> {
-        let (stream, buffer) = self.start_stream(opened.format)?;
+        let (stream, buffer) = match self.start_stream(opened.format) {
+            Ok(started) => started,
+            Err(e) => {
+                let _ = self.teardown();
+                return Err(e);
+            }
+        };
         Ok(Tone {
             stream,
             format: opened.format,
@@ -195,14 +225,63 @@ impl<H: Host, R: Regs> Controller<H, R> {
         self.stream.map(|s| self.regs.read32(sd(s, SD_LPIB)))
     }
 
-    /// Stops the stream and the rings (the controller stays out of reset).
-    pub fn stop(&mut self) {
+    /// Stops the stream and the rings, leaving the controller out of reset and
+    /// no DMA pointed at memory: the first step that timed out is returned,
+    /// though every step is taken.
+    pub fn stop(&mut self) -> Result<(), Error> {
+        self.teardown()
+    }
+
+    /// The one teardown (stop and every error after DMA was on): interrupts
+    /// off, the stream's RUN cleared and waited out, the stream reset, its
+    /// BDL, length and last index zeroed; then the rings stopped, waited out,
+    /// and their bases zeroed.
+    fn teardown(&mut self) -> Result<(), Error> {
+        if self.interrupts {
+            self.regs.write32(INTCTL, 0);
+        }
+        let mut first: Option<Error> = None;
+        let mut note = |r: Result<(), Error>| {
+            if let Err(e) = r {
+                first.get_or_insert(e);
+            }
+        };
         if let Some(s) = self.stream.take() {
             self.regs.write8(sd(s, SD_CTL0), 0);
+            note(self.wait("the stream to stop", RESET_NS, |r| {
+                r.read8(sd(s, SD_CTL0)) & SD_RUN == 0
+            }));
+            self.regs.write8(sd(s, SD_CTL0), SD_SRST);
+            let _ = self.wait("the stream to enter reset", 1_000_000, |r| {
+                r.read8(sd(s, SD_CTL0)) & SD_SRST != 0
+            });
+            self.regs.write8(sd(s, SD_CTL0), 0);
+            note(self.wait("the stream to leave reset", RESET_NS, |r| {
+                r.read8(sd(s, SD_CTL0)) & SD_SRST == 0
+            }));
+            self.regs.write32(sd(s, SD_BDPL), 0);
+            self.regs.write32(sd(s, SD_BDPU), 0);
+            self.regs.write32(sd(s, SD_CBL), 0);
+            self.regs.write16(sd(s, SD_LVI), 0);
         }
-        self.regs.write32(INTCTL, 0);
+        if self.rings_on {
+            note(self.stop_rings());
+        }
+        first.map_or(Ok(()), Err)
+    }
+
+    /// Stops the CORB and RIRB, waits for them, and zeroes their bases.
+    fn stop_rings(&mut self) -> Result<(), Error> {
         self.regs.write8(CORBCTL, 0);
         self.regs.write8(RIRBCTL, 0);
+        let stopped = self.wait("the rings to stop", RESET_NS, |r| {
+            r.read8(CORBCTL) & RING_RUN == 0 && r.read8(RIRBCTL) & RING_RUN == 0
+        });
+        for base in [CORBLBASE, CORBUBASE, RIRBLBASE, RIRBUBASE] {
+            self.regs.write32(base, 0);
+        }
+        self.rings_on = false;
+        stopped
     }
 
     fn wait(&self, what: &'static str, ns: u64, done: impl Fn(&R) -> bool) -> Result<(), Error> {
@@ -236,7 +315,11 @@ impl<H: Host, R: Regs> Controller<H, R> {
         self.wait("the link to leave reset", RESET_NS, |r| {
             r.read32(GCTL) & GCTL_CRST != 0
         })?;
-        self.host.delay(CODEC_WAKE_NS);
+        // A codec that never wakes leaves STATESTS 0: that is NoCodec, not a
+        // timeout.
+        let _ = self.wait("a codec to wake", CODEC_WAKE_NS, |r| {
+            r.read16(STATESTS) & 0x7FFF != 0
+        });
         let codecs = self.regs.read16(STATESTS) & 0x7FFF;
         self.regs.write16(STATESTS, codecs);
         Ok(codecs)
@@ -249,9 +332,18 @@ impl<H: Host, R: Regs> Controller<H, R> {
         }
     }
 
+    /// `pages` of DMA memory, checked: as long as asked, 128-byte aligned for
+    /// the device (the rings, the BDL and the buffers all need that), and
+    /// below 4 GiB without 64OK.
     fn dma(&mut self, pages: usize) -> Result<Dma, Error> {
         let zone = self.zone();
         let memory = self.host.dma(pages, zone).map_err(Error::Dma)?;
+        if memory.len() < pages * PAGE {
+            return Err(Error::Dma(devkit::DmaError::NoMemory));
+        }
+        if !memory.device().is_multiple_of(stream::BDL_ALIGN) {
+            return Err(Error::Dma(devkit::DmaError::OutOfRange));
+        }
         let end = memory.device().checked_add(memory.len() as u64);
         if zone == Zone::Below4G && end.is_none_or(|e| e > 1 << 32) {
             return Err(Error::Dma(devkit::DmaError::OutOfRange));
@@ -260,8 +352,8 @@ impl<H: Host, R: Regs> Controller<H, R> {
     }
 
     /// Sets up and starts the CORB and RIRB in one page (sections 4.4.1.3 and
-    /// 4.4.2.2).
-    pub fn start_rings(&mut self) -> Result<(), Error> {
+    /// 4.4.2.2), after [`Controller::reset`] stopped them.
+    fn start_rings(&mut self) -> Result<(), Error> {
         let rings = match self.rings.take() {
             Some(rings) => rings,
             None => self.dma(1)?,
@@ -271,6 +363,7 @@ impl<H: Host, R: Regs> Controller<H, R> {
             ring_size(self.regs.read8(CORBSIZE)).ok_or(Error::Unsupported("no CORB size"))?;
         let (rirb_size, rirb_entries) =
             ring_size(self.regs.read8(RIRBSIZE)).ok_or(Error::Unsupported("no RIRB size"))?;
+        self.rings_on = true;
         self.regs.write8(CORBSIZE, corb_size);
         self.regs.write32(CORBLBASE, (base + CORB_AT as u64) as u32);
         self.regs
@@ -295,30 +388,35 @@ impl<H: Host, R: Regs> Controller<H, R> {
         // each; polled, the status is cleared after every response.
         self.regs.write16(RINTCNT, 1);
         self.regs.write8(RIRBSTS, RIRBSTS_RINTFL | RIRBSTS_OIS);
-        self.regs.write8(RIRBCTL, RING_RUN);
-        self.regs.write8(CORBCTL, RING_RUN);
-        self.wait("the rings to run", RESET_NS, |r| {
-            r.read8(CORBCTL) & RING_RUN != 0 && r.read8(RIRBCTL) & RING_RUN != 0
-        })?;
         self.corb_entries = corb_entries;
         self.rirb_entries = rirb_entries;
         self.corb_wp = 0;
         self.rirb_rp = 0;
         self.rings = Some(rings);
-        Ok(())
+        self.regs.write8(RIRBCTL, RING_RUN);
+        self.regs.write8(CORBCTL, RING_RUN);
+        self.wait("the rings to run", RESET_NS, |r| {
+            r.read8(CORBCTL) & RING_RUN != 0 && r.read8(RIRBCTL) & RING_RUN != 0
+        })
     }
 
     fn rings_ptr(&self) -> Result<NonNull<u8>, Error> {
-        self.rings
-            .as_ref()
-            .map(Dma::cpu)
-            .ok_or(Error::Unsupported("the rings are not running"))
+        match (&self.rings, self.rings_on) {
+            (Some(rings), true) => Ok(rings.cpu()),
+            _ => Err(Error::Unsupported("the rings are not running")),
+        }
     }
 
     /// Sends one command to the codec and waits for its answer; unsolicited
-    /// responses, and any from another codec, are passed over.
+    /// responses, and any from another codec, are passed over. An answer
+    /// carries no tag, so after a command goes unanswered the rings are
+    /// stopped: a late answer is never taken for the next command's.
     pub fn command(&mut self, nid: u8, verb: Verb) -> Result<u32, Error> {
         let rings = self.rings_ptr()?;
+        self.verbs += 1;
+        if self.verbs > VERB_BUDGET {
+            return Err(Error::Codec("over 4096 commands in one bring-up"));
+        }
         let entry = verb::command(self.codec, nid, verb);
         self.corb_wp = (self.corb_wp + 1) % self.corb_entries;
         let at = CORB_AT + 4 * usize::from(self.corb_wp);
@@ -356,6 +454,7 @@ impl<H: Host, R: Regs> Controller<H, R> {
                 }
             }
             if self.host.now_ns().wrapping_sub(start) > RESPONSE_NS {
+                let _ = self.stop_rings();
                 return Err(Error::NoResponse {
                     nid,
                     verb: verb.bits(),
@@ -428,6 +527,8 @@ impl<H: Host, R: Regs> Controller<H, R> {
             r.read8(sd(s, SD_CTL0)) & SD_SRST == 0
         })?;
         self.regs.write8(sd(s, SD_STS), SD_STS_CLEAR);
+        // From here the descriptor points at memory: the teardown clears it.
+        self.stream = Some(s);
 
         let buffer = match self.buffer.take() {
             Some(buffer) => buffer,
@@ -466,6 +567,7 @@ impl<H: Host, R: Regs> Controller<H, R> {
             .ok_or(Error::Unsupported("the stream format"))?;
         self.regs.write16(sd(s, SD_FMT), bits);
         self.regs.write8(sd(s, SD_CTL2), STREAM_TAG << 4);
+        self.buffer = Some(buffer);
         if self.interrupts {
             self.regs.write32(INTCTL, INTCTL_GIE | (1 << s));
         }
@@ -474,8 +576,6 @@ impl<H: Host, R: Regs> Controller<H, R> {
         self.wait("the stream to run", RESET_NS, |r| {
             r.read8(sd(s, SD_CTL0)) & SD_RUN != 0
         })?;
-        self.buffer = Some(buffer);
-        self.stream = Some(s);
         Ok((s, length))
     }
 }

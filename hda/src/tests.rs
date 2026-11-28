@@ -1,7 +1,9 @@
 //! The driver over a fake controller and codec. The fake controller keeps a
 //! register file, runs the CORB into the codec when CORBWP moves, writes the
 //! RIRB, and when a stream runs reads its BDL and buffer as a device would.
-//! DMA memory's device address is its host address, so the fake reaches it.
+//! DMA memory gets device addresses of its own (above 4 GiB unless a test
+//! says otherwise), which the fake controller maps back as an IOMMU would.
+//! The hostile tests are in `tests/hostile.rs`.
 
 use core::cell::{Cell, RefCell};
 use core::ptr::NonNull;
@@ -17,26 +19,87 @@ use crate::regs::*;
 use crate::verb::{Kind, Verb, param};
 use crate::{Controller, Error, Regs};
 
+mod hostile;
+
 #[repr(C, align(4096))]
 struct Page([u8; 4096]);
 
-/// Pages from the heap, at their own addresses; a clock that moves 1 µs a read.
-#[derive(Default)]
+std::thread_local! {
+    /// What the fake host handed out, by device address: (device, CPU, len).
+    static MAPPED: RefCell<Vec<(u64, usize, usize)>> = const { RefCell::new(Vec::new()) };
+    /// Hosts made on this thread, so each gets device addresses of its own.
+    static HOSTS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Where the CPU reaches the device address `device`: the fake device's
+/// IOMMU. Only memory the host handed out is reachable.
+fn cpu_of(device: u64) -> *mut u8 {
+    MAPPED.with(|m| {
+        m.borrow()
+            .iter()
+            .find(|&&(at, _, len)| device >= at && device < at + len as u64)
+            .map(|&(at, cpu, _)| (cpu + (device - at) as usize) as *mut u8)
+            .expect("the device reached memory it was not given")
+    })
+}
+
+/// Above 4 GiB, as a 64-bit host's DMA memory may be.
+const HIGH: u64 = 0x40_0000_0000;
+
+/// Pages from the heap at device addresses from `next`; a clock that moves
+/// 1 µs a read.
 struct FakeHost {
     memory: Vec<Vec<Page>>,
     zones: Vec<Zone>,
     clock: Cell<u64>,
+    /// The next device address handed out.
+    next: u64,
+    /// Hand out a page less than asked.
+    short: bool,
+}
+
+impl Default for FakeHost {
+    fn default() -> FakeHost {
+        FakeHost::at(HIGH)
+    }
+}
+
+impl FakeHost {
+    /// Device addresses from `base`, offset 16 MiB for each host made before
+    /// on this thread.
+    fn at(base: u64) -> FakeHost {
+        let n = HOSTS.with(|h| {
+            h.set(h.get() + 1);
+            h.get()
+        });
+        let next = base + (n << 24);
+        FakeHost {
+            memory: Vec::new(),
+            zones: Vec::new(),
+            clock: Cell::new(0),
+            next,
+            short: false,
+        }
+    }
 }
 
 impl Host for FakeHost {
     fn dma(&mut self, pages: usize, zone: Zone) -> Result<Dma, DmaError> {
         self.zones.push(zone);
-        let mut block: Vec<Page> = (0..pages).map(|_| Page([0; 4096])).collect();
+        let pages = if self.short { pages - 1 } else { pages };
+        let mut block: Vec<Page> = (0..pages.max(1)).map(|_| Page([0; 4096])).collect();
         let cpu = NonNull::new(block.as_mut_ptr().cast::<u8>()).unwrap();
         self.memory.push(block);
+        let device = self.next;
+        self.next += 0x10_0000;
+        let len = pages * 4096;
+        MAPPED.with(|m| {
+            m.borrow_mut()
+                .push((device, cpu.as_ptr() as usize, len.max(4096)))
+        });
         // SAFETY: the block lives in `self.memory` (its heap buffer never
         // moves) for as long as the host, and nothing else uses it.
-        Ok(unsafe { Dma::new(cpu, cpu.as_ptr() as u64, pages * 4096) })
+        Ok(unsafe { Dma::new(cpu, device, len) })
     }
     fn mmio(&mut self, _: u8, _: u64, _: u64) -> Result<Mmio, DmaError> {
         Err(DmaError::Unsupported)
@@ -65,6 +128,8 @@ struct Node {
     /// The list as the codec reports it: entries (top bit a range end).
     conns: Vec<u16>,
     long: bool,
+    /// CONNECTION_LIST_LENGTH as given, whatever `conns` holds.
+    length: Option<u32>,
 }
 
 /// A codec: its nodes, and every set verb it was sent, in order.
@@ -74,6 +139,11 @@ struct FakeCodec {
     sets: Vec<(u8, u32)>,
     /// Answers nothing.
     silent: bool,
+    /// Answers every query with a seeded random word: all ones, zero or
+    /// anything.
+    chaos: Option<u64>,
+    /// GET_CONNECTION_LIST queries answered.
+    list_reads: usize,
 }
 
 impl FakeCodec {
@@ -87,14 +157,33 @@ impl FakeCodec {
         n
     }
 
+    fn random(&mut self) -> u32 {
+        let mut x = self.chaos.unwrap_or(1).max(1);
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.chaos = Some(x);
+        match x % 8 {
+            0 => u32::MAX,
+            1 => 0,
+            _ => (x >> 16) as u32,
+        }
+    }
+
     fn answer(&mut self, nid: u8, bits: u32) -> u32 {
         let node = self.nodes.get(&nid).cloned().unwrap_or_default();
         let (verb12, payload) = (bits >> 8, (bits & 0xFF) as u8);
+        if verb12 == 0xF02 {
+            self.list_reads += 1;
+        }
+        if self.chaos.is_some() && matches!(verb12, 0xF00 | 0xF02 | 0xF1C) {
+            return self.random();
+        }
         match verb12 {
             0xF00 => match payload {
-                param::CONNECTION_LIST_LENGTH => {
-                    node.conns.len() as u32 | if node.long { 0x80 } else { 0 }
-                }
+                param::CONNECTION_LIST_LENGTH => node
+                    .length
+                    .unwrap_or(node.conns.len() as u32 | if node.long { 0x80 } else { 0 }),
                 p => node.params.get(&p).copied().unwrap_or(0),
             },
             0xF02 => {
@@ -136,6 +225,35 @@ struct State {
     commands: usize,
     /// Each BDL entry's interrupt-on-completion, as the stream read them.
     ioc: Vec<bool>,
+    /// Every register write, in order: (offset, value).
+    writes: Vec<(u64, u64)>,
+    /// A bit that never moves, so one wait times out.
+    stuck: Option<Stuck>,
+    /// Garbage in the RIRB: a seed for random entries and write pointers.
+    hostile_rirb: Option<u64>,
+    /// STATESTS reads that show no codec yet.
+    wake_reads: u32,
+}
+
+/// Which bit of the controller is stuck, and the wait it stalls.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stuck {
+    /// CORBCTL's RUN never clears: "the rings to stop".
+    RingsRun,
+    /// GCTL's CRST never clears: "the link to enter reset".
+    InReset,
+    /// GCTL's CRST never sets: "the link to leave reset".
+    OutOfReset,
+    /// CORBRP's reset bit never clears.
+    CorbRp,
+    /// CORBCTL's RUN never sets: "the rings to run".
+    RingsIdle,
+    /// SDnCTL's SRST never clears: "the stream to leave reset".
+    StreamReset,
+    /// SDnCTL's RUN never sets: "the stream to run".
+    StreamIdle,
+    /// SDnCTL's RUN never clears once set: "the stream to stop".
+    StreamRuns,
 }
 
 struct FakeRegs(RefCell<State>);
@@ -157,6 +275,10 @@ impl FakeRegs {
             corb_size: 0x42,
             commands: 0,
             ioc: Vec::new(),
+            writes: Vec::new(),
+            stuck: None,
+            hostile_rirb: None,
+            wake_reads: 0,
         }))
     }
 
@@ -182,7 +304,37 @@ impl State {
     }
 
     fn ring_base(&self, low: u64) -> *mut u8 {
-        (self.get(low, 4) | (self.get(low + 4, 4) << 32)) as *mut u8
+        cpu_of(self.get(low, 4) | (self.get(low + 4, 4) << 32))
+    }
+
+    /// The next of a seeded xorshift's words.
+    fn chaos(&mut self) -> u64 {
+        let mut x = self.hostile_rirb.unwrap_or(1).max(1);
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.hostile_rirb = Some(x);
+        x
+    }
+
+    /// Up to three garbage entries anywhere in the RIRB, then a write pointer
+    /// from anywhere, all ones included.
+    fn garbage(&mut self) {
+        for _ in 0..self.chaos() % 4 {
+            let at = (self.chaos() % 256) as usize;
+            let (low, high) = (self.chaos() as u32, self.chaos() as u32);
+            // SAFETY: inside the driver's RIRB (256 entries of 8 bytes).
+            unsafe {
+                let p = self.ring_base(RIRBLBASE).add(8 * at).cast::<u32>();
+                p.write(low);
+                p.add(1).write(high);
+            }
+        }
+        let wp = match self.chaos() % 4 {
+            0 => 0xFFFF,
+            _ => self.chaos() & 0xFFFF,
+        };
+        self.put(RIRBWP, 2, wp);
     }
 
     fn entries(size: u8) -> u16 {
@@ -195,7 +347,7 @@ impl State {
 
     fn respond(&mut self, value: u32, unsolicited: bool) {
         let n = Self::entries(self.get(RIRBSIZE, 1) as u8);
-        let wp = ((self.get(RIRBWP, 2) as u16 + 1) % n) as u64;
+        let wp = ((self.get(RIRBWP, 2) as u16 & 0xFF).wrapping_add(1) % n) as u64;
         let at = unsafe { self.ring_base(RIRBLBASE).add(8 * wp as usize).cast::<u32>() };
         let high = u32::from(self.address) | if unsolicited { 1 << 4 } else { 0 };
         // SAFETY: the driver's RIRB, in a page the fake host handed out.
@@ -239,14 +391,18 @@ impl State {
                 self.respond(0xDEAD_BEEF, true);
             }
             let value = self.codec.answer((cmd >> 20) as u8, cmd & 0xF_FFFF);
-            self.respond(value, false);
+            let garbage = self.hostile_rirb.is_some() && !self.chaos().is_multiple_of(3);
+            match garbage {
+                true => self.garbage(),
+                false => self.respond(value, false),
+            }
         }
         self.put(CORBRP, 2, u64::from(rp));
     }
 
     fn run_stream(&mut self, sd_base: u64) {
-        let bdl =
-            (self.get(sd_base + SD_BDPL, 4) | (self.get(sd_base + SD_BDPU, 4) << 32)) as *const u8;
+        let bdl = cpu_of(self.get(sd_base + SD_BDPL, 4) | (self.get(sd_base + SD_BDPU, 4) << 32))
+            as *const u8;
         let lvi = self.get(sd_base + SD_LVI, 2) as usize;
         let cbl = self.get(sd_base + SD_CBL, 4) as usize;
         let mut bytes = Vec::new();
@@ -255,7 +411,7 @@ impl State {
             // handed out, read as the device would.
             unsafe {
                 let e = bdl.add(16 * i);
-                let addr = e.cast::<u64>().read() as *const u8;
+                let addr = cpu_of(e.cast::<u64>().read()) as *const u8;
                 let len = e.add(8).cast::<u32>().read() as usize;
                 self.ioc.push(e.add(12).cast::<u32>().read() & 1 != 0);
                 bytes.extend_from_slice(std::slice::from_raw_parts(addr, len));
@@ -272,6 +428,22 @@ impl State {
 impl FakeRegs {
     fn write(&self, at: u64, n: usize, value: u64) {
         let mut s = self.state();
+        s.writes.push((at, value));
+        let stream_ctl = at >= SD_BASE && (at - SD_BASE) % SD_STRIDE == SD_CTL0;
+        let value = match (s.stuck, at) {
+            (Some(Stuck::RingsRun), CORBCTL) => value | u64::from(RING_RUN),
+            (Some(Stuck::RingsIdle), CORBCTL) => value & !u64::from(RING_RUN),
+            (Some(Stuck::InReset), GCTL) => value | 1,
+            (Some(Stuck::OutOfReset), GCTL) => value & !1,
+            (Some(Stuck::CorbRp), CORBRP) => u64::from(CORBRP_RST),
+            (Some(Stuck::StreamReset), _) if stream_ctl => value | u64::from(SD_SRST),
+            (Some(Stuck::StreamIdle), _) if stream_ctl => value & !u64::from(SD_RUN),
+            (Some(Stuck::StreamRuns), _) if stream_ctl && s.get(at, 1) as u8 & SD_RUN != 0 => {
+                value | u64::from(SD_RUN)
+            }
+            _ => value,
+        };
+        let s_stuck_rp = s.stuck == Some(Stuck::CorbRp);
         match at {
             GCTL => {
                 let was = s.get(GCTL, 4) & 1;
@@ -286,7 +458,7 @@ impl FakeRegs {
                 s.put(at, n, old & !value);
             }
             CORBRP => {
-                let keep = s.sticky_rp_reset && value & u64::from(CORBRP_RST) != 0;
+                let keep = s_stuck_rp || (s.sticky_rp_reset && value & u64::from(CORBRP_RST) != 0);
                 s.put(CORBRP, 2, if keep { u64::from(CORBRP_RST) } else { 0 });
             }
             RIRBWP => {
@@ -307,8 +479,9 @@ impl FakeRegs {
                 s.put(at, 1, old & !value);
             }
             at if at >= SD_BASE && (at - SD_BASE) % SD_STRIDE == SD_CTL0 => {
+                let was = s.get(at, 1) as u8;
                 s.put(at, 1, value);
-                if value as u8 & SD_RUN != 0 {
+                if value as u8 & SD_RUN != 0 && was & SD_RUN == 0 {
                     s.run_stream(at);
                 }
             }
@@ -327,7 +500,12 @@ impl Regs for FakeRegs {
         }
     }
     fn read16(&self, offset: u64) -> u16 {
-        self.state().get(offset, 2) as u16
+        let mut s = self.state();
+        if offset == STATESTS && s.wake_reads > 0 {
+            s.wake_reads -= 1;
+            return 0;
+        }
+        s.get(offset, 2) as u16
     }
     fn read32(&self, offset: u64) -> u32 {
         self.state().get(offset, 4) as u32
@@ -537,7 +715,7 @@ fn the_tone_plays_on_qemus_hda_duplex() {
     assert_eq!(s.get(sd(4, SD_LVI), 2), 1);
     drop(s);
     assert_eq!(hda.position(), Some(4096), "the position moved");
-    hda.stop();
+    hda.stop().unwrap();
     assert_eq!(regs.read8(sd(4, SD_CTL0)) & SD_RUN, 0);
     assert_eq!(hda.position(), None);
 }
@@ -793,26 +971,43 @@ fn what_stops_the_bring_up_is_named() {
 
 #[test]
 fn a_32_bit_controller_gets_memory_below_4_gib() {
-    // Without 64OK, memory comes from Below4G; this host's heap is above
-    // 4 GiB, so the driver refuses it rather than truncating the address.
+    // Without 64OK, memory comes from Below4G; memory above 4 GiB is refused
+    // rather than its address truncated.
     let regs = FakeRegs::new(qemu_duplex());
     regs.state().put(GCAP, 2, 0x4400);
     let mut hda = Controller::new(FakeHost::default(), &regs);
-    let got = hda.play_tone();
-    assert_eq!(hda.host_mut().zones[0], Zone::Below4G);
-    let heap_high = hda.host_mut().memory[0].as_ptr() as u64 >= 1 << 32;
-    match heap_high {
-        true => assert_eq!(got, Err(Error::Dma(DmaError::OutOfRange))),
-        false => assert!(got.is_ok()),
-    }
+    assert_eq!(hda.play_tone(), Err(Error::Dma(DmaError::OutOfRange)));
+    assert_eq!(hda.host_mut().zones, [Zone::Below4G]);
+    // Memory a 32-bit controller reaches plays.
+    let regs = FakeRegs::new(qemu_duplex());
+    regs.state().put(GCAP, 2, 0x4400);
+    let mut hda = Controller::new(FakeHost::at(0x8000_0000), &regs);
+    hda.play_tone().unwrap();
+    assert_eq!(hda.host_mut().zones, [Zone::Below4G, Zone::Below4G]);
+    // With 64OK, from anywhere: the rings, then the buffer, above 4 GiB.
     let regs = FakeRegs::new(qemu_duplex());
     let mut hda = Controller::new(FakeHost::default(), &regs);
     hda.play_tone().unwrap();
-    assert_eq!(
-        hda.host_mut().zones,
-        [Zone::Any, Zone::Any],
-        "rings, then the buffer"
-    );
+    assert_eq!(hda.host_mut().zones, [Zone::Any, Zone::Any]);
+    assert!(regs.read32(CORBUBASE) >= (HIGH >> 32) as u32);
+}
+
+#[test]
+fn dma_memory_is_checked_before_the_device_gets_it() {
+    // Less than asked: the buffer's two pages come back as one.
+    let regs = FakeRegs::new(qemu_duplex());
+    let host = FakeHost {
+        short: true,
+        ..FakeHost::default()
+    };
+    let mut hda = Controller::new(host, &regs);
+    // The rings ask for one page, which comes back empty: refused at once.
+    assert_eq!(hda.play_tone(), Err(Error::Dma(DmaError::NoMemory)));
+    // Not 128-byte aligned for the device.
+    let regs = FakeRegs::new(qemu_duplex());
+    let mut hda = Controller::new(FakeHost::at(HIGH + 64), &regs);
+    assert_eq!(hda.play_tone(), Err(Error::Dma(DmaError::OutOfRange)));
+    assert_eq!(regs.read8(CORBCTL), 0, "nothing was started");
 }
 
 #[test]
@@ -861,7 +1056,7 @@ fn open_is_silent_and_the_tone_can_interrupt() {
     assert_eq!(regs.state().ioc, [true, true]);
     assert_eq!(regs.read32(INTCTL), INTCTL_GIE | 1 << 4);
     assert_eq!(regs.read8(sd(4, SD_CTL0)), SD_RUN | SD_IOCE);
-    hda.stop();
+    hda.stop().unwrap();
     assert_eq!(regs.read32(INTCTL), 0);
 
     // Polled, the default: no IOC, no interrupt enables.
