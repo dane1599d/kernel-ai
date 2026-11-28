@@ -21,7 +21,8 @@
 # `gpt_read`, `gguf_file` and `kaifs_image`, whose bodies are in each crate's
 # tests (hostile/harness.rs, hostile/image.rs, harness/gguf_file.rs), seeded
 # with that test's samples; and the device-facing readers, `nvme_identify` and
-# `xhci_descriptors` (USB descriptors, hub descriptor and port status).
+# `xhci_descriptors` (USB descriptors, hub descriptor and port status), and
+# pci's DEV_CFG filter, `dev_cfg`.
 # The targets are fuzz/fuzz_targets/*.rs, outside the workspace; their bodies
 # are fuzz/harness.rs, fuzz/surfabi_harness.rs, fuzz/look_harness.rs and
 # fuzz/media_harness.rs, which
@@ -143,6 +144,7 @@ jobs:
             kaifs_image) seed="-p kaifs --test hostile" ;;
             nvme_identify) seed="-p nvme --test hostile" ;;
             xhci_descriptors) seed="-p xhci --test hostile" ;;
+            dev_cfg) seed="-p pci --test hostile" ;;
             acpi_tables | ivrs_tables) seed="-p acpitables --test hostile" ;;
             *) echo "$TARGET has no seeding test: it starts from an empty corpus"; exit 0 ;;
           esac
