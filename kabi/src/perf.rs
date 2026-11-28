@@ -587,6 +587,32 @@ mod tests {
         assert_eq!(misses_judged(&g1440("20.18"), 21_615_060, Some(1417)), [g]);
     }
 
+    /// A slowdown of the whole composite raises (a)'s p50 with (g), so the
+    /// (a) term would follow (g) up; the cap stops it. Main's usual 6975P-C
+    /// (job 140190314306: reference 21,615,060 ns, (a) p50 14.17 and p99
+    /// 14.91 ms, (g) p99 17.55 ms) with every figure 20% slower passes, and
+    /// 30% slower fails on (g) alone: (a) is still within its scaled 19.45 ms,
+    /// and uncapped, (g)'s budget would have been 25.78 ms.
+    #[test]
+    fn a_whole_composite_slowdown_fails_at_the_cap() {
+        let g = "(g) full composite with Start and the pane open at 2560x1440";
+        let a = |value: &str| {
+            alloc::format!(
+                "OVER BUDGET (a) full composite at 2560x1440 {value} ms (budget p99 14.40 ms)"
+            )
+        };
+        let reference = 21_615_060;
+        // +20%: (a) p99 17.89, p50 17.00; (g) p99 21.06, under 1.15 x 19.45.
+        let slower = alloc::format!("{}\n{}", a("17.89"), g1440("21.06"));
+        assert!(misses_judged(&slower, reference, Some(1700)).is_empty());
+        // +30%: (a) p99 19.38, p50 18.42; (g) p99 22.82, past the cap.
+        let slower = alloc::format!("{}\n{}", a("19.38"), g1440("22.82"));
+        assert_eq!(misses_judged(&slower, reference, Some(1842)), [g]);
+        assert_eq!(composite_budget(1440, reference, 1842), 2236);
+        // Uncapped, the (a) term alone would have been 25.78 ms, past (g).
+        assert_eq!(1842 * COMPOSITE_TIMES_HUNDREDTHS / 100, 2578);
+    }
+
     #[test]
     fn slowness_is_told_in_tenths_of_the_baseline() {
         assert_eq!(times_baseline(REFERENCE_BASELINE_NS), "1.0");

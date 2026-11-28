@@ -26,7 +26,10 @@
 //! (g) is also judged against (a) from the same boot: its budget is the larger
 //! of that and [`kabi::perf::COMPOSITE_TIMES_HUNDREDTHS`] of (a)'s p50
 //! ([`kabi::perf::composite_budget`]), since the reference undersells the
-//! composite on some CPU classes.
+//! composite on some CPU classes. That second term is never past
+//! [`kabi::perf::COMPOSITE_CAP_HUNDREDTHS`] of the reference-scaled budget, so
+//! a slow (a)-(c) run, or a whole-composite slowdown, lifts (g)'s budget by at
+//! most 15%.
 //! Under TCG the figures are recorded and not judged, with fewer frames.
 //!
 //! First `desktop` times `kabi::perf`'s fixed reference work. Under KVM a
@@ -181,12 +184,13 @@ fn judged<'a>(
         if let Some(a) = composite.filter(|_| figure.name.starts_with(kabi::perf::COMPOSITE_FIGURE))
         {
             log!(
-                "desk-perf: {what}, {run}: {}: judged at {} ms, the larger of {} ms for the runner and {} times (a)'s p50 {} ms (at most 1.15 times the first)",
+                "desk-perf: {what}, {run}: {}: judged at {} ms, the larger of {} ms for the runner and {} times (a)'s p50 {} ms (at most {} times the first)",
                 figure.name,
                 hundredths_text(kabi::perf::composite_budget(figure.budget, reference, a)),
                 hundredths_text(kabi::perf::scaled_budget(figure.budget, reference)),
                 hundredths_text(kabi::perf::COMPOSITE_TIMES_HUNDREDTHS),
-                hundredths_text(a)
+                hundredths_text(a),
+                hundredths_text(kabi::perf::COMPOSITE_CAP_HUNDREDTHS)
             );
         }
         log!(
