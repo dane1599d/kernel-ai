@@ -165,6 +165,8 @@ pub struct Controller<H: Hal> {
     deferred: [Option<Event>; DEFERRED],
     /// Pages of detached devices, zeroed again when taken.
     spare: [Option<Dma>; SPARE_PAGES],
+    /// Where servicing the root ports stands.
+    service: ports::Service,
 }
 
 impl<H: Hal> Controller<H> {
@@ -197,6 +199,7 @@ impl<H: Hal> Controller<H> {
             changed: [0; 4],
             deferred: [None; DEFERRED],
             spare: [const { None }; SPARE_PAGES],
+            service: ports::Service::Idle,
         };
         controller.take_from_firmware();
         controller.reset()?;

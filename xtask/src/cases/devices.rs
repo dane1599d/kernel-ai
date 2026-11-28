@@ -49,6 +49,35 @@ const USB_MOUSE: &[&str] = &[
     "!mouse_button 0",
 ];
 
+/// `test=usb-hotplug`: a USB mouse is plugged in while "hot" is typed on the
+/// USB keyboard, then moved and unplugged, and "one" typed; then the keyboard
+/// is unplugged, another plugged in on its port, and "two" typed on that.
+/// QEMU sends keys to the keyboard plugged in last, so the one typed on
+/// while a device is plugged in is the first, and the device a mouse.
+const USB_HOTPLUG: &[&str] = &[
+    r#"@{"execute":"device_add","arguments":{"driver":"usb-mouse","id":"mouse","bus":"xhci.0","port":"2"}}"#,
+    "h",
+    "o",
+    "t",
+    "ret",
+    "~3000",
+    "!mouse_move 10 20",
+    r#"@{"execute":"device_del","arguments":{"id":"mouse"}}"#,
+    "~3000",
+    "o",
+    "n",
+    "e",
+    "ret",
+    r#"@{"execute":"device_del","arguments":{"id":"kbd1"}}"#,
+    "~3000",
+    r#"@{"execute":"device_add","arguments":{"driver":"usb-kbd","id":"kbd2","bus":"xhci.0","port":"1"}}"#,
+    "~3000",
+    "t",
+    "w",
+    "o",
+    "ret",
+];
+
 pub(super) const CASES: &[TestCase] = &[
     TestCase {
         keys: &[KAI],
@@ -237,6 +266,25 @@ pub(super) const CASES: &[TestCase] = &[
             "usb: received \"kai\" over USB",
         ],
         ..case("usb-mouse", "test=usb")
+    },
+    // P7 row 5: hot-plug. The usb-ports thread sets up a mouse plugged in
+    // while the keyboard types, detaches it and the keyboard when they are
+    // unplugged, and sets up a keyboard plugged in on the first one's port.
+    // Every key typed comes whole, over USB.
+    TestCase {
+        usb: &["usb-kbd,id=kbd1,port=1"],
+        keys: &[USB_HOTPLUG],
+        expect: &[
+            "usb: hot-plug thread started",
+            "usb: port 2: mouse 0627:0001, ",
+            "usb: port 2: detached",
+            "usb: port 1: detached",
+            "usb: hot-plug: \"hot\" typed whole over USB",
+            "usb: hot-plug: \"one\" typed whole over USB",
+            "usb: hot-plug: \"two\" typed whole over USB",
+            "detached, and no key lost",
+        ],
+        ..case("usb-hotplug", "test=usb-hotplug")
     },
     TestCase {
         disk: Some(Fixture::Raw),

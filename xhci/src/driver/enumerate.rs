@@ -17,7 +17,7 @@ use crate::{Error, PAGE, hid};
 /// Settle time after power-up or a connect (USB 2.0 TATTDB, 100 ms) and after
 /// a reset (TRSTRCY, 10 ms).
 pub(super) const SETTLE_NS: u64 = 100_000_000;
-const RESET_RECOVERY_NS: u64 = 10_000_000;
+pub(super) const RESET_RECOVERY_NS: u64 = 10_000_000;
 /// Hubs deep a device may be: the route string has five nibbles (xHCI 8.9), so
 /// five hubs, and a device behind the fifth.
 pub const MAX_TIERS: u8 = 5;

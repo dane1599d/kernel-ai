@@ -13,7 +13,9 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use devkit::Host;
 use spin::Mutex;
 use xhci::host::HostHal;
-use xhci::{Controller, DeviceKind, Hal, Input};
+use xhci::{Controller, DeviceKind, Hal, Input, PortReport};
+
+pub mod hotplug;
 
 /// An xHCI controller the PCI probe found, with its BAR0 assigned by firmware.
 pub struct Function {
@@ -58,6 +60,8 @@ pub fn init(functions: Vec<Function>) {
     }
     *CONTROLLERS.lock() = running;
     READY.store(true, Ordering::Release);
+    // Only with a controller running: a boot without one keeps its threads.
+    hotplug::start();
     // An interrupt that came while the controllers started found nothing to
     // poll and left IMAN.IP set, which holds back every later one: poll once.
     let waiter = x86_64::instructions::interrupts::without_interrupts(|| poll(true));
@@ -90,7 +94,14 @@ fn start(function: &Function) -> Result<Controller<KernelHal>, &'static str> {
             None => String::from("polled from the timer"),
         }
     );
-    controller.enumerate(|report| match report.outcome {
+    controller.enumerate(log_report);
+    Ok(controller)
+}
+
+/// Logs what was set up on a port, at boot or plugged in later, and counts its
+/// keyboards and pointers.
+fn log_report(report: PortReport) {
+    match report.outcome {
         Ok(device) => {
             for kind in device.kinds.iter().flatten() {
                 let count = match kind {
@@ -117,8 +128,7 @@ fn start(function: &Function) -> Result<Controller<KernelHal>, &'static str> {
             }
         }
         Err(error) => log!("usb: port {}: {}", report.port, error.text()),
-    });
-    Ok(controller)
+    }
 }
 
 /// Called from the timer interrupt: the boot CPU, which also takes IRQ1, polls
@@ -150,6 +160,7 @@ fn poll(interrupts: bool) -> Option<usize> {
     let mut bytes = [0u8; 64];
     let mut len = 0;
     let mut woke = None;
+    let mut changed = false;
     let mine = controllers
         .iter_mut()
         .filter(|(_, on_irq)| *on_irq == interrupts);
@@ -175,6 +186,11 @@ fn poll(interrupts: bool) -> Option<usize> {
                 pointer::push(pointer_event(report));
             }
         });
+        changed |= controller.ports_changed();
+    }
+    drop(controllers);
+    if changed {
+        hotplug::changed();
     }
     if len == 0 {
         return woke;
