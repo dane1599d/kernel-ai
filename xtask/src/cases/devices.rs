@@ -239,16 +239,18 @@ pub(super) const CASES: &[TestCase] = &[
         ..case("usb-mouse", "test=usb")
     },
     // P7 row 5: a keyboard and a tablet behind a hub (QEMU's usb-hub, full
-    // speed, eight ports) on root port 1. The hub is set up with hub class
-    // requests, each device gets a slot routed through the hub's ports, and
-    // QEMU's keys still reach the console over the keyboard.
+    // speed, eight ports) on QEMU's USB port 1. The hub is set up with hub
+    // class requests, each device gets a slot routed through the hub's ports,
+    // and QEMU's keys still reach the console over the keyboard. QEMU's USB
+    // port 1 is the xHCI's root port 5: qemu-xhci numbers its four USB 3 ports
+    // first, then its USB 2 ports, where a full-speed hub goes.
     TestCase {
         usb: &["usb-hub,port=1", "usb-kbd,port=1.1", "usb-tablet,port=1.2"],
         keys: &[USB_TABLET],
         expect: &[
-            "usb: port 1: hub 0409:55aa of 8 ports, full speed",
-            "usb: port 1.1: keyboard 0627:0001, full speed",
-            "usb: port 1.2: tablet 0627:0001, full speed",
+            "usb: port 5: hub 0409:55aa of 8 ports, full speed",
+            "usb: port 5.1: keyboard 0627:0001, full speed",
+            "usb: port 5.2: tablet 0627:0001, full speed",
             "usb: USB tablet at 16384 8192 of 32767 32767, buttons 1",
             "usb: received \"kai\" over USB",
         ],
