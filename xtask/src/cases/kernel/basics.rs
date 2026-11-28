@@ -73,7 +73,7 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
         then: Some(&NO_HPET_BOOT),
         ..case("boot-no-hpet", "test")
     },
-    // ADR 0007 section 5, v0.3: with iommu=on (opt-in until spike S07-2),
+    // ADR 0007 section 5, v0.3: with iommu=check (opt-in until spike S07-2),
     // the kernel reads QEMU's IVRS, gives its one IOMMU a pass-through
     // device table, a command buffer and an event log, and `iommu=check`
     // proves amdvi's command and event-log formats against
@@ -104,7 +104,7 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
             "FAILED",
         ],
         then: Some(&IOMMU_DEFAULT_BOOT),
-        ..case("iommu", "test iommu=on iommu=check")
+        ..case("iommu", "test iommu=check")
     },
     // P6 row 1 (ADR 0006): the nesting census. The kernel logs the VMX, SVM,
     // NPT and NRIPS bits it sees; nesting-census.yml reads them per runner.

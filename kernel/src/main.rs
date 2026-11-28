@@ -95,7 +95,6 @@ mod https_tests;
 mod i8042;
 mod icount_tests;
 mod idt;
-mod iommu;
 mod input;
 mod interrupt_tests;
 mod ipc;
@@ -377,8 +376,6 @@ extern "C" fn boot_continue() -> ! {
         log!("{message}; no runtime services");
     }
     let platform = init_devices();
-    // Before any driver starts DMA: every device passes through it.
-    iommu::init(platform, cmdline());
     if let Err(message) = threads::init() {
         fail(message);
     }

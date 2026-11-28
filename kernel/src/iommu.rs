@@ -5,7 +5,8 @@
 //! block a real machine's disk, network or interrupts (the decisions row of
 //! 2026-11-28, "amdvi-clean-room").
 //!
-//! With `iommu=on`, each IOMMU gets a device table of pass-through entries
+//! It runs first in [`super::init`], before the PCI walk starts any driver.
+//! With `iommu=on` (or `iommu=check`), each IOMMU gets a device table of pass-through entries
 //! (IV clear, so interrupts pass as sent), a command buffer and an event
 //! log, and one COMPLETION_WAIT proves the IOMMU reads its commands; a unit
 //! that fails is turned off again. Nothing is translated: every device keeps
@@ -56,7 +57,8 @@ pub fn init(platform: &acpitables::Platform, cmdline: &str) {
         log!("iommu: off on the command line; DMA is not confined");
         return;
     }
-    if !said("iommu=on") {
+    // `iommu=check` (the boot case) brings the unit up too, then checks it.
+    if !said("iommu=on") && !said("iommu=check") {
         log!("iommu: left off until iommu=on (spike S07-2); DMA is not confined");
         return;
     }
