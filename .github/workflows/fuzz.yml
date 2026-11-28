@@ -16,6 +16,11 @@
 # (`acpi_tables`: the MADT, HPET, MCFG and FADT readers over a memory window;
 # `ivrs_tables`: IVRS), whose bodies are acpitables/tests/hostile/harness.rs
 # and ivrs.rs, seeded with the sample machine and QEMU's own IVRS tables.
+# And the readers of other bytes with a hostile test of their own: `uelf`, the
+# boot `kai_bundle`, `slot_record` (KaiBootState, `kai-slot 1` and `pending`),
+# `gpt_read`, `gguf_file` and `kaifs_image`, whose bodies are in each crate's
+# tests (hostile/harness.rs, hostile/image.rs, harness/gguf_file.rs), seeded
+# with that test's samples.
 # The targets are fuzz/fuzz_targets/*.rs, outside the workspace; their bodies
 # are fuzz/harness.rs, fuzz/surfabi_harness.rs, fuzz/look_harness.rs and
 # fuzz/media_harness.rs, which
@@ -129,6 +134,12 @@ jobs:
             kai_grants) seed="-p kaigrants --test hostile" ;;
             agent_manifest) seed="-p kaiagent --test hostile" ;;
             actlog) seed="-p shellcore --test actlog_hostile" ;;
+            uelf) seed="-p uelf --test hostile" ;;
+            kai_bundle) seed="-p kaibundle --test hostile" ;;
+            slot_record) seed="-p bootslot --test hostile" ;;
+            gpt_read) seed="-p diskmap --test hostile" ;;
+            gguf_file) seed="-p gguf --test hostile" ;;
+            kaifs_image) seed="-p kaifs --test hostile" ;;
             acpi_tables | ivrs_tables) seed="-p acpitables --test hostile" ;;
             *) echo "$TARGET has no seeding test: it starts from an empty corpus"; exit 0 ;;
           esac

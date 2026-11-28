@@ -243,3 +243,14 @@ fn mutated_backup_arrays_never_mislead() {
         });
     }
 }
+
+/// Writes the `gpt_read` target's seeds, one file each, to
+/// `$FUZZ_SEED_DIR/gpt_read/`: the sample disk.
+#[test]
+#[ignore = "writes the fuzz corpus; run by the fuzz workflow"]
+fn write_fuzz_seeds() {
+    let dir = std::env::var("FUZZ_SEED_DIR").expect("FUZZ_SEED_DIR names the corpus folder");
+    let folder = std::path::Path::new(&dir).join("gpt_read");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("sample"), sample()).unwrap();
+}

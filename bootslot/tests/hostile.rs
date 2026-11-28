@@ -142,3 +142,26 @@ fn a_single_flipped_bit_with_the_old_crc_is_refused() {
         }
     }
 }
+
+/// Writes the `slot_record` target's seeds, one file each, to
+/// `$FUZZ_SEED_DIR/slot_record/`: each sample record, a `kai-slot 1` file and two `pending` files (the target reads its input as all three).
+#[test]
+#[ignore = "writes the fuzz corpus; run by the fuzz workflow"]
+fn write_fuzz_seeds() {
+    let dir = std::env::var("FUZZ_SEED_DIR").expect("FUZZ_SEED_DIR names the corpus folder");
+    let folder = std::path::Path::new(&dir).join("slot_record");
+    std::fs::create_dir_all(&folder).unwrap();
+    let write = |name: &str, bytes: &[u8]| std::fs::write(folder.join(name), bytes).unwrap();
+    for (i, record) in records().iter().enumerate() {
+        write(&format!("record-{i}"), &record.encode());
+    }
+    write(
+        "slot-file",
+        b"kai-slot 1\nrelease_seq 7\nepoch 2\nversion 0.1.0\ncommit abc\nchannel dev\n",
+    );
+    write("pending-a", b"snapshot 7 slot A release 2\n");
+    write(
+        "pending-b",
+        b"snapshot 18446744073709551615 slot B release 4294967295",
+    );
+}

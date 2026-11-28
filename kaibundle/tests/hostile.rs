@@ -144,3 +144,14 @@ fn rewritten_digests_still_refuse_a_bad_table() {
         harness::kai_bundle(&bytes);
     }
 }
+
+/// Writes the `kai_bundle` target's seeds, one file each, to
+/// `$FUZZ_SEED_DIR/kai_bundle/`: the sample bundle.
+#[test]
+#[ignore = "writes the fuzz corpus; run by the fuzz workflow"]
+fn write_fuzz_seeds() {
+    let dir = std::env::var("FUZZ_SEED_DIR").expect("FUZZ_SEED_DIR names the corpus folder");
+    let folder = std::path::Path::new(&dir).join("kai_bundle");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("sample"), sample()).unwrap();
+}
