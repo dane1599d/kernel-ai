@@ -41,6 +41,7 @@ pub fn init(platform: &acpitables::Platform, cmdline: &str) {
     if let Some(transport) = found.rng {
         crate::entropy::attach(transport);
     }
+    crate::audio_tests::attach(found.sound);
     blk::init(found.disks);
     crate::nvme::init(found.nvme);
     crate::block::scan();

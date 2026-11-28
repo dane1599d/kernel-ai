@@ -1678,6 +1678,7 @@ dependencies = [
  "serde",
  "serde_json",
  "smoltcp",
+ "spike-p6-s1",
  "spike-rhai",
  "spike-wasmi",
  "spin 0.12.3",
@@ -2648,6 +2649,13 @@ dependencies = [
  "defmt",
  "heapless",
  "managed",
+]
+
+[[package]]
+name = "spike-p6-s1"
+version = "0.1.0-dev"
+dependencies = [
+ "virtio-drivers",
 ]
 
 [[package]]

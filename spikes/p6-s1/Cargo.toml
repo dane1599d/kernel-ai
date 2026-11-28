@@ -1,0 +1,12 @@
+[package]
+name = "spike-p6-s1"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# P6-S1 `audio-virtio` (throwaway, spike/audio-virtio, never merged): plays a
+# tone through a virtio-sound device, checks for underruns, and counts the CPU
+# time it took. The device driver is virtio-drivers' `sound`.
+[dependencies]
+virtio-drivers = { version = "0.13.0", default-features = false, features = ["alloc"] }

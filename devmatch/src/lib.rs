@@ -58,6 +58,8 @@ pub const TABLE: &[Row] = &[
     kernel(Key::Virtio(2), "virtio-blk"),
     kernel(Key::Virtio(4), "virtio-rng"),
     kernel(Key::Virtio(16), "virtio-gpu"),
+    // P6-S1 (spike): virtio-sound.
+    kernel(Key::Virtio(25), "virtio-snd"),
     kernel(Key::Class(0x01, 0x08, 0x02), "nvme"),
     Row {
         input: true,

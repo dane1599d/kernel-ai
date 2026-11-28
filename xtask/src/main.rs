@@ -586,6 +586,17 @@ fn execute(options: &Options) -> Result<(), String> {
             if case.gpu {
                 args.extend(screen::gpu_args());
             }
+            if case.audio {
+                args.extend(
+                    [
+                        "-audiodev",
+                        "none,id=snd0",
+                        "-device",
+                        "virtio-sound-pci,audiodev=snd0",
+                    ]
+                    .map(String::from),
+                );
+            }
             if case.rng {
                 args.extend(["-device".to_string(), "virtio-rng-pci".to_string()]);
             }

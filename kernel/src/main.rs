@@ -38,6 +38,7 @@ mod appearance_tests;
 mod ask_box;
 mod ask_tests;
 mod async_tests;
+mod audio_tests;
 mod backtrace;
 mod bigmap_tests;
 mod blk_tests;
@@ -498,6 +499,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Scriptrun => run_case(scriptrun_tests::check),
         SelfTest::Fpu => run_case(fpu_tests::fpu_check),
         SelfTest::Probe => run_case(fpu_tests::probe_check),
+        SelfTest::AudioVirtio => run_case(audio_tests::check),
         SelfTest::AppBench => run_case(appbench_tests::check),
         SelfTest::TufBench => run_case(tufbench_tests::check),
         SelfTest::Handles => run_case(handle_tests::check),

@@ -58,3 +58,5 @@ zerocopy = { version = "0.8.40", default-features = false }
 bitflags = { version = "2.13.2", default-features = false }
 spike-rhai = { path = "../spikes/rhai", optional = true }
 spike-wasmi = { path = "../spikes/wasmi", optional = true }
+# P6-S1 (spike/audio-virtio only).
+spike-p6-s1 = { path = "../spikes/p6-s1" }

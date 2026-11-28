@@ -129,6 +129,8 @@ pub struct Found {
     pub gpu: Option<SplitTransport>,
     /// The first virtio-rng, for ENTROPY; any other is left alone.
     pub rng: Option<PciTransport>,
+    /// The first virtio-sound (P6-S1 spike).
+    pub sound: Option<PciTransport>,
     /// Every NVMe controller, in bus order.
     pub nvme: Vec<crate::nvme::Function>,
     /// Every xHCI controller, in bus order.
@@ -149,6 +151,7 @@ pub fn probe(platform: &acpitables::Platform, cmdline: &str) -> Result<Found, &'
         disks: Vec::new(),
         gpu: None,
         rng: None,
+        sound: None,
         nvme: Vec::new(),
         usb: Vec::new(),
     };
@@ -288,6 +291,7 @@ fn bind(
         "virtio-gpu" => DeviceType::GPU,
         "virtio-blk" => DeviceType::Block,
         "virtio-rng" => DeviceType::EntropySource,
+        "virtio-snd" => DeviceType::Sound,
         _ => {
             log!("pci: no kernel driver called {driver} for {at}");
             return None;
@@ -328,6 +332,12 @@ fn bind(
         DeviceType::GPU => split_transport(root, access, at, transport),
         DeviceType::EntropySource => {
             found.rng = Some(transport);
+            return Some(Outcome::Running(None));
+        }
+        DeviceType::Sound => {
+            if found.sound.is_none() {
+                found.sound = Some(transport);
+            }
             return Some(Outcome::Running(None));
         }
         _ => {
