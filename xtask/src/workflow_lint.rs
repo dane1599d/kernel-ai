@@ -188,7 +188,9 @@ fn grants_write(value: &str) -> bool {
 
 /// A `permissions:` key at column 0 whose value is empty, a flow mapping, or
 /// `read-all` / `write-all` (what a top-level block can be), not another key
-/// that starts with the word or a line of a scalar.
+/// that starts with the word or a line of a scalar. A block written as a
+/// multi-line flow mapping, or with an anchor (`permissions: &p`), is not
+/// recognised and fails the lint: it fails safe, and the fix is the plain block.
 fn top_permissions(line: &str) -> bool {
     let Some(value) = line.strip_prefix("permissions:") else {
         return false;
@@ -215,6 +217,9 @@ fn policy(file: &str, text: &str, workflow: bool) -> Vec<String> {
         let at = format!("{file}:{}", i + 1);
         let body = line.trim_start();
         let body = body.strip_prefix("- ").unwrap_or(body).trim_start();
+        if body.starts_with('#') {
+            continue;
+        }
         if let Some((scope, value)) = body.split_once(':')
             && !scope.contains(' ')
             && grants_write(value)
@@ -429,6 +434,7 @@ jobs:
         "  contents: 'write'",
         "  contents: write # needed to tag",
         "  permissions: { contents: write }",
+        "  permissions: { contents: read, issues: write }",
     ] {
         let text = format!("permissions: {{}}\njobs:\n{line}\n");
         let found = policy(".github/workflows/ci.yml", &text, true);
