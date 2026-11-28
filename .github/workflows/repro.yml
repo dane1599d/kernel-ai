@@ -2,8 +2,9 @@
 # two fresh runners and rebuilt offline from the source tarball must be the
 # same bytes. release.yml checks that on a release; this checks it on main every
 # Monday, so drift shows within a week and not on the day of a tag. On a
-# difference `cargo xtask image-hashes compare` names each partition and file
-# that differs, with each build's hash. The three builds are release.yml's own
+# difference `cargo xtask image-hashes compare` names each partition, file and
+# bundle module that differs, with each build's hash, and the two runners'
+# SBOMs must be one file. The three builds are release.yml's own
 # (release-images.yml, which both call).
 #
 # Scheduled and dispatched runs come from the default branch. A pull request
@@ -65,6 +66,10 @@ jobs:
       - name: Name what differs
         run: |
           cargo xtask image-hashes compare a=listing-a.txt b=listing-b.txt offline=listing-offline.txt
+      # The two runners' SBOMs must be the same file, as release.yml's assemble
+      # requires (the offline rebuild writes none).
+      - name: The two SBOMs are the same file
+        run: cmp build-a/kernel-ai.cdx.json build-b/kernel-ai.cdx.json
       # The listings agree yet the .zst files differ: the image bytes are the
       # same, so it is the compression. Say so, with each file's hash.
       - name: The compressed images are the same file

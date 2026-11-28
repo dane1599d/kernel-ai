@@ -35,6 +35,10 @@
 # With no repository committed, it builds the same image with `--test-root`
 # instead, whose `pkgrepo/` a throwaway root signs, checks that every other boot
 # module and part hashes as build-a's did, and boots that.
+# It needs all of `images`, not only build-a: a called workflow's jobs cannot
+# be needed one by one, so it starts after the offline rebuild too and is
+# skipped when that fails. Accepted: on a tag it lengthens the path to
+# `publish` by about the offline rebuild's run time.
 #
 # The `sign` job also uploads the committed `kai-chunks 1` lists in
 # xtask/models/chunks as `models-chunks-<version>`, before any build runs, for

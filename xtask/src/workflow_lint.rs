@@ -9,8 +9,10 @@
 //! `lookup-only`, and `Swatinem/rust-cache` sets `save-if` to main or `false`.
 //! Small entries a run's own later jobs restore (QEMU, tuftool) may be saved
 //! anywhere. On a tag, release.yml restores nothing, nor does any workflow it
-//! calls (release-images.yml, [`TAG_RUN`]): the jobs `publish` needs would
-//! otherwise run what any job on main could have written there.
+//! calls (release-images.yml, [`TAG_RUN`]): no cache restore without the
+//! not-a-tag `if:`, rust-cache included, which restores whatever its save-if.
+//! The jobs `publish` needs would otherwise run what any job on main could
+//! have written there.
 //!
 //! Two more rules guard what a workflow may do. Every workflow has a top-level
 //! `permissions:` block (without one it gets the repository's default token,
@@ -29,7 +31,8 @@ const SMALL: &[&str] = &["qemu-", "tuftool-"];
 const MAIN: &str = "github.ref == 'refs/heads/main'";
 const NOT_A_TAG: &str = "!startsWith(github.ref, 'refs/tags/";
 /// The workflows a release tag runs: release.yml and each workflow it calls
-/// with `uses: ./.github/workflows/...` (a test holds the list to the calls).
+/// with `uses: ./.github/workflows/...`, and each those call (a test follows
+/// the calls and holds the list to them).
 const TAG_RUN: &[&str] = &["release.yml", "release-images.yml"];
 
 /// One `- ` list item: its first line's number and its lines, the dash
@@ -127,6 +130,12 @@ fn lint(file: &str, text: &str) -> (Vec<String>, usize) {
             if save_if != "false" && !save_if.contains(MAIN) {
                 errors.push(format!(
                     "{at}: rust-cache saves from any ref: set save-if to `{MAIN}` or false"
+                ));
+            }
+            // rust-cache restores on every ref, whatever save-if says.
+            if release && !cond.contains(NOT_A_TAG) {
+                errors.push(format!(
+                    "{at}: a release tag restores rust-cache: add `if: ${{{{ {NOT_A_TAG}') }}}}`"
                 ));
             }
             continue;
@@ -284,10 +293,11 @@ jobs:
         .map(|e| e.split(": ").next().unwrap_or(""))
         .collect();
     let at = |n: usize| format!(".github/workflows/release.yml:{n}");
-    // Line 4's full cache both saves anywhere and is restored on a tag.
+    // Line 4's full cache both saves anywhere and is restored on a tag, and
+    // so do lines 13 and 14's rust-caches.
     assert_eq!(
         lines,
-        [at(4), at(4), at(9), at(13), at(14), at(18)],
+        [at(4), at(4), at(9), at(13), at(13), at(14), at(14), at(18)],
         "{errors:#?}"
     );
     assert_eq!(seen, 5);
@@ -320,9 +330,11 @@ runs:
       with:
         key: qemu-11.0.5-ubuntu-24.04-v1
     - uses: Swatinem/rust-cache@v2
+      if: ${{ !startsWith(github.ref, 'refs/tags/') }}
       with:
         save-if: ${{ github.ref == 'refs/heads/main' && matrix.shard == 1 }}
     - uses: Swatinem/rust-cache@v2
+      if: ${{ !startsWith(github.ref, 'refs/tags/') }}
       with:
         save-if: false
 ";
@@ -372,23 +384,30 @@ jobs:
     assert!(policy(".github/workflows/ci.yml", good, true).is_empty());
 }
 
-/// A release tag runs every workflow release.yml calls, so each is in
-/// [`TAG_RUN`], and the no-restore rule holds in a called one as in
-/// release.yml itself.
+/// A release tag runs every workflow release.yml calls, and every workflow
+/// those call, so each is in [`TAG_RUN`], and the no-restore rule holds in a
+/// called one as in release.yml itself.
 #[test]
 fn a_workflow_release_yml_calls_restores_nothing_on_a_tag() {
-    let release = fs::read_to_string(root().join(".github/workflows/release.yml")).unwrap();
-    let called: Vec<&str> = release
-        .lines()
-        .filter_map(|l| l.trim().strip_prefix("uses: ./.github/workflows/"))
-        .collect();
-    assert!(called.contains(&"release-images.yml"), "{called:?}");
-    for name in called {
+    let dir = root().join(".github/workflows");
+    let (mut todo, mut seen) = (vec!["release.yml".to_string()], Vec::new());
+    while let Some(file) = todo.pop() {
+        if seen.contains(&file) {
+            continue;
+        }
         assert!(
-            TAG_RUN.contains(&name),
-            "release.yml calls {name}, not in TAG_RUN"
+            TAG_RUN.contains(&file.as_str()),
+            "a tag runs {file}, not in TAG_RUN"
         );
+        let text = fs::read_to_string(dir.join(&file)).unwrap();
+        todo.extend(
+            text.lines()
+                .filter_map(|l| l.trim().strip_prefix("uses: ./.github/workflows/"))
+                .map(str::to_string),
+        );
+        seen.push(file);
     }
+    assert!(seen.iter().any(|f| f == "release-images.yml"), "{seen:?}");
     let restore = "\
 jobs:
   a:
@@ -403,5 +422,23 @@ jobs:
         errors[0].starts_with(".github/workflows/release-images.yml:4: a release tag restores")
     );
     let (errors, _) = lint(".github/workflows/repro.yml", restore);
+    assert!(errors.is_empty(), "{errors:#?}");
+
+    // rust-cache restores on any ref, so on a tag it needs the not-a-tag if too.
+    let rust_cache = |cond: &str| {
+        format!(
+            "jobs:\n  a:\n    steps:\n      - uses: Swatinem/rust-cache@v2\n{cond}        with:\n          save-if: ${{{{ {MAIN} }}}}\n"
+        )
+    };
+    let (errors, _) = lint(".github/workflows/release-images.yml", &rust_cache(""));
+    assert_eq!(errors.len(), 1, "{errors:#?}");
+    assert!(
+        errors[0].contains("a release tag restores rust-cache"),
+        "{errors:#?}"
+    );
+    let guarded = rust_cache(&format!("        if: ${{{{ {NOT_A_TAG}') }}}}\n"));
+    let (errors, _) = lint(".github/workflows/release-images.yml", &guarded);
+    assert!(errors.is_empty(), "{errors:#?}");
+    let (errors, _) = lint(".github/workflows/repro.yml", &rust_cache(""));
     assert!(errors.is_empty(), "{errors:#?}");
 }
