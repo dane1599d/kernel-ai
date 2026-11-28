@@ -6,8 +6,11 @@ mod enumerate;
 #[cfg(test)]
 mod fake;
 #[cfg(test)]
+mod hotplug;
+#[cfg(test)]
 mod hubs;
 mod poll;
+mod ports;
 #[cfg(test)]
 mod tests;
 
@@ -19,6 +22,7 @@ use crate::trb::{self, Direction, Event, Trb};
 use crate::{Error, PAGE};
 
 pub use enumerate::{Attached, PortReport};
+pub use ports::Change;
 
 /// Devices and interrupt endpoints the driver keeps.
 const MAX_DEVICES: usize = 8;
@@ -32,6 +36,15 @@ const POLL_LIMIT: usize = 64;
 const MODERATION: u32 = 1000;
 /// Transfer errors in a row after which an endpoint is given up.
 const MAX_FAILURES: u8 = 8;
+/// Pages a detached device gives back, for the next one: a device's five and
+/// an endpoint ring each. `Dma` is never freed, so without them every
+/// re-attach would take new pages.
+const SPARE_PAGES: usize = 5 * MAX_DEVICES + MAX_ENDPOINTS;
+/// Events [`Controller::wait_event`] keeps for the next poll. Each endpoint
+/// has at most one transfer, one recovery command or one halt being cleared
+/// (two EP0 events) in flight, and a detached device's last transfer may
+/// still come in: three per endpoint covers them all.
+const DEFERRED: usize = 3 * MAX_ENDPOINTS;
 
 /// What a HID interface turned out to be.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,10 +127,13 @@ enum Recovery {
     },
 }
 
-/// The memory one device's slot uses for as long as the controller runs.
+/// The memory one device's slot uses for as long as it is attached.
 struct Device {
     slot: u8,
-    _output: Dma,
+    /// Where it is: its root port, and its route behind hubs (0 on the port).
+    root_port: u8,
+    route: u32,
+    output: Dma,
     input: Dma,
     ep0: Producer,
     ep0_mem: Dma,
@@ -142,6 +158,13 @@ pub struct Controller<H: Hal> {
     errors: u64,
     /// When hub ports stop being waited for in this `enumerate`.
     hub_deadline: u64,
+    /// Root ports with a status change not serviced yet, a bit per port.
+    changed: [u64; 4],
+    /// Events that came while a command or a control transfer was waited for,
+    /// handled by the next poll.
+    deferred: [Option<Event>; DEFERRED],
+    /// Pages of detached devices, zeroed again when taken.
+    spare: [Option<Dma>; SPARE_PAGES],
 }
 
 impl<H: Hal> Controller<H> {
@@ -171,6 +194,9 @@ impl<H: Hal> Controller<H> {
             endpoints: [const { None }; MAX_ENDPOINTS],
             errors: 0,
             hub_deadline: 0,
+            changed: [0; 4],
+            deferred: [None; DEFERRED],
+            spare: [const { None }; SPARE_PAGES],
         };
         controller.take_from_firmware();
         controller.reset()?;
@@ -337,8 +363,9 @@ impl<H: Hal> Controller<H> {
         self.write64(self.caps.rt(regs::ERDP), self.events.erdp());
     }
 
-    /// Waits for the event `wanted` picks out, dropping others (port changes,
-    /// and nothing else while devices are being set up).
+    /// Waits for the event `wanted` picks out, keeping others (`keep`): at
+    /// boot only port changes come, but a device attached later is set up
+    /// while the others' reports keep coming.
     fn wait_event(&mut self, mut wanted: impl FnMut(&Event) -> bool) -> Result<Event, Error> {
         let start = self.hal.now_ns();
         loop {
@@ -347,6 +374,7 @@ impl<H: Hal> Controller<H> {
                 if wanted(&event) {
                     return Ok(event);
                 }
+                self.keep(event);
                 continue;
             }
             if self.op_read(regs::USBSTS) & (regs::STS_HOST_ERROR | regs::STS_CONTROLLER_ERROR) != 0
@@ -357,6 +385,24 @@ impl<H: Hal> Controller<H> {
                 return Err(Error::Timeout);
             }
             core::hint::spin_loop();
+        }
+    }
+
+    /// An event no one is waiting for: a port change marks its port for
+    /// [`Self::service_ports`]; a transfer or a command completion is kept for
+    /// the next poll, since dropping it would leave its endpoint waiting for
+    /// it for good. Past [`DEFERRED`] (which in-flight work cannot fill) it is
+    /// counted as an error.
+    fn keep(&mut self, event: Event) {
+        match event {
+            Event::PortStatus { port } => self.mark(port),
+            Event::Transfer { .. } | Event::Command { .. } => {
+                match self.deferred.iter_mut().find(|e| e.is_none()) {
+                    Some(free) => *free = Some(event),
+                    None => self.errors += 1,
+                }
+            }
+            Event::Other { .. } => {}
         }
     }
 

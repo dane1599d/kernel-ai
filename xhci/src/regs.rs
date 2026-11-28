@@ -131,6 +131,8 @@ pub mod port {
     pub const POWER: u32 = 1 << 9;
     /// The change bits, each written 1 to clear.
     pub const CHANGES: u32 = 0x7F << 17;
+    /// CSC: a device was connected or disconnected.
+    pub const CONNECT_CHANGE: u32 = 1 << 17;
     pub const RESET_CHANGE: u32 = 1 << 21;
     /// The bits a write must carry over unchanged: power, indicator and wake.
     const PRESERVE: u32 = POWER | (0x3 << 14) | (0x7 << 25);

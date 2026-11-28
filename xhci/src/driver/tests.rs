@@ -70,7 +70,9 @@ fn keyboard() -> Controller<FakeHal> {
     let ring_mem = page(&mut hal);
     let device = Device {
         slot: SLOT,
-        _output: page(&mut hal),
+        root_port: 1,
+        route: 0,
+        output: page(&mut hal),
         input: page(&mut hal),
         ep0: Producer::new(ep0_mem.phys(), ring::ENTRIES),
         ep0_mem,
@@ -103,6 +105,9 @@ fn keyboard() -> Controller<FakeHal> {
         endpoints: [const { None }; MAX_ENDPOINTS],
         errors: 0,
         hub_deadline: 0,
+        changed: [0; 4],
+        deferred: [None; super::DEFERRED],
+        spare: [const { None }; super::SPARE_PAGES],
     };
     controller.devices[0] = Some(device);
     controller.endpoints[0] = Some(endpoint);
