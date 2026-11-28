@@ -16,9 +16,9 @@ qemu-system-x86_64 -display none -no-reboot -m 512 \
 
 | File | Flags | SHA-256 |
 |---|---|---|
-| `q35.bin` | `-machine q35 -device amd-iommu` | `8dbfb491…3d698` |
-| `q35-devices.bin` | `-machine q35 -device amd-iommu -device pcie-root-port,id=rp1,bus=pcie.0,chassis=1 -device virtio-net-pci,bus=rp1,netdev=n0 -netdev user,id=n0 -device qemu-xhci -device pci-bridge,id=br1,bus=pcie.0,chassis_nr=2 -device virtio-rng-pci,bus=br1` | `5be9de82…d2afb` |
-| `q35-xtsup.bin` | `-machine q35,kernel-irqchip=split -device amd-iommu,intremap=on,xtsup=on` | `655dc16d…b3ba8` |
+| `q35.bin` | `-machine q35 -device amd-iommu` | `8dbfb49160c198671814a6be1d7ebbd5dfa63c3657b20a92901212431923d698` |
+| `q35-devices.bin` | `-machine q35 -device amd-iommu -device pcie-root-port,id=rp1,bus=pcie.0,chassis=1 -device virtio-net-pci,bus=rp1,netdev=n0 -netdev user,id=n0 -device qemu-xhci -device pci-bridge,id=br1,bus=pcie.0,chassis_nr=2 -device virtio-rng-pci,bus=br1` | `5be9de829fba30042db248c655e6a699d5f0c69a8e7487e2836312dce28d2afb` |
+| `q35-xtsup.bin` | `-machine q35,kernel-irqchip=split -device amd-iommu,intremap=on,xtsup=on` | `655dc16db95a22581e0a95b0319e2f21dc909569ff6868778f4d7e93c0eb3ba8` |
 
 Each table has one IOMMU at 00:02.0, base 0xfed80000, described twice: once
 by an IVHD 10h block and once by an 11h block. Its device entries are Selects

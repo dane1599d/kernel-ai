@@ -205,6 +205,9 @@ fn a_broken_range_is_dropped_and_the_rest_read() {
     assert_eq!(b.device(0x75).map(|d| d.setting), Some(5));
     assert_eq!(b.device(0x65).map(|d| d.setting), Some(4));
     assert_eq!(b.device(0x20), None);
+    // An end with no start, a start another followed, an end below its
+    // start, and a start the block's end followed.
+    assert_eq!(ivrs.dropped, 4);
 }
 
 #[test]
@@ -248,6 +251,7 @@ fn an_undefined_variable_entry_ends_its_block_only() {
     let ivrs = parse(&t).unwrap();
     assert_eq!(ivrs.blocks[0].devices, [range(8, 8, 1)]);
     assert_eq!(ivrs.blocks[1].devices, [range(3, 3, 0)]);
+    assert_eq!(ivrs.dropped, 1);
 }
 
 #[test]
@@ -255,7 +259,9 @@ fn short_lengths_never_read_past_the_table() {
     // A block whose length is past the table's end ends the walk.
     let mut long = block(0x11, &four(0x02, 1, 0));
     long[2..4].copy_from_slice(&0xffffu16.to_le_bytes());
-    assert!(parse(&table(0, &[long])).unwrap().blocks.is_empty());
+    let ivrs = parse(&table(0, &[long])).unwrap();
+    assert!(ivrs.blocks.is_empty());
+    assert_eq!(ivrs.dropped, 1);
     // A length below 4 ends the walk; one below the fixed fields skips it.
     let mut zero = block(0x11, &[]);
     zero[2..4].copy_from_slice(&0u16.to_le_bytes());
@@ -264,7 +270,9 @@ fn short_lengths_never_read_past_the_table() {
     short.truncate(IVHD10_LEN);
     short[2..4].copy_from_slice(&(IVHD10_LEN as u16).to_le_bytes());
     let t = table(0, &[short, block(0x10, &[])]);
-    assert_eq!(parse(&t).unwrap().blocks.len(), 1);
+    let ivrs = parse(&t).unwrap();
+    assert_eq!(ivrs.blocks.len(), 1);
+    assert_eq!(ivrs.dropped, 1);
     // Entries cut by the block's end: an 8-byte one, and an F0h whose UID
     // runs past it.
     let mut cut = vec![];
@@ -272,11 +280,22 @@ fn short_lengths_never_read_past_the_table() {
     cut.extend([0x42, 2, 0, 0]);
     let ivrs = parse(&table(0, &[block(0x11, &cut)])).unwrap();
     assert_eq!(ivrs.blocks[0].devices, [range(1, 1, 0)]);
+    assert_eq!(ivrs.dropped, 1);
     let mut acpi = vec![0xf0, 0, 0, 0];
     acpi.extend([0u8; 16]);
     acpi.extend([1, 200, 1]);
     let ivrs = parse(&table(0, &[block(0x40, &acpi)])).unwrap();
     assert!(ivrs.blocks[0].acpi.is_empty());
+    assert_eq!(ivrs.dropped, 1);
+    // A table read whole, with blocks and entries it skips by design, drops
+    // nothing.
+    let mut skipped = vec![0x3f, 0, 0, 0, 0x7f, 0, 0, 0, 0, 0, 0, 0];
+    skipped.extend(four(0x02, 1, 0));
+    let mut ivmd = vec![0u8; 32];
+    ivmd[0] = 0x20;
+    ivmd[2..4].copy_from_slice(&32u16.to_le_bytes());
+    let ivrs = parse(&table(0, &[ivmd, block(0x11, &skipped)])).unwrap();
+    assert_eq!(ivrs.dropped, 0);
 }
 
 #[test]

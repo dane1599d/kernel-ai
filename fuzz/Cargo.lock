@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "acpitables"
+version = "0.1.0-dev"
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -953,6 +957,7 @@ dependencies = [
 name = "kainet-fuzz"
 version = "0.0.0"
 dependencies = [
+ "acpitables",
  "agentabi",
  "captable",
  "deskcore",
