@@ -404,3 +404,31 @@ fn another_keys_release_does_not_end_the_press() {
     assert!(!pressed(&mut keys, &[0x2A | 0x80]));
     assert!(!pressed(&mut keys, &[F12]));
 }
+
+/// Another key's make while F12 is held ends the press: typematic repeats
+/// only the last key pressed, so the next F12 make is a new press.
+#[test]
+fn another_keys_make_mid_hold_ends_the_press() {
+    let mut keys = Set1::new();
+    pressed(&mut keys, &[CTRL, ALT]);
+    assert!(pressed(&mut keys, &[F12]));
+    assert!(!pressed(&mut keys, &[F12]));
+    // A letter is pressed (and let go) with the chord held, then F12 again.
+    pressed(&mut keys, &[0x1E, 0x1E | 0x80]);
+    assert!(pressed(&mut keys, &[F12]));
+}
+
+/// The cost of forgiving a lost break only on another key's make: a lost F12
+/// break followed by releases alone, with Ctrl and Alt held, loses the next
+/// press. That press's own break ends it, so the one after switches.
+#[test]
+fn a_lost_break_then_only_releases_loses_one_press() {
+    let mut keys = Set1::new();
+    pressed(&mut keys, &[0x2A, CTRL, ALT]);
+    assert!(pressed(&mut keys, &[F12]));
+    // F12's break is lost; Shift is let go.
+    assert!(!pressed(&mut keys, &[0x2A | 0x80]));
+    assert!(!pressed(&mut keys, &[F12]));
+    assert!(!pressed(&mut keys, &[F12 | 0x80]));
+    assert!(pressed(&mut keys, &[F12]));
+}

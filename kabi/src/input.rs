@@ -159,6 +159,9 @@ pub struct Set1 {
     down: [u64; 4],
     /// Ctrl+Alt+F12 went down and nothing was decoded since but its repeats
     /// (typematic repeats only the last key pressed): [`Set1::switch_press`].
+    /// A lost F12 break followed only by releases (Ctrl and Alt still held)
+    /// cannot be told from a held F12 and a key let go, so the next F12 press
+    /// is taken for a repeat: one press is lost, and its break clears the flag.
     switch_down: bool,
 }
 
