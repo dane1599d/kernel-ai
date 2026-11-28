@@ -3,6 +3,23 @@
 use super::{KAI, TestCase, case};
 use crate::disk::Fixture;
 
+/// `boot-no-hpet`'s second boot (P6 G57): q35 with `hpet=off`, so the FADT's
+/// PM timer is the reference clock. Its APIC timer calibration must come
+/// within 3% of the first boot's, against the HPET: TCG's 10 ms calibration
+/// already varies by over 1% between two HPET boots (6 of 354 pairs, #1660's
+/// review).
+const NO_HPET_BOOT: TestCase = TestCase {
+    no_hpet: true,
+    expect: &[
+        "hpet: none; the ACPI PM timer at port 0x",
+        "counts/ms, PM timer 3579",
+        "boot-ok",
+    ],
+    differs: Some("timer: APIC "),
+    near_pct: Some(3),
+    ..case("boot-no-hpet (2: no HPET)", "test")
+};
+
 /// The second boot of `entropy-boots`.
 const ENTROPY_BOOT_2: TestCase = TestCase {
     expect: &["entropy: virtio-rng mixed in", "entropy-boots: sample "],
@@ -24,6 +41,14 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
         ..case("entropy-boots", "test=entropy-boots")
     },
     case("boot", "test"),
+    // P6 G57: a board with no HPET still boots, on the PM timer.
+    TestCase {
+        expect: &["counts/ms, HPET "],
+        differs: Some("timer: APIC "),
+        near_pct: Some(3),
+        then: Some(&NO_HPET_BOOT),
+        ..case("boot-no-hpet", "test")
+    },
     // P6 row 1 (ADR 0006): the nesting census. The kernel logs the VMX, SVM,
     // NPT and NRIPS bits it sees; nesting-census.yml reads them per runner.
     TestCase {

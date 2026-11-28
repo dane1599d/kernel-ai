@@ -340,7 +340,7 @@ fn the_stub_runs_the_fixtures_end_to_end() {
     );
     assert_eq!(
         json["tests"][4]["note"],
-        "viewport_size \"wide\" is not WxH: run at 800x600"
+        "viewport_size \"wide\" is not WxH with sides 1 to 4096: run at 800x600"
     );
     assert!(json["tests"][3].get("note").is_none());
 }
@@ -354,7 +354,25 @@ fn a_viewport_size_is_read_as_wxh() {
     assert_eq!(viewport_of(&json!("320x240")), Some((320, 240)));
     assert_eq!(viewport_of(&json!(" 320 x 240 ")), Some((320, 240)));
     assert_eq!(viewport_of(&json!([320, 240])), Some((320, 240)));
+    // Each side up to MAX_VIEWPORT_SIDE (4096), and not one over.
+    let max = super::manifest::MAX_VIEWPORT_SIDE;
+    assert_eq!(max, 4096);
+    assert_eq!(viewport_of(&json!("4096x4096")), Some((max, max)));
+    assert_eq!(viewport_of(&json!([4096, 1])), Some((max, 1)));
+    for over in [
+        json!("4097x240"),
+        json!("320x4097"),
+        json!([4097, 240]),
+        json!([320, 4097]),
+        json!("99999999999x1"),
+    ] {
+        assert_eq!(viewport_of(&over), None, "{over}");
+    }
     for odd in [
+        json!("+320x240"),
+        json!("320x+240"),
+        json!("3 20x240"),
+        json!(" x240"),
         json!("wide"),
         json!("320"),
         json!("0x240"),

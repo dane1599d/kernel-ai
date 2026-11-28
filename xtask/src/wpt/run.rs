@@ -9,7 +9,7 @@
 //! `ERROR`.
 
 use super::compare::{Difference, Picture, differences, passes};
-use super::manifest::{Manifest, Reftest, Relation};
+use super::manifest::{MAX_VIEWPORT_SIDE, Manifest, Reftest, Relation};
 use super::render::{Page, Renderer};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -83,8 +83,8 @@ pub fn run_one(
     };
     let note = test.viewport_unread.as_ref().map(|v| {
         format!(
-            "viewport_size {v:?} is not WxH: run at {}x{}",
-            VIEWPORT.0, VIEWPORT.1
+            "viewport_size {v:?} is not WxH with sides 1 to {}: run at {}x{}",
+            MAX_VIEWPORT_SIDE, VIEWPORT.0, VIEWPORT.1
         )
     });
     let outcome = |status, last| Outcome {

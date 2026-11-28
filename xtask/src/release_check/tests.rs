@@ -39,8 +39,10 @@ impl Facts for Branch {
         let all = self.runs.get(workflow).cloned().unwrap_or_default();
         Ok(all
             .into_iter()
+            // `At` returns every run, as if gh listed runs at other commits
+            // too: the check's own sha filter is what keeps them out.
             .filter(|r| match which {
-                Which::At(sha) => r.sha == sha,
+                Which::At(_) => true,
                 Which::Green => r.conclusion == "success",
             })
             .collect())
@@ -63,7 +65,16 @@ fn run(id: u64, at: &str, conclusion: &str) -> Run {
     Run {
         id,
         sha: at.into(),
+        event: "push".into(),
         conclusion: conclusion.into(),
+    }
+}
+
+/// A `pull_request` run: its sha is the pull request's head.
+fn pr_run(id: u64, at: &str, conclusion: &str) -> Run {
+    Run {
+        event: "pull_request".into(),
+        ..run(id, at, conclusion)
     }
 }
 
@@ -179,23 +190,23 @@ fn a_ready_branch_meets_every_line_a_machine_checks() {
     assert_eq!(got, [Met, Met, Met, Met, Met, Founders], "{lines:#?}");
     assert_eq!(lines[0].detail, "2, above v0.1.0-rc.1's 1");
     assert!(
-        lines[1].detail.starts_with("Release run 10 at rc2"),
+        lines[1].detail.starts_with("Release run 10 (push) at rc2"),
         "{lines:#?}"
     );
     assert!(
         lines[2]
             .detail
-            .starts_with("run 20 at docs: 48/50 after one repair (47/50 first try)"),
+            .starts_with("run 20 (push) at docs: 48/50 after one repair (47/50 first try)"),
         "{lines:#?}"
     );
     assert_eq!(
         lines[3].detail,
-        "run 30 at docs: the gated act arm passed on seeds 42, 1, 2"
+        "run 30 (push) at docs: the gated act arm passed on seeds 42, 1, 2"
     );
     assert!(
         lines[4]
             .detail
-            .starts_with("CI run 41 at rc2: 3 KVM and 4 TCG shards"),
+            .starts_with("CI run 41 (push) at rc2: 3 KVM and 4 TCG shards"),
         "{lines:#?}"
     );
 }
@@ -225,12 +236,15 @@ fn a_branch_short_of_rc2_names_each_line_left() {
         lines[0].detail,
         "1, not above v0.1.0-rc.1's 1: bump it in the release PR"
     );
-    assert_eq!(lines[1].detail, "no green Release run at rc2: 11 failure");
-    assert_eq!(lines[2].detail, "under 47/50: run 20 at docs: 46/50");
+    assert_eq!(
+        lines[1].detail,
+        "no green Release run at rc2: 11 (push) failure"
+    );
+    assert_eq!(lines[2].detail, "under 47/50: run 20 (push) at docs: 46/50");
     assert_eq!(lines[3].detail, "no green actbench run at this model input");
     assert_eq!(
         lines[4].detail,
-        "no run with every shard of both: run 40: KVM 3/3, TCG 0/0"
+        "no run with every shard of both: run 40 (push): KVM 3/3, TCG 0/0"
     );
 }
 
@@ -271,11 +285,11 @@ fn only_the_rhai_gate_at_the_same_model_input_counts() {
     assert_eq!(lines[3].state, State::Missing, "{lines:#?}");
     assert_eq!(
         lines[3].detail,
-        "no full gated act run: run 30 at docs: no gated act job for seed 42, 1, 2"
+        "no full gated act run: run 30 (push) at docs: no gated act job for seed 42, 1, 2"
     );
     assert_eq!(lines[4].state, State::Missing);
     assert!(
-        lines[4].detail.contains("run 41: KVM 3/3, TCG 4/5"),
+        lines[4].detail.contains("run 41 (push): KVM 3/3, TCG 4/5"),
         "{lines:#?}"
     );
 }
@@ -356,7 +370,7 @@ fn only_a_full_gated_act_run_meets_actbench() {
         assert_eq!(line.state, State::Missing, "{what}: {line:#?}");
         assert_eq!(
             line.detail,
-            format!("no full gated act run: run 30 at docs: {why}"),
+            format!("no full gated act run: run 30 (push) at docs: {why}"),
             "{what}"
         );
     }
@@ -408,6 +422,111 @@ fn no_tag_a_failed_git_tag_and_an_odd_seq() {
     );
     b.seq.remove("rc2");
     assert_eq!(check(&b, "rc2").unwrap()[0].detail, "no release/seq");
+}
+
+/// A seq is read as release.yml's `seq` job reads it: trailing newlines off,
+/// then digits only, so `+2` or ` 2` is not a number there or here.
+#[test]
+fn a_seq_is_digits_only() {
+    assert_eq!(seq_number("2\n"), Some(2));
+    assert_eq!(seq_number("2"), Some(2));
+    assert_eq!(seq_number("2\n\n"), Some(2));
+    for odd in ["+2", " 2", "2 ", "2\r\n", "", "\n", "-1", "2\n3"] {
+        assert_eq!(seq_number(odd), None, "{odd:?}");
+    }
+    let mut b = ready();
+    b.seq.insert("rc2".into(), "+2\n".into());
+    let line = &check(&b, "rc2").unwrap()[0];
+    assert_eq!(
+        (line.state, line.detail.as_str()),
+        (State::Missing, "release/seq holds `+2`, not a number")
+    );
+    b.seq.insert("rc2".into(), "2\n".into());
+    b.seq.insert("v0.1.0-rc.1".into(), " 1".into());
+    let line = &check(&b, "rc2").unwrap()[0];
+    assert_eq!(
+        (line.state, line.detail.as_str()),
+        (
+            State::Missing,
+            "2, but v0.1.0-rc.1's release/seq cannot be read"
+        )
+    );
+}
+
+/// A CI run at an older commit never meets the boot line, and exactly 47/50
+/// after one repair meets fluency.
+#[test]
+fn an_older_ci_run_and_exactly_47() {
+    let mut b = ready();
+    b.runs.insert(
+        "ci.yml",
+        vec![run(42, "docs", "success"), run(40, "rc2", "success")],
+    );
+    b.jobs
+        .insert(42, boots(&[("kvm", 3, "success"), ("tcg", 4, "success")]));
+    b.logs.insert(20, fluency_log("", "", 44, 47));
+    let lines = check(&b, "rc2").unwrap();
+    assert_eq!(lines[4].state, State::Missing, "{lines:#?}");
+    assert_eq!(
+        lines[4].detail,
+        "no run with every shard of both: run 40 (push): KVM 3/3, TCG 0/0"
+    );
+    assert_eq!(lines[2].state, State::Met, "{lines:#?}");
+    assert!(
+        lines[2]
+            .detail
+            .starts_with("run 20 (push) at docs: 47/50 after one repair (44/50 first try)"),
+        "{lines:#?}"
+    );
+}
+
+/// A `pull_request` run tested REV merged into its base: it counts, but a run
+/// from another event is taken first, and the line says which it was.
+#[test]
+fn a_pull_request_run_is_named_and_taken_last() {
+    let mut b = ready();
+    b.runs.insert(
+        "release.yml",
+        vec![pr_run(13, "rc2", "success"), run(10, "rc2", "success")],
+    );
+    let lines = check(&b, "rc2").unwrap();
+    assert!(
+        lines[1].detail.starts_with("Release run 10 (push) at rc2"),
+        "{lines:#?}"
+    );
+    b.runs
+        .insert("release.yml", vec![pr_run(13, "rc2", "success")]);
+    let lines = check(&b, "rc2").unwrap();
+    assert_eq!(lines[1].state, State::Met);
+    assert_eq!(
+        lines[1].detail,
+        "Release run 13 (pull_request: REV merged into its base) at rc2 passed (assemble cmps it)"
+    );
+}
+
+/// The model pin and the gates' own tasks and bars are model input too;
+/// grep's exit 2 is unknown, never "no model path differs".
+#[test]
+fn gate_paths_and_greps_exit_codes() {
+    for name in [
+        "xtask/models.json",
+        "xtask/src/fluency/tasks.rs",
+        "xtask/src/actbench/mod.rs",
+    ] {
+        assert!(is_gate_path(name), "{name}");
+    }
+    for name in [
+        "xtask/models.json.bak",
+        "xtask/src/fluency.rs",
+        "xtask/src/actbenchx/mod.rs",
+        "docs/models.json",
+    ] {
+        assert!(!is_gate_path(name), "{name}");
+    }
+    assert_eq!(same_by_grep(Some(0)), Some(false));
+    assert_eq!(same_by_grep(Some(1)), Some(true));
+    assert_eq!(same_by_grep(Some(2)), None);
+    assert_eq!(same_by_grep(None), None);
 }
 
 #[test]

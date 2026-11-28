@@ -12,7 +12,8 @@
 //! - Fluency at least 47/50, after one repair, on REV's model input: a
 //!   fluency-model.yml run of the rhai gate, without `--memories`, at a commit
 //!   whose files under the batcher's `MODEL_PATHS` (scripts/batch/config.sh)
-//!   are REV's.
+//!   are REV's, and whose [`GATE_PATHS`] (the model pin both gates download,
+//!   and the gates' own tasks and bars) are too. Renames count as both names.
 //! - actbench green on REV's model input: an actbench-model.yml run at such a
 //!   commit with an `actbench act seed N` job for each of 42, 1 and 2, each
 //!   green, whose log shows ARMS `act`, EXTRA exactly `--gate` (no `--only-m8`
@@ -23,6 +24,10 @@
 //!   main or a `full-ci-all` label boots both).
 //! - The release signed by the founder's root: always the founder's, as is the
 //!   tag itself.
+//!
+//! Each line names its run's event. A `pull_request` run tested REV merged
+//! into its base, not REV's tree alone, so a run from any other event is
+//! taken first, and a `pull_request` one says so.
 //!
 //! It reads git and, through `gh`, the repository's Actions runs; it starts,
 //! dispatches and signs nothing. Exit 1 when a line a machine checks is missing.
@@ -37,12 +42,40 @@ const FLUENCY_BAR: u32 = 47;
 /// How many runs of a workflow at one commit, or green ones, are read.
 const RUNS: u32 = 200;
 
-/// One Actions run: its id, the commit it ran at, and its conclusion.
+/// Paths outside `MODEL_PATHS` that a fluency or actbench run at another
+/// commit must also share with REV: the model pin both workflows download,
+/// and the two gates' tasks and bars. A path ending in `/` is a directory.
+pub const GATE_PATHS: [&str; 3] = [
+    "xtask/models.json",
+    "xtask/src/fluency/",
+    "xtask/src/actbench/",
+];
+
+/// One Actions run: its id, the commit it ran at (a pull request's head, for
+/// a `pull_request` run), its event, and its conclusion.
 #[derive(Clone, Debug)]
 pub struct Run {
     pub id: u64,
     pub sha: String,
+    pub event: String,
     pub conclusion: String,
+}
+
+impl Run {
+    /// How a line names the run: its id and event, and for a `pull_request`
+    /// run what it tested.
+    fn named(&self) -> String {
+        match self.event.as_str() {
+            "pull_request" => format!("{} (pull_request: REV merged into its base)", self.id),
+            event => format!("{} ({event})", self.id),
+        }
+    }
+}
+
+/// Runs from any event but `pull_request` first, each group newest first.
+fn own_tree_first(mut runs: Vec<Run>) -> Vec<Run> {
+    runs.sort_by_key(|r| r.event == "pull_request");
+    runs
 }
 
 /// What the check reads, so the host tests can give it fixture branches.
@@ -158,11 +191,14 @@ fn seq_line(facts: &dyn Facts, sha: &str) -> Line {
     let Some(seq) = facts.seq(sha) else {
         return Line::new(WHAT, State::Missing, "no release/seq".into());
     };
-    let Ok(n) = seq.trim().parse::<u32>() else {
+    let Some(n) = seq_number(&seq) else {
         return Line::new(
             WHAT,
             State::Missing,
-            format!("release/seq holds `{}`, not a number", seq.trim()),
+            format!(
+                "release/seq holds `{}`, not a number",
+                seq.trim_end_matches('\n')
+            ),
         );
     };
     // Never met by default: no tag, a failed `git tag`, or a tag whose seq
@@ -184,7 +220,7 @@ fn seq_line(facts: &dyn Facts, sha: &str) -> Line {
             );
         }
     };
-    let Some(last) = facts.seq(&tag).and_then(|s| s.trim().parse::<u32>().ok()) else {
+    let Some(last) = facts.seq(&tag).as_deref().and_then(seq_number) else {
         return Line::new(
             WHAT,
             State::Missing,
@@ -201,20 +237,33 @@ fn seq_line(facts: &dyn Facts, sha: &str) -> Line {
     }
 }
 
+/// A `release/seq` file's number as release.yml's `seq` job reads it: `$(cat
+/// release/seq)` drops the trailing newlines, then digits only (no sign, no
+/// spaces).
+pub fn seq_number(text: &str) -> Option<u32> {
+    let s = text.trim_end_matches('\n');
+    match !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) {
+        true => s.parse().ok(),
+        false => None,
+    }
+}
+
 fn notices_line(facts: &dyn Facts, sha: &str, short: &str) -> Result<Line, String> {
     const WHAT: &str = "NOTICES.txt the same in the image and the release";
-    let at: Vec<Run> = facts
-        .runs("release.yml", Which::At(sha))?
-        .into_iter()
-        .filter(|r| r.sha == sha)
-        .collect();
+    let at: Vec<Run> = own_tree_first(
+        facts
+            .runs("release.yml", Which::At(sha))?
+            .into_iter()
+            .filter(|r| r.sha == sha)
+            .collect(),
+    );
     Ok(match at.iter().find(|r| r.conclusion == "success") {
         Some(run) => Line::new(
             WHAT,
             State::Met,
             format!(
                 "Release run {} at {short} passed (assemble cmps it)",
-                run.id
+                run.named()
             ),
         ),
         None => Line::new(WHAT, State::Missing, none_green("Release", short, &at)),
@@ -223,11 +272,13 @@ fn notices_line(facts: &dyn Facts, sha: &str, short: &str) -> Result<Line, Strin
 
 /// A workflow's green runs at commits with REV's model input, newest first.
 fn on_model_input(facts: &dyn Facts, workflow: &str, sha: &str) -> Result<Vec<Run>, String> {
-    Ok(facts
-        .runs(workflow, Which::Green)?
-        .into_iter()
-        .filter(|r| facts.same_model_input(&r.sha, sha) == Some(true))
-        .collect())
+    Ok(own_tree_first(
+        facts
+            .runs(workflow, Which::Green)?
+            .into_iter()
+            .filter(|r| facts.same_model_input(&r.sha, sha) == Some(true))
+            .collect(),
+    ))
 }
 
 fn fluency_line(facts: &dyn Facts, sha: &str) -> Result<Line, String> {
@@ -246,11 +297,11 @@ fn fluency_line(facts: &dyn Facts, sha: &str) -> Result<Line, String> {
                 State::Met,
                 format!(
                     "run {} at {at}: {repaired}/50 after one repair ({first}/50 first try)",
-                    run.id
+                    run.named()
                 ),
             ));
         }
-        seen.push(format!("run {} at {at}: {repaired}/50", run.id));
+        seen.push(format!("run {} at {at}: {repaired}/50", run.named()));
     }
     let detail = match seen.is_empty() {
         true => format!(
@@ -299,11 +350,11 @@ fn actbench_line(facts: &dyn Facts, sha: &str) -> Result<Line, String> {
                     State::Met,
                     format!(
                         "run {} at {at}: the gated act arm passed on seeds {n}",
-                        run.id
+                        run.named()
                     ),
                 ));
             }
-            Err(e) => why.push(format!("run {} at {at}: {e}", run.id)),
+            Err(e) => why.push(format!("run {} at {at}: {e}", run.named())),
         }
     }
     let detail = match why.is_empty() {
@@ -380,11 +431,13 @@ pub fn act_job(log: &str) -> Result<u32, String> {
 
 fn boot_line(facts: &dyn Facts, sha: &str, short: &str) -> Result<Line, String> {
     const WHAT: &str = "the boot cases under KVM and TCG";
-    let at: Vec<Run> = facts
-        .runs("ci.yml", Which::At(sha))?
-        .into_iter()
-        .filter(|r| r.sha == sha)
-        .collect();
+    let at: Vec<Run> = own_tree_first(
+        facts
+            .runs("ci.yml", Which::At(sha))?
+            .into_iter()
+            .filter(|r| r.sha == sha)
+            .collect(),
+    );
     let mut partial = Vec::new();
     for run in &at {
         let jobs = facts.jobs(run.id)?;
@@ -405,13 +458,19 @@ fn boot_line(facts: &dyn Facts, sha: &str, short: &str) -> Result<Line, String> 
                 State::Met,
                 format!(
                     "CI run {} at {short}: {} KVM and {} TCG shards passed",
-                    run.id, kvm.0, tcg.0
+                    run.named(),
+                    kvm.0,
+                    tcg.0
                 ),
             ));
         }
         partial.push(format!(
             "run {}: KVM {}/{}, TCG {}/{}",
-            run.id, kvm.1, kvm.0, tcg.1, tcg.0
+            run.named(),
+            kvm.1,
+            kvm.0,
+            tcg.1,
+            tcg.0
         ));
     }
     let detail = match partial.is_empty() {
@@ -427,7 +486,7 @@ fn none_green(name: &str, short: &str, at: &[Run]) -> String {
         false => format!(
             "no green {name} run at {short}: {}",
             at.iter()
-                .map(|r| format!("{} {}", r.id, r.conclusion))
+                .map(|r| format!("{} {}", r.named(), r.conclusion))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
@@ -473,6 +532,25 @@ pub fn model_paths_in(config: &str) -> Option<String> {
     Some(rest.strip_suffix("'}")?.to_string())
 }
 
+/// Whether a changed file is one of [`GATE_PATHS`].
+pub fn is_gate_path(name: &str) -> bool {
+    GATE_PATHS.iter().any(|p| match p.ends_with('/') {
+        true => name.starts_with(p),
+        false => name == *p,
+    })
+}
+
+/// `grep -Eq MODEL_PATHS` over the changed names, by its exit code: 0 is a
+/// model path changed, 1 is none did, and anything else (2, a bad pattern or
+/// a read error; or a signal) is unknown, so the run never counts.
+pub fn same_by_grep(code: Option<i32>) -> Option<bool> {
+    match code {
+        Some(0) => Some(false),
+        Some(1) => Some(true),
+        _ => None,
+    }
+}
+
 impl Facts for Live {
     fn sha(&self, rev: &str) -> Result<String, String> {
         Ok(
@@ -495,7 +573,12 @@ impl Facts for Live {
         if a == b {
             return Some(true);
         }
-        let names = git(&["diff", "--name-only", a, b]).ok()?;
+        // Without rename detection a file moved out of a model path is listed
+        // under its old name too.
+        let names = git(&["diff", "--no-renames", "--name-only", a, b]).ok()?;
+        if names.lines().any(is_gate_path) {
+            return Some(false);
+        }
         let pattern = model_paths().ok()?;
         let mut grep = Command::new("grep")
             .args(["-Eq", &pattern])
@@ -504,8 +587,7 @@ impl Facts for Live {
             .ok()?;
         use std::io::Write as _;
         grep.stdin.take()?.write_all(names.as_bytes()).ok()?;
-        // grep -q exits 0 on a match: a model path differs.
-        Some(!grep.wait().ok()?.success())
+        same_by_grep(grep.wait().ok()?.code())
     }
 
     fn runs(&self, workflow: &str, which: Which) -> Result<Vec<Run>, String> {
@@ -515,7 +597,7 @@ impl Facts for Live {
             Which::At(sha) => args.extend(["--commit", sha]),
             Which::Green => args.extend(["--status", "success"]),
         }
-        args.extend(["--json", "databaseId,headSha,conclusion,status"]);
+        args.extend(["--json", "databaseId,headSha,event,conclusion,status"]);
         let json = output(Command::new("gh").args(args))?;
         let value: serde_json::Value =
             serde_json::from_str(&json).map_err(|e| format!("gh run list {workflow}: {e}"))?;
@@ -528,6 +610,7 @@ impl Facts for Live {
                 Some(Run {
                     id: r["databaseId"].as_u64()?,
                     sha: r["headSha"].as_str()?.to_string(),
+                    event: r["event"].as_str().unwrap_or("").to_string(),
                     conclusion: r["conclusion"].as_str().unwrap_or("").to_string(),
                 })
             })
