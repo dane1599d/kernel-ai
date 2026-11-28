@@ -405,6 +405,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Pointer => run_case(pointer::self_test),
         SelfTest::Display => run_case(display_tests::check),
         SelfTest::Usb => run_case(usb::self_test),
+        SelfTest::UsbHotplug => run_case(usb::hotplug::self_test),
         SelfTest::Sched => run_case(sched_tests::latency_check),
         SelfTest::Watchdog => run_case(sched_tests::watchdog_check),
         SelfTest::Smp => run_case(smp_tests::all_cpus_check),

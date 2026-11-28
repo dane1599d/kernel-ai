@@ -76,6 +76,8 @@ pub enum SelfTest {
     Display,
     /// P7: keys and pointer reports arrive from a USB keyboard, mouse or tablet.
     Usb,
+    /// P7 row 5: USB devices plugged in and unplugged while a keyboard types.
+    UsbHotplug,
     Sched,
     Watchdog,
     Smp,

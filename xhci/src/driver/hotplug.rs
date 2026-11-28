@@ -5,6 +5,7 @@
 
 use super::fake::{Device, Fake};
 use super::{Change, Controller, DeviceKind, Input, PortReport};
+use crate::hal::Hal;
 use crate::trb;
 use std::vec;
 use std::vec::Vec;
@@ -191,4 +192,69 @@ fn a_report_from_a_detached_slot_is_not_given_to_its_next_device() {
         !fake.report(1, KEYBOARD_DCI, &[0; 8]),
         "one transfer at a time"
     );
+}
+
+/// Steps once, and returns its wait and the changes it reported.
+fn step(controller: &mut Controller<Fake>) -> (Option<u64>, Vec<Change>) {
+    let mut changes = Vec::new();
+    let wait = controller.service_step(&mut |change| changes.push(change));
+    (wait, changes)
+}
+
+#[test]
+fn the_debounce_and_the_reset_are_waited_out_between_steps() {
+    let fake = Fake::new(vec![Some(Device::keyboard()), None]);
+    let mut controller = start(&fake);
+    controller.poll(|_| {});
+    controller.service_ports(|_| {});
+    let slots = fake.slots();
+    fake.plug(2, Device::mouse());
+    controller.poll(|_| {});
+    // The connect starts the debounce: nothing is set up within the step.
+    let (wait, changes) = step(&mut controller);
+    assert_eq!((wait, changes), (Some(super::enumerate::SETTLE_NS), vec![]));
+    let (wait, _) = step(&mut controller);
+    assert!(wait.is_some_and(|ns| ns > 0), "called early, it waits on");
+    assert_eq!(fake.slots(), slots, "no slot before the debounce is over");
+    // The keyboard's keys are read between the steps, as the interrupt does.
+    assert!(fake.report(1, KEYBOARD_DCI, &[0, 0, 4, 0, 0, 0, 0, 0]));
+    let mut inputs = Vec::new();
+    controller.poll(|input| inputs.push(input));
+    assert_eq!(inputs.len(), 1, "the key comes during the debounce");
+    fake.delay(super::enumerate::SETTLE_NS);
+    // Then the port is reset, and its recovery waited for, between steps.
+    let (wait, _) = step(&mut controller);
+    assert_eq!(wait, Some(super::ports::RESET_POLL_NS));
+    let (wait, _) = step(&mut controller);
+    assert_eq!(wait, Some(super::enumerate::RESET_RECOVERY_NS));
+    assert_eq!(fake.slots(), slots, "nor before the reset's recovery");
+    fake.delay(super::enumerate::RESET_RECOVERY_NS);
+    let (wait, changes) = step(&mut controller);
+    assert_eq!(wait, Some(0));
+    let mouse = attached(&changes[0]).outcome.expect("the mouse is set up");
+    assert_eq!(mouse.kinds[0], Some(DeviceKind::Mouse));
+    assert_eq!(controller.listening(), 2);
+    // The reset's own port change is not a connect: the service ends.
+    controller.poll(|_| {});
+    while let (Some(_), changes) = step(&mut controller) {
+        assert_eq!(changes, [], "nothing more happens");
+    }
+}
+
+#[test]
+fn a_device_gone_before_its_debounce_is_over_is_not_set_up() {
+    let fake = Fake::new(vec![None]);
+    let mut controller = start(&fake);
+    fake.plug(1, Device::keyboard());
+    controller.poll(|_| {});
+    assert!(step(&mut controller).0.is_some());
+    fake.unplug(1);
+    controller.poll(|_| {});
+    fake.delay(super::enumerate::SETTLE_NS);
+    let mut changes = Vec::new();
+    while let (Some(_), mut more) = step(&mut controller) {
+        changes.append(&mut more);
+    }
+    assert_eq!(changes, []);
+    assert_eq!((fake.slots(), controller.listening()), (0, 0));
 }

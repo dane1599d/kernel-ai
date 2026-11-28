@@ -108,6 +108,7 @@ fn keyboard() -> Controller<FakeHal> {
         changed: [0; 4],
         deferred: [None; super::DEFERRED],
         spare: [const { None }; super::SPARE_PAGES],
+        service: super::ports::Service::Idle,
     };
     controller.devices[0] = Some(device);
     controller.endpoints[0] = Some(endpoint);
