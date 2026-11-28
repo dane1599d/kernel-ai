@@ -196,7 +196,8 @@ fn copy_extents(pending: &mut Pending, extents: &[(u64, u64)]) -> Result<(), Err
             if sectors == 0 || end > disk.sectors() {
                 return Err(Error::Invalid);
             }
-            // Runs of at most 512 KiB, page-aligned in the file, so a piece
+            // Pieces of at most 512 KiB, a power of two of sectors; every
+            // extent but the last starts on a 2 MiB file offset, so a piece
             // never crosses a 2 MiB run.
             let step = disk.max_sectors().clamp(8, 1024) / 8 * 8;
             let mut at = sector;

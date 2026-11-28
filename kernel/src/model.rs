@@ -346,8 +346,8 @@ fn copy(mut source: Source, attached: Option<u64>) -> Result<Model, String> {
     let mut progress = progress::Progress::new(len);
     let copied = source.stream(len, |_, bytes| {
         let started = hpet::nanos();
-        // Reads are 512 KiB and start on a page boundary, so a piece never crosses a
-        // run: four of them fill one.
+        // Pieces are a power of two of sectors (`dma::step`), at most 512 KiB, read
+        // from file offset 0, so a piece never crosses a 2 MiB run.
         if offset.is_multiple_of(RUN_BYTES) {
             let phys = memory::with(|m| m.allocate_aligned(RUN_FRAMES, RUN_FRAMES))
                 .ok_or("no 2 MiB run of free memory")?;

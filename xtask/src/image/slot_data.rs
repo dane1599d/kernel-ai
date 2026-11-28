@@ -4,7 +4,7 @@
 //! later boot rebuilds the slots from its own build, as [`slots::build`] does,
 //! and keeps `kai-data` as the last boot left it.
 
-use super::slots::{self, DISK_NAME, Room};
+use super::slots::{self, DISK_NAME, Keep, Room};
 use super::{MIB, gpt};
 use std::fs;
 use std::path::Path;
@@ -14,8 +14,10 @@ use std::path::Path;
 pub const DATA_MIB: u64 = crate::blklog::DATA_SECTORS / 2048;
 
 /// Writes the slot disk of `esp` to `out`, for `sector`-byte sectors, with a
-/// `kai-data` of [`DATA_MIB`]: formatted anew when `fresh` or when `out` is
-/// not a disk of this layout, else kept from `out`. Its size in bytes.
+/// `kai-data` of [`DATA_MIB`]: formatted anew when `fresh`, else kept from
+/// `out`, which must be a disk of this layout's length (a chain's earlier
+/// boot); a missing or other disk is an error, never a silent new format.
+/// Its size in bytes.
 pub fn build(
     esp: &Path,
     out: &Path,
@@ -35,16 +37,24 @@ pub fn build(
         sector,
     )?;
     let data = plan.data.ok_or("the slot disk has no kai-data")?;
-    let same = fs::metadata(out).is_ok_and(|old| old.len() == plan.bytes());
-    if fresh || !same {
+    if fresh {
         slots::write(&plan, out, None)?;
         let uuid = gpt::unique(DISK_NAME, "kai-data volume");
         crate::fs_tool::format_partition(out, data.0, data.1, uuid)?;
         return Ok(plan.bytes());
     }
+    let shown = out.display();
+    let old = fs::metadata(out).map_err(|e| format!("cannot keep kai-data: {shown}: {e}"))?;
+    if old.len() != plan.bytes() {
+        return Err(format!(
+            "cannot keep kai-data: {shown} is {} bytes, not this layout's {}",
+            old.len(),
+            plan.bytes()
+        ));
+    }
     // The new disk beside the old, whose kai-data it copies, then in its place.
     let next = out.with_extension("next");
-    slots::write(&plan, &next, Some((out, data)))?;
+    slots::write(&plan, &next, Some((out, Keep::Data)))?;
     fs::rename(&next, out).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
     Ok(plan.bytes())
 }
@@ -99,6 +109,23 @@ mod tests {
         }
     }
 
+    /// A directory ESP in a new `dir`, as `slots::plan` reads one.
+    fn fake_esp(dir: &Path) -> std::path::PathBuf {
+        let _ = fs::remove_dir_all(dir);
+        let esp = dir.join("esp");
+        fs::create_dir_all(esp.join("EFI/BOOT")).unwrap();
+        fs::create_dir_all(esp.join("boot")).unwrap();
+        fs::write(esp.join("EFI/BOOT/BOOTX64.EFI"), b"efi").unwrap();
+        fs::write(esp.join("boot/kernel"), b"kernel").unwrap();
+        fs::write(esp.join("boot/kai.bundle"), b"bundle").unwrap();
+        esp
+    }
+
+    fn table(disk: &Path, sector: usize) -> Vec<diskmap::Partition> {
+        let mut disk = FileDisk(fs::File::open(disk).unwrap(), sector);
+        diskmap::read(&mut disk).unwrap().partitions
+    }
+
     fn at(disk: &Path, offset: u64, bytes: Option<&[u8]>) -> Vec<u8> {
         let mut file = fs::OpenOptions::new()
             .read(true)
@@ -121,17 +148,10 @@ mod tests {
     #[test]
     fn kai_data_is_partition_5_and_a_chained_boot_keeps_it() {
         let dir = std::env::temp_dir().join(format!("kai-slot-data-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        let esp = dir.join("esp");
-        fs::create_dir_all(esp.join("EFI/BOOT")).unwrap();
-        fs::create_dir_all(esp.join("boot")).unwrap();
-        fs::write(esp.join("EFI/BOOT/BOOTX64.EFI"), b"efi").unwrap();
-        fs::write(esp.join("boot/kernel"), b"kernel").unwrap();
-        fs::write(esp.join("boot/kai.bundle"), b"bundle").unwrap();
+        let esp = fake_esp(&dir);
         let out = dir.join("slots.img");
         build(&esp, &out, "test=files", RECORD, 4096, true).unwrap();
-        let table = diskmap::read(&mut FileDisk(fs::File::open(&out).unwrap(), 4096)).unwrap();
-        let parts = &table.partitions;
+        let parts = &table(&out, 4096);
         assert_eq!(parts.len(), 5);
         assert_eq!(parts[4].kind, diskmap::KAI_DATA_TYPE);
         assert_eq!(parts[4].sectors() * 4096, DATA_MIB << 20);
@@ -148,6 +168,50 @@ mod tests {
         assert_eq!(at(&out, slot_a, None), slot_a_bytes);
         build(&esp, &out, "test=files", RECORD, 4096, true).unwrap();
         assert_ne!(at(&out, data, None), mark);
+        // A chained boot with no earlier disk, or one of another length.
+        let other = dir.join("other.img");
+        let err = build(&esp, &other, "test=files", RECORD, 4096, false).unwrap_err();
+        assert!(err.starts_with("cannot keep kai-data"), "{err}");
+        fs::write(&other, b"short").unwrap();
+        let err = build(&esp, &other, "test=files", RECORD, 4096, false).unwrap_err();
+        assert!(err.contains("is 5 bytes, not this layout's"), "{err}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The slot disk without `kai-data` (G58 B), at 512 and at 4096: the same
+    /// bytes outside the two GPTs, and the same four partitions, each at the
+    /// same byte offset, read in the disk's own LBAs.
+    #[test]
+    fn a_4kn_slot_disk_is_the_512_disk_but_its_gpt() {
+        use std::io::{Read, Seek, SeekFrom};
+        let dir = std::env::temp_dir().join(format!("kai-slot-4kn-{}", std::process::id()));
+        let esp = fake_esp(&dir);
+        let (small, big) = (dir.join("512.img"), dir.join("4096.img"));
+        slots::build(&esp, &small, "test=slot", RECORD, 512).unwrap();
+        slots::build(&esp, &big, "test=slot", RECORD, 4096).unwrap();
+        let bytes = |parts: &[diskmap::Partition], sector: u64| -> Vec<(u64, u64)> {
+            parts
+                .iter()
+                .map(|p| (p.first * sector, p.sectors() * sector))
+                .collect()
+        };
+        let parts = bytes(&table(&small, 512), 512);
+        assert_eq!(parts.len(), 4);
+        assert_eq!(bytes(&table(&big, 4096), 4096), parts);
+        // Every byte from the first partition's start to the last one's end.
+        let (start, end) = (parts[0].0, parts[3].0 + parts[3].1);
+        let mut files = [&small, &big].map(|p| fs::File::open(p).unwrap());
+        let mut pieces = [vec![0u8; 1 << 20], vec![0u8; 1 << 20]];
+        let mut offset = start;
+        while offset < end {
+            let n = (end - offset).min(1 << 20) as usize;
+            for (file, piece) in files.iter_mut().zip(pieces.iter_mut()) {
+                file.seek(SeekFrom::Start(offset)).unwrap();
+                file.read_exact(&mut piece[..n]).unwrap();
+            }
+            assert!(pieces[0][..n] == pieces[1][..n], "bytes differ at {offset}");
+            offset += n as u64;
+        }
         fs::remove_dir_all(dir).unwrap();
     }
 }

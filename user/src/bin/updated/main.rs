@@ -468,10 +468,13 @@ fn check(handle: Handle) -> Result<(), String> {
     if sys::slot_write(handle, active as u64, 0, &sector) != Err(Error::Permission) {
         return Err(String::from("SLOT_WRITE took the active slot"));
     }
-    let committed = record(handle)?.slot(active).successful;
-    let r_write = sys::slot_write(handle, 0, 0, &sector);
-    if !committed && (r_write != Err(Error::Permission) || r.flags & WRITABLE != 0) {
-        return Err(String::from("SLOT_WRITE took R from a trial slot"));
+    // R is writable from a committed slot, so it is probed only from a trial:
+    // a write from a committed one would zero R's first sector.
+    if !record(handle)?.slot(active).successful {
+        let r_write = sys::slot_write(handle, 0, 0, &sector);
+        if r_write != Err(Error::Permission) || r.flags & WRITABLE != 0 {
+            return Err(String::from("SLOT_WRITE took R from a trial slot"));
+        }
     }
     println!("updated: SLOT_WRITE refuses the active slot, and R from a trial slot");
     import_disk(handle)?;
