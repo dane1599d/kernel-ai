@@ -45,7 +45,7 @@ pub fn main(args: &[String]) -> Result<(), String> {
                 let text = fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
                 listings.push((label.to_string(), text));
             }
-            let report = compare(&listings);
+            let report = compare(&listings)?;
             match report.is_empty() {
                 true => {
                     println!("image-hashes: all {} listings agree", listings.len());
@@ -298,12 +298,18 @@ fn short_name(entry: &[u8]) -> String {
 /// The pieces that differ between the listings: each `part`, `file`, `outside`
 /// `module` or `size` line whose rest is not the same in all of them, or that
 /// one lacks. Partitions come before files, files before modules. Empty when
-/// all agree.
-pub fn compare(listings: &[(String, String)]) -> Vec<String> {
+/// all agree. An error names a listing's `image:` line that is too short or of
+/// no kind it knows, which would otherwise be dropped unseen.
+pub fn compare(listings: &[(String, String)]) -> Result<Vec<String>, String> {
     let parsed: Vec<(&str, BTreeMap<String, String>)> = listings
         .iter()
-        .map(|(label, text)| (label.as_str(), keyed(text)))
-        .collect();
+        .map(|(label, text)| {
+            Ok((
+                label.as_str(),
+                keyed(text).map_err(|e| format!("{label}: {e}"))?,
+            ))
+        })
+        .collect::<Result<_, String>>()?;
     let mut keys: Vec<&String> = parsed.iter().flat_map(|(_, map)| map.keys()).collect();
     keys.sort_by_key(|key| order(key));
     keys.dedup();
@@ -340,41 +346,47 @@ pub fn compare(listings: &[(String, String)]) -> Vec<String> {
         }
         report.push(line);
     }
-    report
+    Ok(report)
 }
 
 /// A listing's lines by key (all but the value) to value: a `part` line's key
 /// is `part NAME` (the value is first sector, sectors and hash), a `file`
 /// line's `file PART PATH` and a `module` line's `module PART FILE#MODULE`
 /// (length and hash); `size` and `outside` have one value. The value is the
-/// last words, so a name with spaces stays whole in the key.
-fn keyed(text: &str) -> BTreeMap<String, String> {
+/// last words, so a name with spaces stays whole in the key. Lines not
+/// starting `image: ` are skipped; an `image:` line too short for its kind, or
+/// of another kind, is an error naming its line number.
+fn keyed(text: &str) -> Result<BTreeMap<String, String>, String> {
     let mut map = BTreeMap::new();
-    for line in text.lines().filter_map(|l| l.strip_prefix("image: ")) {
+    for (n, full) in text.lines().enumerate() {
+        let Some(line) = full.strip_prefix("image: ") else {
+            continue;
+        };
         let words: Vec<&str> = line.split(' ').collect();
         let (least, value) = match words.first() {
             Some(&"part") => (5, 3),
             Some(&"file" | &"module") => (5, 2),
-            Some(&"size" | &"outside") if words.len() == 2 => (2, 1),
-            _ => continue,
+            Some(&"size" | &"outside") => (2, 1),
+            _ => return Err(format!("line {}: no such kind: `{full}`", n + 1)),
         };
-        if words.len() < least {
-            continue;
+        if words.len() < least || (value == 1 && words.len() != 2) {
+            return Err(format!("line {}: too few or many words: `{full}`", n + 1));
         }
         let split = words.len() - value;
         map.insert(words[..split].join(" "), words[split..].join(" "));
     }
-    map
+    Ok(map)
 }
 
-/// Sorts `size`, `outside`, partitions, then files.
+/// Sorts `size`, `outside`, partitions, files, then modules.
 fn order(key: &str) -> (u8, String) {
     let rank = match key.split(' ').next() {
         Some("size") => 0,
         Some("outside") => 1,
         Some("part") => 2,
         Some("file") => 3,
-        _ => 4,
+        Some("module") => 4,
+        _ => 5,
     };
     (rank, key.to_string())
 }
@@ -477,12 +489,13 @@ mod tests {
             ("a".to_string(), same.clone()),
             ("b".to_string(), same.clone()),
         ];
-        assert!(compare(&agree).is_empty());
+        assert!(compare(&agree).unwrap().is_empty());
         let report = compare(&[
             ("a".to_string(), same.clone()),
             ("b".to_string(), same),
             ("offline".to_string(), other),
-        ]);
+        ])
+        .unwrap();
         assert_eq!(report.len(), 2, "{report:#?}");
         assert!(report[0].starts_with("DIFFERS: partition kai-a"));
         assert!(report[1].starts_with("DIFFERS: file boot/kernel in partition kai-a"));
@@ -497,7 +510,7 @@ mod tests {
             .filter(|l| !l.contains("NOTICES"))
             .collect::<Vec<_>>()
             .join("\n");
-        let report = compare(&[("a".to_string(), full), ("b".to_string(), short)]);
+        let report = compare(&[("a".to_string(), full), ("b".to_string(), short)]).unwrap();
         assert_eq!(report.len(), 1);
         assert!(report[0].contains("file NOTICES.txt in partition kai-a"));
         assert!(report[0].contains("b: (missing)"));
@@ -513,7 +526,7 @@ mod tests {
             "image: module kai-a boot/kai.bundle#init 12 {}",
             sha256_hex(b"init's bytes")
         )));
-        let report = compare(&[("a".to_string(), one), ("b".to_string(), two)]);
+        let report = compare(&[("a".to_string(), one), ("b".to_string(), two)]).unwrap();
         let named: Vec<&str> = report.iter().map(|r| r.lines().next().unwrap()).collect();
         assert_eq!(
             named,
@@ -526,6 +539,37 @@ mod tests {
         assert!(report[2].contains(&format!("a: 1 {}", sha256_hex(b"1"))));
     }
 
+    /// A listing line cut short (a truncated upload, say) is an error naming
+    /// the listing and the line, not a piece silently left out.
+    #[test]
+    fn a_short_line_is_an_error_not_a_skip() {
+        let full = listing(b"kernel one", "kai-a");
+        let cut: String = full
+            .lines()
+            .map(|l| match l.starts_with("image: file kai-a boot/kernel ") {
+                true => "image: file kai-a boot/kernel",
+                false => l,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let at = cut
+            .lines()
+            .position(|l| l == "image: file kai-a boot/kernel")
+            .unwrap()
+            + 1;
+        let err = compare(&[("a".to_string(), full.clone()), ("b".to_string(), cut)]).unwrap_err();
+        assert_eq!(
+            err,
+            format!("b: line {at}: too few or many words: `image: file kai-a boot/kernel`")
+        );
+        let odd = format!("{full}\nimage: partition kai-a 1 2 3");
+        let err = compare(&[("a".to_string(), full), ("b".to_string(), odd)]).unwrap_err();
+        assert!(
+            err.contains("no such kind: `image: partition kai-a 1 2 3`"),
+            "{err}"
+        );
+    }
+
     /// A path with spaces is one key: its line differs as one piece and its
     /// length and hash are the value, in the report whole.
     #[test]
@@ -533,7 +577,7 @@ mod tests {
         let one = listing_of(&tree_with(b"kernel one", &[7; 50], "EFI Boot"), "kai-a");
         let two = listing_of(&tree_with(b"kernel two", &[7; 50], "EFI Boot"), "kai-a");
         assert!(one.contains("image: file kai-a EFI Boot/kernel 10 "));
-        let report = compare(&[("a".to_string(), one), ("b".to_string(), two)]);
+        let report = compare(&[("a".to_string(), one), ("b".to_string(), two)]).unwrap();
         let named: Vec<&str> = report.iter().map(|r| r.lines().next().unwrap()).collect();
         assert_eq!(
             named,

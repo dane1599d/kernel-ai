@@ -1,7 +1,11 @@
 # `release-boot` on main, weekly (P6 G52, v0.1): the release pipeline's image
 # build and its boot, run every week on main so a break in the release path
-# shows within days, not on the day of a release candidate. It is release.yml's
-# `build` and `release-boot` jobs: build the release image, then boot it in QEMU
+# shows within days, not on the day of a release candidate. Its `build` is a
+# one-runner copy of release-images.yml's `build` (which release.yml calls),
+# without the slot-fill summary or the SBOM: the image steps are the same, so
+# keep them alike. It does not call release-images.yml, which would also build
+# runner b, the source tarball and the offline rebuild (repro.yml's weekly
+# job). Its `release-boot` is release.yml's: it boots that image in QEMU
 # under KVM with qwen3-0.6b attached as the import disk, type `models import`
 # and pass on the import line (`cargo xtask release-boot`). With no signed
 # repository committed it builds the same image with `--test-root`, whose
