@@ -18,7 +18,7 @@ use crate::ring::{self, Consumer, Producer};
 use crate::trb::{self, Direction, Event, Trb};
 use crate::{Error, PAGE};
 
-pub use enumerate::{Attached, PortReport};
+pub use enumerate::{Attached, Place, PortReport};
 
 /// Devices and interrupt endpoints the driver keeps.
 const MAX_DEVICES: usize = 8;
