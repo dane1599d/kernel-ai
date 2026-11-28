@@ -72,8 +72,9 @@ static FAILED: AtomicU32 = AtomicU32::new(0);
 /// own message when it gave one. Every kind is logged but Invalid and
 /// Permission, which are `fs`'s own range and rights checks, answered at once
 /// to a caller that sees them (logging them used up the unthrottled lines
-/// before the first bench); a kind added to these paths later shows. Called outside the disk's lock, from the syscall (never
-/// from an interrupt), and only on failure.
+/// before the first bench); a kind added to these paths later shows. Called
+/// outside the disk's lock, from the syscall (never from an interrupt), and
+/// only on failure.
 fn failed(call: &str, sector: u64, len: u64, error: Error, why: &str) -> Error {
     if matches!(error, Error::Invalid | Error::Permission) {
         return error;

@@ -251,9 +251,11 @@ impl Controller {
                 }
                 let done = Completion::parse(words);
                 let head = pair.cq.pop();
+                let (old_head, tail) = (pair.sq.head(), pair.sq.tail());
                 if !pair.sq.advance_head(done.sq_head) && noted() {
                     crate::log!(
-                        "nvme: queue {} completed with a submission head {} outside the queue",
+                        "nvme: queue {} reported submission head {}, which the queue cannot \
+                         have (ignored; head {old_head}, tail {tail})",
                         pair.qid,
                         done.sq_head
                     );

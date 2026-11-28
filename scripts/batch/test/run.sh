@@ -736,7 +736,7 @@ for f in llmproto/src/act.rs infer/src/lib.rs quant/src/lib.rs gguf/src/lib.rs u
 done
 for f in shellcore/src/other.rs shellcore/src/cmode/saved.rs shellcore/src/uix.rs goalcore/src/goal.rs goalcore/src/planner/tests.rs \
   user/src/bin/shell/host.rs user/src/bin/desktop/agent.rs deskcore/src/view/tests.rs deskcore/src/agent_tests.rs deskcore/src/files.rs \
-  shellcore/src/script/look.rs shellcore/src/script/bind.rs shellcore/src/actions_tests.rs livecore/src/ledger.rs; do
+  shellcore/src/script/look.rs shellcore/src/script/bind.rs shellcore/src/script/stub.rs livecore/src/ledger.rs; do
   check "$f is not" "! (echo '$f' | grep -qE '$mp')"
 done
 
