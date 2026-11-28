@@ -58,6 +58,7 @@ kaiagent = { path = "../kaiagent" }
 agentabi = { path = "../agentabi" }
 kabi = { path = "../kabi" }
 netdest = { path = "../netdest" }
+acpitables = { path = "../acpitables" }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
 kaimedia = { path = "../kaimedia" }
 rustls = { version = "=0.23.46", default-features = false }
@@ -223,6 +224,13 @@ bench = false
 [[bin]]
 name = "zip_archive"
 path = "fuzz_targets/zip_archive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "acpi_tables"
+path = "fuzz_targets/acpi_tables.rs"
 test = false
 doc = false
 bench = false
