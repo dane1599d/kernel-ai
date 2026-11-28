@@ -435,7 +435,7 @@ fn none_green(name: &str, short: &str, at: &[Run]) -> String {
 }
 
 /// The real repository: git in the workspace, and `gh` for the runs.
-struct Live;
+pub struct Live;
 
 fn output(cmd: &mut Command) -> Result<String, String> {
     let what = format!("{cmd:?}");
