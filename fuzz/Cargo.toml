@@ -35,7 +35,8 @@ publish = false
 # slot record, diskmap's GPT, gguf's file reader and kaifs's image, each target
 # including the body in that crate's tests by #[path]; and the device-facing
 # readers (ADR 0007 section 12): nvme's Identify pages and xhci's USB
-# descriptors, hub descriptor and hub port status. All are workspace
+# descriptors, hub descriptor and hub port status; and pci's DEV_CFG filter
+# (ADR 0007 section 5). All are workspace
 # crates (MPL-2.0 or the workspace's own), with no new external dependency.
 #
 # Being outside the workspace, this crate is outside `cargo deny`'s graph, so
@@ -74,6 +75,7 @@ diskmap = { path = "../diskmap" }
 gguf = { path = "../gguf" }
 kaifs = { path = "../kaifs" }
 nvme = { path = "../nvme" }
+pci = { path = "../pci" }
 xhci = { path = "../xhci" }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
 kaimedia = { path = "../kaimedia" }
@@ -310,6 +312,13 @@ bench = false
 [[bin]]
 name = "xhci_descriptors"
 path = "fuzz_targets/xhci_descriptors.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "dev_cfg"
+path = "fuzz_targets/dev_cfg.rs"
 test = false
 doc = false
 bench = false

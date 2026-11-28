@@ -4,12 +4,14 @@
 //! configuration space. The kernel supplies the configuration access (ECAM,
 //! mapping each bus as the walk first reads it); host tests use a fake one.
 //! [`msix`] reads capabilities and sets up MSI-X, and [`bar_range`] keeps an
-//! offset the device gives inside its BAR.
+//! offset the device gives inside its BAR. [`cfg::allow_write`] is the filter for
+//! a driver's writes to its own configuration space (DEV_CFG).
 
 #![no_std]
 
 extern crate alloc;
 
+pub mod cfg;
 pub mod msix;
 
 use alloc::vec::Vec;
