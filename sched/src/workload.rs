@@ -197,6 +197,27 @@ impl Mix {
     }
 }
 
+/// The shortest timed calibration run of `work` that counts. A clock that sits
+/// still for a few microseconds (the tune flakes after #1628: CPUs' TSC zero
+/// points apart, and the clock held at the latest any CPU read) timed a 3 us run
+/// as nothing, and the process calibrated 200,000,000 iterations per ms, so its
+/// 1 ms bursts spun for seconds and it was killed as a runaway mid-trial.
+pub const MIN_CALIBRATION_NS: u64 = 1_000;
+
+/// Loop iterations per millisecond from the timings of runs of `iterations`
+/// each: the fastest run of at least [`MIN_CALIBRATION_NS`], or `None` when no
+/// run was that long, and the caller times longer runs.
+pub fn iterations_per_ms(
+    iterations: u64,
+    elapsed_ns: impl IntoIterator<Item = u64>,
+) -> Option<u64> {
+    let fastest = elapsed_ns
+        .into_iter()
+        .filter(|&ns| ns >= MIN_CALIBRATION_NS)
+        .min()?;
+    Some((iterations.saturating_mul(MS) / fastest).max(1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +254,18 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn a_calibration_run_under_a_microsecond_does_not_count() {
+        // The flat clock's run: timed as 0, which once gave 200,000,000 per ms.
+        assert_eq!(iterations_per_ms(200, [0, 3_000, 2_500, 900]), Some(80_000));
+        assert_eq!(iterations_per_ms(200, [MIN_CALIBRATION_NS]), Some(200_000));
+        // No run long enough: the caller times longer runs.
+        assert_eq!(iterations_per_ms(200, [0, 1, 999]), None);
+        assert_eq!(iterations_per_ms(200, []), None);
+        // A very slow run still gives at least one iteration per ms.
+        assert_eq!(iterations_per_ms(1, [u64::MAX]), Some(1));
     }
 
     #[test]
