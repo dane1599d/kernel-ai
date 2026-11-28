@@ -91,7 +91,7 @@ fn a_4_gib_guest_is_offered_the_1_7b_and_a_6_gib_one_the_4b() {
     assert_eq!(
         four[0].fit,
         Fit::Memory {
-            need_mib: 4160,
+            need_mib: 4288,
             have_mib: 4096
         }
     );
@@ -235,9 +235,9 @@ fn the_one_ask_names_the_model_its_size_and_the_host() {
 fn the_guest_reads_as_the_step_its_vm_was_sized_in() {
     const MIB: u64 = 1 << 20;
     // xtask's VM for Qwen3-4B, less a little the firmware keeps.
-    assert_eq!(guest_mib_of(4160 * MIB - 10 * MIB), 4160);
-    assert_eq!(guest_mib_of(4160 * MIB), 4160);
-    // 4 GiB, whole or less a little, is not 4,160.
+    assert_eq!(guest_mib_of(4288 * MIB - 10 * MIB), 4288);
+    assert_eq!(guest_mib_of(4288 * MIB), 4288);
+    // 4 GiB, whole or less a little, is not 4,288.
     assert_eq!(guest_mib_of(4096 * MIB), 4096);
     assert_eq!(guest_mib_of(4096 * MIB - 640 * 1024), 4096);
     assert_eq!(guest_mib_of(0), 0);
@@ -248,7 +248,7 @@ fn the_guest_reads_as_the_step_its_vm_was_sized_in() {
     // So a VM sized for the 4B by xtask is offered it, and a 4 GiB one is not.
     let role = role();
     let sized = Machine {
-        memory_mib: guest_mib_of(4150 * MIB),
+        memory_mib: guest_mib_of(4278 * MIB),
         ..machine(6)
     };
     assert_eq!(fetch::fit(&role[2], &sized), Fit::Fits);
@@ -316,7 +316,7 @@ fn a_job_reaches_its_source_and_storage_hosts_on_443_and_lands_in_the_store() {
         (
             "qwen3-4b-2507",
             Refused::Memory {
-                need_mib: 4160,
+                need_mib: 4288,
                 have_mib: 4096,
             },
         ),
@@ -327,11 +327,11 @@ fn a_job_reaches_its_source_and_storage_hosts_on_443_and_lands_in_the_store() {
     }
     assert_eq!(
         Refused::Memory {
-            need_mib: 4160,
+            need_mib: 4288,
             have_mib: 4096
         }
         .why(),
-        "it needs 4160 MiB of memory and this machine has 4096 MiB"
+        "it needs 4288 MiB of memory and this machine has 4096 MiB"
     );
 }
 

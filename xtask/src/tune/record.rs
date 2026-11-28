@@ -307,3 +307,31 @@ pub fn verified_spec(booter: &Booter, path: &Path, shift: u32) -> Result<String,
     );
     Ok(spec)
 }
+
+#[cfg(test)]
+mod observe_memory {
+    use super::OBSERVE_DISK_BYTES;
+
+    /// Run 45742601599: the observe boot's 4 KiB kai.model was refused on
+    /// 1,792 MiB, with 1,478 MiB free (314 MiB kept by the guest) and
+    /// 1,481 MiB reserved for the services, so llm had no model. The observe
+    /// boot's memory, as `observe` sizes it, must take the replay module: its
+    /// 2 MiB run, its window's tables and the kernel's reserve, in the frames
+    /// left free once the guest has kept as much as that boot did.
+    #[test]
+    fn a_4k_replay_module_fits_the_observe_boot() {
+        const KEPT_MIB: u64 = 1792 - 1478;
+        let len = OBSERVE_DISK_BYTES as u64;
+        let memory = crate::disk::memory_mib_for(len);
+        let runs = len.div_ceil(kabi::model::RUN_BYTES);
+        let needed = runs * 512 + runs.div_ceil(512) + 1;
+        let free = (memory - KEPT_MIB) * 256;
+        assert!(
+            needed + kabi::model::RESERVE_PAGES <= free,
+            "{memory} MiB leaves {free} frames for {needed} and the reserve's {}",
+            kabi::model::RESERVE_PAGES
+        );
+        // The old size, 1,792 MiB, did not.
+        assert!(needed + kabi::model::RESERVE_PAGES > (1792 - KEPT_MIB) * 256);
+    }
+}
