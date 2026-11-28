@@ -50,7 +50,12 @@ fn the_manifest_gives_every_reftest_item_and_nothing_else() {
         (a.path.as_str(), a.viewport),
         ("css/box/red.html", Some((320, 240)))
     );
-    assert_eq!(m.reftests["/css/box/red.html?b"].references.len(), 2);
+    let b = &m.reftests["/css/box/red.html?b"];
+    assert_eq!(b.references.len(), 2);
+    assert_eq!(
+        (b.viewport, b.viewport_unread.as_deref()),
+        (None, Some("wide"))
+    );
     let blue = &m.reftests["/css/box/blue.html"];
     assert_eq!(blue.references[0].1, Relation::Mismatch);
     assert_eq!(blue.fuzzy, [(FuzzyKey::Any, fuzzy((0, 2), (0, 40)))]);
@@ -210,6 +215,7 @@ fn test(url: &str, refs: &[(&str, Relation)]) -> Reftest {
         references: refs.iter().map(|(u, r)| (u.to_string(), *r)).collect(),
         fuzzy: Vec::new(),
         viewport: None,
+        viewport_unread: None,
     }
 }
 
@@ -327,6 +333,38 @@ fn the_stub_runs_the_fixtures_end_to_end() {
     assert_eq!(json["tests"].as_array().unwrap().len(), 6);
     assert_eq!(json["tests"][1]["last"]["relation"], "==");
     assert_eq!(json["wpt_commit"], super::COMMIT);
+    // red.html?b's viewport_size "wide" ran at the default and says so.
+    assert!(
+        report.contains("1 ran with a note (an unread `viewport_size`, say)"),
+        "{report}"
+    );
+    assert_eq!(
+        json["tests"][4]["note"],
+        "viewport_size \"wide\" is not WxH: run at 800x600"
+    );
+    assert!(json["tests"][3].get("note").is_none());
+}
+
+/// WPT writes `viewport_size` as the meta tag's `WxH` text; `[w, h]` is read
+/// too, and anything else is no viewport, never a manifest error.
+#[test]
+fn a_viewport_size_is_read_as_wxh() {
+    use super::manifest::viewport_of;
+    use serde_json::json;
+    assert_eq!(viewport_of(&json!("320x240")), Some((320, 240)));
+    assert_eq!(viewport_of(&json!(" 320 x 240 ")), Some((320, 240)));
+    assert_eq!(viewport_of(&json!([320, 240])), Some((320, 240)));
+    for odd in [
+        json!("wide"),
+        json!("320"),
+        json!("0x240"),
+        json!("320x240x2"),
+        json!("-1x2"),
+        json!([320]),
+        json!(320),
+    ] {
+        assert_eq!(viewport_of(&odd), None, "{odd}");
+    }
 }
 
 #[test]

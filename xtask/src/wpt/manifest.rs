@@ -6,7 +6,11 @@
 //! - a null url means the file's own path under `url_base`;
 //! - `references` are `[url, "==" | "!="]` pairs;
 //! - `extras` may hold `fuzzy`, `viewport_size`, `timeout`, `dpi` and
-//!   `testdriver`.
+//!   `testdriver`. `viewport_size` is a string, the `content` of the test's
+//!   `<meta name=viewport-size>` (sourcefile.py; `Optional[Text]` in
+//!   item.py), read as `WxH`; `[w, h]` is read too. Any other value runs the
+//!   test at the default viewport and is noted in its result, never failing
+//!   the whole manifest.
 //!
 //! `fuzzy` is a list of `[key, [[min, max], [min, max]]]`: the allowed
 //! largest per-channel difference, then the allowed count of differing
@@ -65,6 +69,9 @@ pub struct Reftest {
     pub fuzzy: Vec<(FuzzyKey, Fuzzy)>,
     /// `viewport_size`, when the test sets one: width, height.
     pub viewport: Option<(u32, u32)>,
+    /// A `viewport_size` that is not `WxH` (or `[w, h]`), as written: the test
+    /// runs at the default viewport, and its result says so.
+    pub viewport_unread: Option<String>,
 }
 
 /// The reftests of a manifest, by url.
@@ -156,20 +163,15 @@ fn item_of(path: &str, url_base: &str, item: &Value) -> Result<Reftest, String> 
             fuzzy.push((fuzzy_key(&pair[0])?, ranges(&pair[1])?));
         }
     }
-    let viewport = match extras.get("viewport_size") {
-        None | Some(Value::Null) => None,
-        Some(v) => {
-            let wh = v
-                .as_array()
-                .filter(|a| a.len() == 2)
-                .ok_or("viewport_size is not [width, height]")?;
-            let side = |v: &Value| {
-                v.as_u64()
-                    .and_then(|n| u32::try_from(n).ok())
-                    .ok_or("a viewport side is not a number")
-            };
-            Some((side(&wh[0])?, side(&wh[1])?))
-        }
+    let (viewport, viewport_unread) = match extras.get("viewport_size") {
+        None | Some(Value::Null) => (None, None),
+        Some(v) => match viewport_of(v) {
+            Some(wh) => (Some(wh), None),
+            None => (
+                None,
+                Some(v.as_str().map_or_else(|| v.to_string(), str::to_string)),
+            ),
+        },
     };
     Ok(Reftest {
         path: path.to_string(),
@@ -177,7 +179,28 @@ fn item_of(path: &str, url_base: &str, item: &Value) -> Result<Reftest, String> 
         references,
         fuzzy,
         viewport,
+        viewport_unread,
     })
+}
+
+/// A `viewport_size` as width and height: the string `WxH`, or `[w, h]`.
+pub fn viewport_of(v: &Value) -> Option<(u32, u32)> {
+    let side = |s: &str| s.trim().parse::<u32>().ok().filter(|&n| n > 0);
+    match v {
+        Value::String(s) => {
+            let (w, h) = s.split_once('x')?;
+            Some((side(w)?, side(h)?))
+        }
+        Value::Array(a) if a.len() == 2 => {
+            let n = |v: &Value| {
+                v.as_u64()
+                    .and_then(|n| u32::try_from(n).ok())
+                    .filter(|&n| n > 0)
+            };
+            Some((n(&a[0])?, n(&a[1])?))
+        }
+        _ => None,
+    }
 }
 
 fn relation(v: &Value) -> Result<Relation, String> {

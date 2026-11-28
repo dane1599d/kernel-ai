@@ -12,8 +12,8 @@
           "blue.html": ["2222", [null, [["/css/box/red.html", "!="]], {"fuzzy": [[null, [[0, 2], [0, 40]]]]}]],
           "red.html": [
             "3333",
-            ["/css/box/red.html?a", [["/css/box/green-ref.html", "=="]], {"viewport_size": [320, 240]}],
-            ["/css/box/red.html?b", [["/css/box/green-ref.html", "=="], ["/css/box/red.html", "=="]], {}]
+            ["/css/box/red.html?a", [["/css/box/green-ref.html", "=="]], {"viewport_size": "320x240"}],
+            ["/css/box/red.html?b", [["/css/box/green-ref.html", "=="], ["/css/box/red.html", "=="]], {"viewport_size": "wide"}]
           ],
           "chain.html": ["4444", [null, [["/css/box/green.html", "=="]], {
             "fuzzy": [
