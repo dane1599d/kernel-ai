@@ -8,9 +8,11 @@
 //! `actions/cache` step (which saves in its post step wherever it runs) is
 //! `lookup-only`, and `Swatinem/rust-cache` sets `save-if` to main or `false`.
 //! Small entries a run's own later jobs restore (QEMU, tuftool) may be saved
-//! anywhere. On a tag, release.yml restores nothing, nor does any workflow it
-//! calls (release-images.yml, [`TAG_RUN`]): no cache restore without the
-//! not-a-tag `if:`, rust-cache included, which restores whatever its save-if.
+//! anywhere. On a tag, release.yml restores nothing, nor does any workflow or
+//! local action it uses (release-images.yml, [`TAG_RUN`]): no cache restore
+//! without an `if:` that is false on a tag (an `&&` chain with a not-a-tag
+//! term, [`not_on_a_tag`]), rust-cache included, which restores whatever its
+//! save-if.
 //! The jobs `publish` needs would otherwise run what any job on main could
 //! have written there.
 //!
@@ -30,10 +32,13 @@ use std::path::{Path, PathBuf};
 const SMALL: &[&str] = &["qemu-", "tuftool-"];
 const MAIN: &str = "github.ref == 'refs/heads/main'";
 const NOT_A_TAG: &str = "!startsWith(github.ref, 'refs/tags/";
-/// The workflows a release tag runs: release.yml and each workflow it calls
-/// with `uses: ./.github/workflows/...`, and each those call (a test follows
-/// the calls and holds the list to them).
-const TAG_RUN: &[&str] = &["release.yml", "release-images.yml"];
+/// The files a release tag runs, from the repository root: release.yml, each
+/// workflow or local action it uses (`uses: ./...`), and each file those use in
+/// turn (a test walks the uses from release.yml and holds the list to them).
+const TAG_RUN: &[&str] = &[
+    ".github/workflows/release.yml",
+    ".github/workflows/release-images.yml",
+];
 
 /// One `- ` list item: its first line's number and its lines, the dash
 /// replaced by spaces.
@@ -108,10 +113,7 @@ impl Step {
 /// What the rules find wrong in one file, as `file:line: why`, and how many
 /// cache steps it read.
 fn lint(file: &str, text: &str) -> (Vec<String>, usize) {
-    let release = Path::new(file)
-        .file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| TAG_RUN.contains(&n));
+    let release = TAG_RUN.contains(&file);
     let (mut errors, mut seen) = (Vec::new(), 0);
     for step in steps(text) {
         let Some(uses) = step.field("uses") else {
@@ -133,7 +135,7 @@ fn lint(file: &str, text: &str) -> (Vec<String>, usize) {
                 ));
             }
             // rust-cache restores on every ref, whatever save-if says.
-            if release && !cond.contains(NOT_A_TAG) {
+            if release && !not_on_a_tag(&cond) {
                 errors.push(format!(
                     "{at}: a release tag restores rust-cache: add `if: ${{{{ {NOT_A_TAG}') }}}}`"
                 ));
@@ -156,13 +158,120 @@ fn lint(file: &str, text: &str) -> (Vec<String>, usize) {
                 "{at}: actions/cache/save saves `{key}` from any ref: its if must name `{MAIN}`"
             ));
         }
-        if release && restore && !lookup && !cond.contains(NOT_A_TAG) {
+        if release && restore && !lookup && !not_on_a_tag(&cond) {
             errors.push(format!(
                 "{at}: a release tag restores `{key}`: add `if: ${{{{ {NOT_A_TAG}') }}}}`"
             ));
         }
     }
     (errors, seen)
+}
+
+/// Whether `cond` is false on a tag whatever else holds. With `${{ }}` and
+/// outer parentheses taken off it must be one term or a chain of terms joined
+/// by `&&`, with no `||` at the top level, and one term must be
+/// `!startsWith(github.ref, 'refs/tags/...')` or `github.ref_type != 'tag'`.
+/// A substring match is not enough: `always() || !startsWith(...)` and
+/// `!startsWith(...) || x` both run on a tag. Anything else (a negated group,
+/// say) counts as running on a tag.
+fn not_on_a_tag(cond: &str) -> bool {
+    let cond = cond.trim();
+    let cond = cond
+        .strip_prefix("${{")
+        .and_then(|c| c.strip_suffix("}}"))
+        .unwrap_or(cond);
+    // Spaces outside quotes carry no meaning in an expression.
+    let mut quoted = false;
+    let cond: String = cond
+        .chars()
+        .filter(|&c| {
+            quoted ^= c == '\'';
+            quoted || !c.is_whitespace()
+        })
+        .collect();
+    let Some(terms) = and_terms(unwrap_parens(&cond)) else {
+        return false;
+    };
+    terms.into_iter().map(unwrap_parens).any(|t| {
+        (t.starts_with(&NOT_A_TAG.replace(' ', "")) && t.ends_with("')"))
+            || t == "github.ref_type!='tag'"
+            || t == "'tag'!=github.ref_type"
+    })
+}
+
+/// `expr` without parentheses that wrap all of it.
+fn unwrap_parens(mut expr: &str) -> &str {
+    while let Some(inner) = expr.strip_prefix('(').and_then(|e| e.strip_suffix(')')) {
+        // `(a) && (b)` starts and ends with one, but they are not a pair.
+        let mut depth = 0i32;
+        let pair = inner.chars().all(|c| {
+            depth += i32::from(c == '(') - i32::from(c == ')');
+            depth >= 0
+        });
+        if !pair {
+            break;
+        }
+        expr = inner;
+    }
+    expr
+}
+
+/// The terms of `expr` split on `&&` outside parentheses and quotes, or None
+/// when an `||` is there too.
+fn and_terms(expr: &str) -> Option<Vec<&str>> {
+    let (bytes, mut terms, mut start) = (expr.as_bytes(), Vec::new(), 0);
+    let (mut depth, mut quoted, mut i) = (0i32, false, 0);
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\'' => quoted = !quoted,
+            b'(' if !quoted => depth += 1,
+            b')' if !quoted => depth -= 1,
+            b'|' if !quoted && depth == 0 && bytes.get(i + 1) == Some(&b'|') => return None,
+            b'&' if !quoted && depth == 0 && bytes.get(i + 1) == Some(&b'&') => {
+                terms.push(&expr[start..i]);
+                start = i + 2;
+                i += 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    terms.push(&expr[start..]);
+    Some(terms)
+}
+
+/// The local files `text` uses, from the repository root: `uses:
+/// ./.github/workflows/x.yml` is that file and `uses: ./.github/actions/x` that
+/// action's `action.yml`, a job's or a step's, quoted or not.
+fn local_uses(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| {
+            let body = line.trim_start();
+            let body = body.strip_prefix("- ").unwrap_or(body).trim_start();
+            let uses = body.strip_prefix("uses:")?;
+            let uses = uses.split(" #").next().unwrap_or(uses).trim();
+            let uses = uses.trim_matches(|c| c == '"' || c == '\'');
+            let path = uses.strip_prefix("./")?.trim_end_matches('/');
+            Some(match path.ends_with(".yml") || path.ends_with(".yaml") {
+                true => path.to_string(),
+                false => format!("{path}/action.yml"),
+            })
+        })
+        .collect()
+}
+
+/// Every file a run of `start` reaches through local uses, `start` first, each
+/// once, so a cycle ends; `read` gives a file's text by its path.
+fn reached(start: &str, read: impl Fn(&str) -> String) -> Vec<String> {
+    let (mut todo, mut seen) = (vec![start.to_string()], Vec::<String>::new());
+    while let Some(file) = todo.pop() {
+        if seen.contains(&file) {
+            continue;
+        }
+        todo.extend(local_uses(&read(&file)).into_iter().rev());
+        seen.push(file);
+    }
+    seen
 }
 
 /// The workflows that may ask for a `write` permission.
@@ -472,30 +581,30 @@ jobs:
     assert_eq!(policy(".github/workflows/ci.yml", tag, true).len(), 1);
 }
 
-/// A release tag runs every workflow release.yml calls, and every workflow
-/// those call, so each is in [`TAG_RUN`], and the no-restore rule holds in a
+/// A release tag runs every file release.yml uses, and every file those use,
+/// so each is in [`TAG_RUN`], and the no-restore rule holds in a
 /// called one as in release.yml itself.
 #[test]
 fn a_workflow_release_yml_calls_restores_nothing_on_a_tag() {
-    let dir = root().join(".github/workflows");
-    let (mut todo, mut seen) = (vec!["release.yml".to_string()], Vec::new());
-    while let Some(file) = todo.pop() {
-        if seen.contains(&file) {
-            continue;
-        }
+    let read = |file: &str| {
+        let path = root().join(file);
+        let yaml = path.with_file_name("action.yaml");
+        fs::read_to_string(&path)
+            .or_else(|_| fs::read_to_string(yaml))
+            .unwrap_or_else(|e| panic!("{file}: {e}"))
+    };
+    let seen = reached(".github/workflows/release.yml", read);
+    for file in &seen {
         assert!(
             TAG_RUN.contains(&file.as_str()),
             "a tag runs {file}, not in TAG_RUN"
         );
-        let text = fs::read_to_string(dir.join(&file)).unwrap();
-        todo.extend(
-            text.lines()
-                .filter_map(|l| l.trim().strip_prefix("uses: ./.github/workflows/"))
-                .map(str::to_string),
-        );
-        seen.push(file);
     }
-    assert!(seen.iter().any(|f| f == "release-images.yml"), "{seen:?}");
+    assert!(
+        seen.iter()
+            .any(|f| f == ".github/workflows/release-images.yml"),
+        "{seen:?}"
+    );
     let restore = "\
 jobs:
   a:
@@ -529,4 +638,97 @@ jobs:
     assert!(errors.is_empty(), "{errors:#?}");
     let (errors, _) = lint(".github/workflows/repro.yml", &rust_cache(""));
     assert!(errors.is_empty(), "{errors:#?}");
+}
+
+/// The walk goes through nested uses, into local actions, past quotes, and
+/// ends on a cycle, each file once.
+#[test]
+fn the_tag_walk_follows_nested_uses_and_local_actions_and_ends_on_a_cycle() {
+    let files = [
+        (
+            ".github/workflows/r.yml",
+            "jobs:\n  a:\n    uses: ./.github/workflows/b.yml\n",
+        ),
+        (
+            ".github/workflows/b.yml",
+            "jobs:\n  b:\n    steps:\n      - uses: \"./.github/actions/q\" # quoted\n      - uses: './.github/workflows/c.yml'\n",
+        ),
+        (
+            ".github/actions/q/action.yml",
+            "runs:\n  steps:\n    - uses: ./.github/actions/q/\n",
+        ),
+        (
+            ".github/workflows/c.yml",
+            "jobs:\n  c:\n    uses: ./.github/workflows/r.yml\n",
+        ),
+    ];
+    let read = |f: &str| {
+        files
+            .iter()
+            .find(|(p, _)| *p == f)
+            .map(|(_, t)| t.to_string())
+            .unwrap_or_else(|| panic!("read {f}"))
+    };
+    assert_eq!(
+        reached(".github/workflows/r.yml", read),
+        [
+            ".github/workflows/r.yml",
+            ".github/workflows/b.yml",
+            ".github/actions/q/action.yml",
+            ".github/workflows/c.yml",
+        ]
+    );
+}
+
+/// The not-a-tag `if:` is parsed, not matched as a substring: only an `&&`
+/// chain with a not-a-tag term is false on every tag.
+#[test]
+fn only_an_and_chain_with_a_not_a_tag_term_keeps_a_step_off_a_tag() {
+    for cond in [
+        "${{ !startsWith(github.ref, 'refs/tags/') }}",
+        "!startsWith(github.ref,'refs/tags/v')",
+        "steps.c.outputs.cache-hit != 'true' && !startsWith(github.ref, 'refs/tags/')",
+        "${{ always() && github.ref_type != 'tag' }}",
+        "('tag' != github.ref_type)",
+        "(github.event_name == 'push') && (!startsWith(github.ref, 'refs/tags/'))",
+    ] {
+        assert!(not_on_a_tag(cond), "{cond}");
+    }
+    for cond in [
+        "",
+        "always()",
+        "${{ always() || !startsWith(github.ref, 'refs/tags/') }}",
+        "!startsWith(github.ref, 'refs/tags/') || github.event_name == 'push'",
+        "github.ref_type == 'tag'",
+        "github.ref_type != 'tag' || always()",
+        "!(startsWith(github.ref, 'refs/tags/') || always())",
+        "(!startsWith(github.ref, 'refs/tags/')) || true",
+        "contains(github.ref, 'x || y') || github.ref_type != 'tag'",
+    ] {
+        assert!(!not_on_a_tag(cond), "{cond}");
+    }
+    // A `||` inside quotes or parentheses does not break the chain.
+    assert!(not_on_a_tag(
+        "contains(github.ref, 'x || y') && (a || b) && github.ref_type != 'tag'"
+    ));
+
+    // And the lint holds a rust-cache and a restore in a TAG_RUN file to it.
+    let step = |uses: &str, cond: &str| {
+        format!(
+            "jobs:\n  a:\n    steps:\n      - uses: {uses}\n        if: {cond}\n        with:\n          save-if: false\n          key: model-1\n"
+        )
+    };
+    let file = ".github/workflows/release-images.yml";
+    for uses in ["Swatinem/rust-cache@v2", "actions/cache/restore@v4"] {
+        for cond in [
+            "${{ always() || !startsWith(github.ref, 'refs/tags/') }}",
+            "${{ !startsWith(github.ref, 'refs/tags/') || always() }}",
+        ] {
+            let (errors, _) = lint(file, &step(uses, cond));
+            assert_eq!(errors.len(), 1, "{uses} {cond}: {errors:#?}");
+            assert!(errors[0].contains("a release tag restores"), "{errors:#?}");
+        }
+        let (errors, _) = lint(file, &step(uses, "${{ github.ref_type != 'tag' }}"));
+        assert!(errors.is_empty(), "{uses}: {errors:#?}");
+    }
 }
