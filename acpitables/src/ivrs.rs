@@ -5,9 +5,13 @@
 //!
 //! The table is untrusted: [`parse`] takes a whole table, checks its
 //! signature, length and checksum, and then reads only inside it. A block or
-//! a device entry of a type it does not know is skipped by its length, and
-//! one that is cut short or does not add up ends that block, never the
-//! table.
+//! a device entry of a type it does not know is skipped by its length. An
+//! entry that is cut short, or of an undefined variable length, ends its
+//! block; a block shorter than its fixed fields is skipped; a block whose
+//! length is under 4 or runs past the table ends the walk, and the blocks
+//! after it are not read. Everything dropped that way, and every range that
+//! does not add up, is counted in [`Ivrs::dropped`], so a caller that needs
+//! every device covered can refuse a damaged table.
 //!
 //! What it reads:
 //! - IVHD blocks of types 10h, 11h and 40h (one IOMMU each). Firmware may
@@ -35,12 +39,20 @@ pub enum IvrsError {
 /// The table's IVinfo and its IOMMUs, as firmware lists them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ivrs {
-    /// IVinfo: bit 0 EFRSup, bit 1 DMA remapping support (pre-boot DMA
-    /// protection), bits 15:8 the physical address size, bits 22:21 the
-    /// guest virtual address size, bits 7:5 the virtual address size.
+    /// IVinfo (spec 48882, section 5.2): bit 0 EFRSup, bits 7:5 GVAsize,
+    /// bits 14:8 PAsize, bits 21:15 VAsize and bit 22 HtAtsResv; see
+    /// [`Ivrs::physical_address_bits`] and its siblings. QEMU's own value is
+    /// 0x2801: EFRSup and a PAsize of 40.
     pub info: u32,
     /// Every IVHD block read, in table order.
     pub blocks: Vec<Ivhd>,
+    /// What the table held that was not read because it was cut short, ran
+    /// past the table, or did not add up: a block that ended the walk or was
+    /// shorter than its fixed fields, an entry cut short or of an undefined
+    /// length, a range end with no start or below it, a range start left
+    /// open. Blocks and entries of a type it does not read are not counted.
+    /// Zero for a table read whole.
+    pub dropped: usize,
 }
 
 /// An IVHD block's type.
@@ -129,19 +141,42 @@ const IVHD10_LEN: usize = 24;
 const IVHD11_LEN: usize = 40;
 
 impl Ivrs {
+    /// IVinfo's PAsize (bits 14:8): the physical address size, in bits.
+    pub fn physical_address_bits(&self) -> u8 {
+        (self.info >> 8 & 0x7f) as u8
+    }
+
+    /// IVinfo's VAsize (bits 21:15): the virtual address size, in bits.
+    pub fn virtual_address_bits(&self) -> u8 {
+        (self.info >> 15 & 0x7f) as u8
+    }
+
+    /// IVinfo's GVAsize (bits 7:5): the guest virtual address size field (0
+    /// is 2 levels, 1 is 3 levels, 2 is 4 levels).
+    pub fn guest_virtual_size(&self) -> u8 {
+        (self.info >> 5 & 0x7) as u8
+    }
+
     /// The IOMMUs to use: for each (segment, IOMMU device ID), the block of
     /// the highest type, as the specification says software that knows it
-    /// should take; among blocks of one type, the first.
+    /// should take; among blocks of one type, the first. In (segment, device
+    /// ID) order. Sorted, so a table of tens of thousands of blocks is not
+    /// compared pair by pair.
     pub fn iommus(&self) -> Vec<&Ivhd> {
+        let mut sorted: Vec<&Ivhd> = self.blocks.iter().collect();
+        // Stable: blocks of one IOMMU stay in table order.
+        sorted.sort_by_key(|b| (b.segment, b.device_id));
         let mut out: Vec<&Ivhd> = Vec::new();
-        for block in &self.blocks {
-            match out
-                .iter_mut()
-                .find(|b| b.segment == block.segment && b.device_id == block.device_id)
-            {
-                Some(kept) if block.kind > kept.kind => *kept = block,
-                Some(_) => {}
-                None => out.push(block),
+        for block in sorted {
+            match out.last_mut() {
+                Some(kept)
+                    if (kept.segment, kept.device_id) == (block.segment, block.device_id) =>
+                {
+                    if block.kind > kept.kind {
+                        *kept = block;
+                    }
+                }
+                _ => out.push(block),
             }
         }
         out
@@ -174,15 +209,23 @@ pub fn parse(table: &[u8]) -> Result<Ivrs, IvrsError> {
     let mut ivrs = Ivrs {
         info: u32_at(table, SDT_HEADER_LEN),
         blocks: Vec::new(),
+        dropped: 0,
     };
     let mut at = FIRST_BLOCK;
     while at + 4 <= table.len() {
         let len = usize::from(u16_at(table, at + 2));
         if len < 4 || at + len > table.len() {
+            // The walk cannot go on: this block and the rest are not read.
+            ivrs.dropped += 1;
             break;
         }
-        if let Some(block) = ivhd(&table[at..at + len]) {
-            ivrs.blocks.push(block);
+        match ivhd(&table[at..at + len]) {
+            Some(Ok(block)) => {
+                ivrs.dropped += block.dropped;
+                ivrs.blocks.push(block.ivhd);
+            }
+            Some(Err(())) => ivrs.dropped += 1,
+            None => {}
         }
         // IVMD (20h to 22h) and unknown types are skipped.
         at += len;
@@ -190,9 +233,15 @@ pub fn parse(table: &[u8]) -> Result<Ivrs, IvrsError> {
     Ok(ivrs)
 }
 
-/// An IVHD block, or `None` for another block type or one too short for its
-/// fixed fields.
-fn ivhd(block: &[u8]) -> Option<Ivhd> {
+/// An IVHD block and what its entries dropped.
+struct Read {
+    ivhd: Ivhd,
+    dropped: usize,
+}
+
+/// An IVHD block; `None` for another block type, and `Err` for an IVHD one
+/// too short for its fixed fields.
+fn ivhd(block: &[u8]) -> Option<Result<Read, ()>> {
     let (kind, fixed) = match block[0] {
         0x10 => (Kind::Fixed10, IVHD10_LEN),
         0x11 => (Kind::Efr11, IVHD11_LEN),
@@ -200,7 +249,7 @@ fn ivhd(block: &[u8]) -> Option<Ivhd> {
         _ => return None,
     };
     if block.len() < fixed {
-        return None;
+        return Some(Err(()));
     }
     let mut ivhd = Ivhd {
         kind,
@@ -220,8 +269,8 @@ fn ivhd(block: &[u8]) -> Option<Ivhd> {
         specials: Vec::new(),
         acpi: Vec::new(),
     };
-    entries(&block[fixed..], &mut ivhd);
-    Some(ivhd)
+    let dropped = entries(&block[fixed..], &mut ivhd);
+    Some(Ok(Read { ivhd, dropped }))
 }
 
 /// A range's start (3h, 43h or 47h), waiting for its end (4h).
@@ -235,8 +284,11 @@ struct Open {
 /// The device entries of one IVHD block. Entry types 00h to 3Fh are 4 bytes,
 /// 40h to 7Fh are 8, and 80h to FFh carry their length (only F0h is
 /// defined). A range's end with no start, an end below its start, or a start
-/// that another start or the block's end follows is dropped.
-fn entries(bytes: &[u8], ivhd: &mut Ivhd) {
+/// that another start or the block's end follows is dropped. Gives how many
+/// things were dropped: those, and an entry cut short or of an undefined
+/// length, which ends the block.
+fn entries(bytes: &[u8], ivhd: &mut Ivhd) -> usize {
+    let mut dropped = 0;
     let mut open: Option<Open> = None;
     let mut at = 0;
     while at < bytes.len() {
@@ -246,13 +298,20 @@ fn entries(bytes: &[u8], ivhd: &mut Ivhd) {
             0x40..=0x7f => 8,
             0xf0 => match bytes.get(at + 21) {
                 Some(&uid_len) => 22 + usize::from(uid_len),
-                None => break,
+                None => {
+                    dropped += 1;
+                    break;
+                }
             },
             // No other variable-length type is defined, so its length is
             // unknown: nothing after it can be read.
-            _ => break,
+            _ => {
+                dropped += 1;
+                break;
+            }
         };
         let Some(entry) = bytes.get(at..at + len) else {
+            dropped += 1;
             break;
         };
         at += len;
@@ -277,6 +336,8 @@ fn entries(bytes: &[u8], ivhd: &mut Ivhd) {
             0x42 => ivhd.devices.push(one(Some(u16_at(entry, 5)), 0)),
             0x46 => ivhd.devices.push(one(None, u32_at(entry, 4))),
             0x03 | 0x43 | 0x47 => {
+                // A start while another is open: the first never ended.
+                dropped += usize::from(open.is_some());
                 open = Some(Open {
                     first: id,
                     setting,
@@ -284,19 +345,17 @@ fn entries(bytes: &[u8], ivhd: &mut Ivhd) {
                     extended: if kind == 0x47 { u32_at(entry, 4) } else { 0 },
                 });
             }
-            0x04 => {
-                if let Some(start) = open.take()
-                    && start.first <= id
-                {
-                    ivhd.devices.push(Devices {
-                        first: start.first,
-                        last: id,
-                        setting: start.setting,
-                        alias: start.alias,
-                        extended: start.extended,
-                    });
-                }
-            }
+            0x04 => match open.take() {
+                Some(start) if start.first <= id => ivhd.devices.push(Devices {
+                    first: start.first,
+                    last: id,
+                    setting: start.setting,
+                    alias: start.alias,
+                    extended: start.extended,
+                }),
+                // An end below its start, or with no start.
+                _ => dropped += 1,
+            },
             0x48 => ivhd.specials.push(Special {
                 setting,
                 handle: entry[4],
@@ -322,6 +381,8 @@ fn entries(bytes: &[u8], ivhd: &mut Ivhd) {
             _ => {}
         }
     }
+    // A start the block's end followed.
+    dropped + usize::from(open.is_some())
 }
 
 fn u16_at(bytes: &[u8], offset: usize) -> u16 {

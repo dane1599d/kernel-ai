@@ -61,7 +61,9 @@ pub fn build(
 
 /// Copies the `len` bytes at `at` of the file `old` into `to`, a new file of
 /// zeros, at the same place, a MiB at a time. A MiB of zeros is not written,
-/// so it stays sparse in `to`.
+/// so it stays sparse in `to`. Only `slots::write` calls it, with the range
+/// `Plan::kept` works out for its [`Keep`]: no other range of an old disk is
+/// ever copied.
 pub(super) fn copy_range(old: &Path, to: &mut fs::File, at: u64, len: u64) -> Result<(), String> {
     use std::io::{Read, Seek, SeekFrom, Write};
     let shown = old.display();
@@ -179,8 +181,9 @@ mod tests {
     }
 
     /// The slot disk without `kai-data` (G58 B), at 512 and at 4096: the same
-    /// bytes outside the two GPTs, and the same four partitions, each at the
-    /// same byte offset, read in the disk's own LBAs.
+    /// length, the same bytes outside the two 4Kn GPTs (which cover the 512
+    /// ones), and the same four partitions, each at the same byte offset, read
+    /// in the disk's own LBAs.
     #[test]
     fn a_4kn_slot_disk_is_the_512_disk_but_its_gpt() {
         use std::io::{Read, Seek, SeekFrom};
@@ -198,8 +201,12 @@ mod tests {
         let parts = bytes(&table(&small, 512), 512);
         assert_eq!(parts.len(), 4);
         assert_eq!(bytes(&table(&big, 4096), 4096), parts);
-        // Every byte from the first partition's start to the last one's end.
-        let (start, end) = (parts[0].0, parts[3].0 + parts[3].1);
+        let len = fs::metadata(&small).unwrap().len();
+        assert_eq!(fs::metadata(&big).unwrap().len(), len);
+        // Every byte from the 4Kn primary GPT's end (its MBR, header and 4
+        // LBAs of entries) to the 4Kn backup GPT's start (4 LBAs and a header).
+        let (start, end) = (6 * 4096, len - 5 * 4096);
+        assert!(start <= parts[0].0 && parts[3].0 + parts[3].1 <= end);
         let mut files = [&small, &big].map(|p| fs::File::open(p).unwrap());
         let mut pieces = [vec![0u8; 1 << 20], vec![0u8; 1 << 20]];
         let mut offset = start;

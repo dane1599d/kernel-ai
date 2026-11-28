@@ -8,6 +8,8 @@
 mod harness;
 #[path = "../../testkit/hostile.rs"]
 mod hostile;
+#[path = "hostile/ivrs.rs"]
+mod ivrs_harness;
 
 use acpitables::{Error, MAX_TABLE_LEN, PhysMem, Platform, parse};
 use hostile::XorShift;
@@ -508,4 +510,43 @@ fn refixed_tables_let_mutations_reach_the_readers() {
     }
     assert_eq!(parsed, 2_000, "every re-fixed mutation parses");
     assert!(fadt_read > 1_900, "{fadt_read} with no table left out");
+}
+
+/// Writes the `acpi_tables` target's seeds, one file each, to
+/// `$FUZZ_SEED_DIR/acpi_tables/`: the sample machine as a window, and QEMU's
+/// own IVRS tables (the target reads its input both ways).
+#[test]
+#[ignore = "writes the fuzz corpus; run by the fuzz workflow"]
+fn write_fuzz_seeds() {
+    let dir = std::env::var("FUZZ_SEED_DIR").expect("FUZZ_SEED_DIR names the corpus folder");
+    let folder = std::path::Path::new(&dir).join("acpi_tables");
+    std::fs::create_dir_all(&folder).unwrap();
+    let seeds: [(&str, Vec<u8>); 4] = [
+        ("machine", windowed(&with_fadt(fadt()))),
+        ("ivrs-q35", include_bytes!("fixtures/ivrs/q35.bin").to_vec()),
+        (
+            "ivrs-q35-devices",
+            include_bytes!("fixtures/ivrs/q35-devices.bin").to_vec(),
+        ),
+        (
+            "ivrs-q35-xtsup",
+            include_bytes!("fixtures/ivrs/q35-xtsup.bin").to_vec(),
+        ),
+    ];
+    for (name, bytes) in seeds {
+        std::fs::write(folder.join(name), bytes).unwrap();
+    }
+}
+
+#[test]
+fn the_fuzz_targets_body_reads_the_machine_and_the_captured_tables() {
+    harness::acpi_tables(&windowed(&with_fadt(fadt())));
+    for table in [
+        &include_bytes!("fixtures/ivrs/q35.bin")[..],
+        &include_bytes!("fixtures/ivrs/q35-devices.bin")[..],
+        &include_bytes!("fixtures/ivrs/q35-xtsup.bin")[..],
+    ] {
+        ivrs_harness::ivrs_tables(table);
+        harness::acpi_tables(table);
+    }
 }

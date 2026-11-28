@@ -3,6 +3,7 @@
 //! signed under v2, with `2.root.json` signed by both roots' keys, moves the
 //! device to v2 and installs its release. From then the cached v2 wins over
 //! the v1 root each slot carries, and a disk signed under v1 alone is refused.
+//! A rotation that only v2's root key signed is refused from the start.
 
 use super::updates::{DATA, INSTALL, boot};
 use super::{TestCase, UpdateDisk};
@@ -58,12 +59,28 @@ const OLD_REFUSED: TestCase = TestCase {
         &[
             "slots: booted kai-b (record read)",
             "updated: the trusted root is /system/trust's, version 2",
-            "updated: FAIL refused: below the signature threshold",
+            "updated: FAIL refused: below the signature threshold: timestamp has 0 valid signatures",
             "updated: restarting into the running slot",
         ],
     )
 };
 const OLD_ROTATES: TestCase = rotates("update-root-old (2: kai-a moves to root v2)", &OLD_REFUSED);
+
+/// `update-root-one-key` boot 2: A, trusting v1, refuses a disk whose
+/// `2.root.json` only v2's root key signed, and stays on v1.
+const ONE_KEY_REFUSED: TestCase = TestCase {
+    data: Some(DATA),
+    update: Some(UpdateDisk::ROOT2_ONE_KEY),
+    ..boot(
+        "update-root-one-key (2: kai-a refuses a rotation v1 never signed)",
+        "test=update updated=update panic=reset",
+        &[
+            "updated: the trusted root is the slot's own, version 1",
+            "updated: FAIL refused: below the signature threshold: root has 0 valid signatures",
+            "updated: restarting into the running slot",
+        ],
+    )
+};
 
 pub const CASES: &[TestCase] = &[
     TestCase {
@@ -75,5 +92,10 @@ pub const CASES: &[TestCase] = &[
         then: Some(&OLD_ROTATES),
         data: Some(DATA),
         ..boot("update-root-old", "test=slot panic=reset", INSTALL)
+    },
+    TestCase {
+        then: Some(&ONE_KEY_REFUSED),
+        data: Some(DATA),
+        ..boot("update-root-one-key", "test=slot panic=reset", INSTALL)
     },
 ];

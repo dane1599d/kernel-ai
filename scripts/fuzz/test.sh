@@ -29,6 +29,15 @@ check "other tables' keys never count" "a fuzz_targets/a.rs" \
   '[package]\nname = "kainet-fuzz"\n\n[[bin]]\nname = "a"\npath = "fuzz_targets/a.rs"\ntest = false\n\n[dependencies]\npath = "x"\n'
 check "a bin with no path is absent" "" \
   '[[bin]]\nname = "c"\n\n[dependencies]\npath = "x"\n'
+check "indented keys" "e fuzz_targets/e.rs" \
+  '[[bin]]\n  name = "e"\n\tpath = "fuzz_targets/e.rs"\n'
+check "a dash in the name" "dns-name fuzz_targets/dns-name.rs" \
+  '[[bin]]\nname = "dns-name"\npath = "fuzz_targets/dns-name.rs"\n'
+check "one [[bin]] right after another" "f fuzz_targets/f.rs
+g fuzz_targets/g.rs" \
+  '[[bin]]\nname = "f"\npath = "fuzz_targets/f.rs"\n[[bin]]\nname = "g"\npath = "fuzz_targets/g.rs"\n'
+check "a # inside quotes is kept" "h fuzz_targets/h#1.rs" \
+  '[[bin]]\nname = "h"  # a comment\npath = "fuzz_targets/h#1.rs" # another\n'
 check "a commented-out [[bin]] is absent" "" \
   '# [[bin]]\n# name = "d"\n# path = "fuzz_targets/d.rs"\n'
 

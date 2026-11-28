@@ -12,7 +12,10 @@
 # kaimedia's PNG, JPEG, GIF and WebP decoders (P6 groundwork G8); and the
 # shell's records on disk, `kai-grants 1` and `actlog`, and an agent package's
 # manifest, whose bodies are fuzz/grants_harness.rs, fuzz/actlog_harness.rs and
-# fuzz/agent_harness.rs, seeded with their samples.
+# fuzz/agent_harness.rs, seeded with their samples; and the firmware tables
+# (`acpi_tables`: the MADT, HPET, MCFG and FADT readers over a memory window,
+# and IVRS), whose bodies are acpitables/tests/hostile/harness.rs and ivrs.rs,
+# seeded with the sample machine and QEMU's own IVRS tables.
 # The targets are fuzz/fuzz_targets/*.rs, outside the workspace; their bodies
 # are fuzz/harness.rs, fuzz/surfabi_harness.rs, fuzz/look_harness.rs and
 # fuzz/media_harness.rs, which
@@ -126,6 +129,7 @@ jobs:
             kai_grants) seed="-p kaigrants --test hostile" ;;
             agent_manifest) seed="-p kaiagent --test hostile" ;;
             actlog) seed="-p shellcore --test actlog_hostile" ;;
+            acpi_tables) seed="-p acpitables --test hostile" ;;
             *) echo "$TARGET has no seeding test: it starts from an empty corpus"; exit 0 ;;
           esac
           # shellcheck disable=SC2086 # $seed is the words of cargo's arguments.

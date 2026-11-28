@@ -43,6 +43,8 @@ pub struct Outcome {
     pub path: String,
     pub status: Status,
     pub last: Option<(String, Relation, Difference)>,
+    /// What the run could not honour, such as an unread `viewport_size`.
+    pub note: Option<String>,
 }
 
 /// The file under `root` that `url` names: the url less its base, query and
@@ -79,11 +81,18 @@ pub fn run_one(
         shots.insert(url.to_string(), picture.clone());
         Ok(picture)
     };
+    let note = test.viewport_unread.as_ref().map(|v| {
+        format!(
+            "viewport_size {v:?} is not WxH: run at {}x{}",
+            VIEWPORT.0, VIEWPORT.1
+        )
+    });
     let outcome = |status, last| Outcome {
         url: test.url.clone(),
         path: test.path.clone(),
         status,
         last,
+        note: note.clone(),
     };
     // (from, to, relation, depth); popped from the end, so pushed reversed.
     let mut stack: Vec<(String, String, Relation, usize)> = test

@@ -23,10 +23,12 @@
 //! that finds [`ESB`] held skips its pet rather than wait, so a pet never
 //! lands inside [`arm`]'s unlock sequence.
 //!
-//! On a boot of slot A or B ([`crate::slots::this_slot`]), [`bind`] arms it
-//! at once, so a trial that hangs in a driver's init, the supervisor's start
-//! or user space resets too (#1571's review). The lever, once it has read the
-//! record, keeps it armed for a trial and disarms it for a committed slot.
+//! On a boot of slot A or B ([`crate::slots::this_slot`]) that runs the lever,
+//! [`bind`] arms it at once, so a trial that hangs in a driver's init, the
+//! supervisor's start or user space resets too (#1571's review). The lever,
+//! once it has read the record, keeps it armed for a trial and disarms it for
+//! a committed slot. A self-test that runs no lever (`test=files` on os-4k's
+//! committed kai-a) leaves it stopped (#1632's review).
 //!
 //! The rule that every online CPU ticks needs a tick on every online CPU:
 //! tickless idle (`timer.rs`) must have [`on_tick`] skip an idle CPU first.
@@ -34,6 +36,7 @@
 //! The board's TCO timer (P7) goes behind the same [`arm`], [`disarm`] and
 //! [`on_tick`].
 
+use crate::selftest::SelfTest;
 use crate::{log, memory, percpu, slots, smp, timer};
 use bootslot::Slot;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -127,8 +130,8 @@ const _: () = assert!(percpu::MAX_CPUS <= 32, "TICKED has a bit per CPU");
 
 /// Takes the i6300esb whose configuration space `config` maps, with BAR0 at
 /// `bar` (`bar_len` bytes), from the PCI walk: stopped, set to reset on its
-/// timeout, its timed-out flag cleared; then, on a boot of slot A or B, armed
-/// for [`trial_s`].
+/// timeout, its timed-out flag cleared; then, on a boot of slot A or B that
+/// runs the lever ([`lever_runs`]), armed for [`trial_s`].
 ///
 /// 0x68 is read back after it is cleared: firmware that locked the timer
 /// while it counted leaves it counting, and it is then petted from here on
@@ -162,11 +165,23 @@ pub fn bind(config: u64, bar: u64, bar_len: u64) -> Result<&'static str, &'stati
         (false, true) => return Err("locked off by firmware, so it can never be armed"),
         (false, false) => {}
     }
-    if matches!(slots::this_slot(), Some(Slot::A | Slot::B)) {
-        arm(trial_s());
-        return Ok("armed until the lever reads the record");
+    if !matches!(slots::this_slot(), Some(Slot::A | Slot::B)) {
+        return Ok("stopped");
     }
-    Ok("stopped")
+    if !lever_runs() {
+        return Ok("stopped: this self-test runs no lever");
+    }
+    arm(trial_s());
+    Ok("armed until the lever reads the record")
+}
+
+/// Whether this boot reaches the lever, as `main.rs` dispatches its
+/// self-test: none, `test=slot`, `test=update` or `test=probation`.
+fn lever_runs() -> bool {
+    matches!(
+        crate::selftest::from_cmdline(crate::cmdline()),
+        SelfTest::None | SelfTest::Slot | SelfTest::Update | SelfTest::Probation
+    )
 }
 
 /// Whether the countdown runs.

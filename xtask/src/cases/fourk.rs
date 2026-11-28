@@ -403,7 +403,27 @@ mod tests {
         assert!(bytes[crate::disk::GGUF_LEN..].iter().all(|&b| b == 0));
         assert_eq!(disk.cmdline(), cmdline);
         assert!(disk.qemu_args().join(" ").contains(crate::disk::BLOCKS_4K));
+        // The model disk's line os-4k's boot 3 expects, from the fixture's size.
+        let padded = (crate::disk::GGUF_LEN as u64).next_multiple_of(4096);
+        let line = format!(
+            "{} sectors ({} KiB, 4096-byte blocks)",
+            padded / 512,
+            padded / 1024
+        );
+        assert_eq!(MODEL_DISK, line);
         fs::remove_dir_all(at).unwrap();
+    }
+
+    /// update-4k's boot 2 writes an image one sector past whole blocks, so its
+    /// last write is padded: the only boot whose pad runs.
+    #[test]
+    fn update_4k_writes_an_uneven_image() {
+        let first = CASES.iter().find(|c| c.name == "update-4k").unwrap();
+        let boot_2 = first.then.expect("update-4k has a boot 2");
+        let update = boot_2
+            .update
+            .expect("update-4k's boot 2 has an update disk");
+        assert!(update.uneven && !update.tampered, "{}", boot_2.name);
     }
 
     /// The boot disk's device for each of B's boots (G58).

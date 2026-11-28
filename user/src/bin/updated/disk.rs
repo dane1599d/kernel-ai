@@ -260,9 +260,10 @@ pub fn update(handle: Handle, restart_now: bool) -> Result<Staged, String> {
         .sectors
         * SECTOR;
     // The last write is whole blocks, and never stages an empty slot.
-    if length == 0 || length != target.length || blocks::padded(length) > room {
+    if length != target.length || !blocks::fits(length, room) {
         return Err(format!(
-            "refused: {file} is {length} bytes, the target {} and the slot {room}",
+            "refused: {file} is {}, the target {} and the slot {room}",
+            blocks::shown(length),
             target.length
         ));
     }

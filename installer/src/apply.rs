@@ -4,11 +4,11 @@ use alloc::vec;
 use alloc::vec::Vec;
 use sha2::{Digest, Sha256};
 
-use crate::{BLOCK_SECTORS, Error, Expect, Plan, SECTOR, Step, current, format_data};
+use crate::{BLOCK_SECTORS, Current, Error, Expect, Plan, SECTOR, Step, current, format_data};
 
 const S: usize = SECTOR as usize;
 /// Sectors copied, zeroed or read back in one go: 64 KiB.
-const PIECE: u64 = 128;
+pub(crate) const PIECE: u64 = 128;
 /// The most of `boot/slot` read: the record is a few lines.
 const RECORD_MAX: usize = 4096;
 
@@ -105,10 +105,16 @@ fn release_seq(disk: &mut dyn Disk, lba: u64, most: u64) -> Result<u32, Error> {
 /// Writes `plan` to `target`, copying from `source`, the running disk.
 /// Before any write, the target must still hold what the plan was made over
 /// ([`Plan::wipes`]), and every volume to copy is checked, so a refusal writes
-/// nothing.
+/// nothing. A target that fails to read is refused as unreadable, whatever
+/// the plan says it held.
 pub fn apply(plan: &Plan, source: &mut dyn Disk, target: &mut dyn Disk) -> Result<(), Error> {
-    if target.sectors() != plan.sectors || current(target) != plan.wipes {
+    if target.sectors() != plan.sectors {
         return Err(Error::Target);
+    }
+    match current(target) {
+        Current::ReadFails => return Err(Error::TargetUnreadable),
+        now if now != plan.wipes => return Err(Error::Target),
+        _ => {}
     }
     let mut piece = vec![0u8; PIECE as usize * S];
     for step in &plan.steps {

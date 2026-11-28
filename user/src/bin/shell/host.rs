@@ -534,13 +534,8 @@ impl Host for System {
     /// already, else its own action under the first free name
     /// ([`shellcore::refused_rules_name`]).
     fn rules_set_aside(&self, text: &str) -> Result<String, String> {
-        let at =
-            shellcore::refused_rules_name(text, |name| self.state.read(name)).ok_or_else(|| {
-                format!(
-                    "{} refused rules files are kept already; remove one",
-                    shellcore::MAX_REFUSED_RULES
-                )
-            })?;
+        let at = shellcore::refused_rules_name(text, |name| self.state.read(name))
+            .ok_or_else(shellcore::refused_rules_full)?;
         match at {
             shellcore::SetAside::Kept(name) => Ok(name),
             shellcore::SetAside::Free(name) => self
@@ -548,6 +543,16 @@ impl Host for System {
                 .write(&name, text, self.files.next_action())
                 .map(|()| name),
         }
+    }
+
+    fn refused_rules_read(&self, name: &str) -> Result<Option<(String, u64)>, String> {
+        self.state.read_kept(name)
+    }
+
+    /// As its own action: only the person's `rules refused remove`, at start
+    /// of no line's file changes, calls it.
+    fn refused_rules_trash(&self, name: &str) -> Result<(), String> {
+        self.state.trash(name, self.files.next_action())
     }
 
     fn net_grants_read(&self) -> Result<Option<String>, String> {
