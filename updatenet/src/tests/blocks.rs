@@ -2,9 +2,10 @@
 //! slot that, as the kernel does on a 4Kn disk, refuses a write of part of a
 //! block, one off a block, or one past `MAX_IO`.
 
-use crate::blocks::{BLOCK, SECTOR, fits, padded, shown, write_blocks};
+use crate::blocks::{BLOCK, SECTOR, copy_sectors, fits, padded, shown, write_blocks};
 use crate::plan::Release;
 use crate::slot::{Checkpoint, Mark, READ_BACK, SlotIo, SlotPartial};
+use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -162,4 +163,46 @@ fn an_image_fits_a_slot_by_its_whole_blocks() {
     assert_eq!(shown(2 * BLOCK), "8192 bytes");
     assert_eq!(shown(BLOCK + 1), "4097 bytes (8192 in whole 4 KiB blocks)");
     assert!(shown(u64::MAX).contains("more than whole 4 KiB blocks"));
+}
+
+/// check()'s copy of the running slot: the room rule on the sectors' bytes,
+/// whole blocks, and a count past `u64` bytes refused rather than wrapped.
+#[test]
+fn a_copy_of_the_running_slot_is_checked_whole_blocks() {
+    let per_block = BLOCK / SECTOR;
+    assert_eq!(copy_sectors(per_block, 64 * per_block), Ok(per_block));
+    assert_eq!(copy_sectors(1, 64 * per_block), Ok(per_block), "padded");
+    assert_eq!(
+        copy_sectors(64 * per_block, 64 * per_block),
+        Ok(64 * per_block)
+    );
+    assert!(copy_sectors(0, 64).unwrap_err().contains("0 bytes"));
+    assert_eq!(
+        copy_sectors(65, 71).unwrap_err(),
+        "the image is 33280 bytes (36864 in whole 4 KiB blocks), more than the slot's 36352"
+    );
+    assert_eq!(copy_sectors(65, 72), Ok(72), "fits padded exactly");
+    // u64::MAX / 512 + 1 sectors is the first count whose bytes wrap: as a
+    // room it would wrap to 0, and as an image to a few bytes that fit.
+    let past = u64::MAX / SECTOR + 1;
+    assert_eq!(
+        copy_sectors(8, past).unwrap_err(),
+        format!("the slot is {past} sectors, more bytes than u64 counts")
+    );
+    assert_eq!(
+        copy_sectors(past + 1, 64).unwrap_err(),
+        format!(
+            "the image is {} sectors, more bytes than u64 counts",
+            past + 1
+        )
+    );
+    // The last whole block that counts, and one sector past it, whose pad
+    // is past u64.
+    let last = past - per_block;
+    assert_eq!(copy_sectors(last, past - 1), Ok(last));
+    assert!(
+        copy_sectors(last + 1, past - 1)
+            .unwrap_err()
+            .contains("more than whole 4 KiB blocks")
+    );
 }
