@@ -730,7 +730,7 @@ for f in llmproto/src/act.rs infer/src/lib.rs quant/src/lib.rs gguf/src/lib.rs u
   goalcore/src/planner.rs user/src/bin/goals.rs user/src/bin/shell/ui.rs \
   shellcore/src/ui.rs shellcore/src/apps.rs shellcore/src/apps/rows.rs shellcore/src/appbuild.rs shellcore/src/request.rs \
   shellcore/src/guard.rs shellcore/src/tune.rs shellcore/src/cmode/program.rs \
-  shellcore/src/script.rs shellcore/src/script/known.rs shellcore/src/script/net.rs shellcore/src/actions.rs shellcore/src/engine.rs shellcore/src/eval.rs livecore/src/why.rs \
+  shellcore/src/script.rs shellcore/src/script/known.rs shellcore/src/script/net.rs shellcore/src/actions.rs shellcore/src/answers.rs shellcore/src/engine.rs shellcore/src/eval.rs livecore/src/why.rs \
   deskcore/src/agent.rs deskcore/src/view/mod.rs; do
   check "$f is a model path" "echo '$f' | grep -qE '$mp'"
 done
