@@ -19,7 +19,7 @@
 #![no_main]
 
 use sched::sim::{Behavior, Rng};
-use sched::workload::Mix;
+use sched::workload::{self, Mix};
 use user::{arg, args, println, sys};
 
 user::entry!(main);
@@ -31,6 +31,9 @@ const MS: u64 = 1_000_000;
 /// speed came out about 4x low and a 2-4 ms build burst ran for 0.7 ms (M10).
 const CALIBRATION_ITERS: u64 = 200;
 const CALIBRATION_RUNS: usize = 64;
+/// The longest calibration runs, when shorter ones all timed under
+/// [`workload::MIN_CALIBRATION_NS`]: still well under a tick.
+const MAX_CALIBRATION_ITERS: u64 = 1 << 14;
 
 fn main() -> i32 {
     let args = args();
@@ -74,17 +77,26 @@ fn main() -> i32 {
     }
 }
 
-/// Loop iterations per millisecond: the fastest of several timed runs.
+/// Loop iterations per millisecond: the fastest of several timed runs, of
+/// those the clock saw take at least [`workload::MIN_CALIBRATION_NS`]. With none
+/// that long, the runs are timed again at twice the iterations.
 fn calibrate() -> u64 {
-    let fastest = (0..CALIBRATION_RUNS)
-        .map(|_| {
+    let mut iterations = CALIBRATION_ITERS;
+    loop {
+        let runs = (0..CALIBRATION_RUNS).map(|_| {
             let start = sys::time_ns();
-            spin(CALIBRATION_ITERS);
-            sys::time_ns().saturating_sub(start).max(1)
-        })
-        .min()
-        .unwrap_or(1);
-    (CALIBRATION_ITERS * MS / fastest).max(1)
+            spin(iterations);
+            sys::time_ns().saturating_sub(start)
+        });
+        if let Some(speed) = workload::iterations_per_ms(iterations, runs) {
+            return speed;
+        }
+        if iterations >= MAX_CALIBRATION_ITERS {
+            // A clock this coarse: assume every run took the shortest that counts.
+            return iterations * MS / workload::MIN_CALIBRATION_NS;
+        }
+        iterations *= 2;
+    }
 }
 
 /// Computes for about `ns` of CPU time.
