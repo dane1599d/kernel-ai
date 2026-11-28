@@ -247,8 +247,10 @@ impl Shell {
 /// `undo` of `rules refused remove` on `/system/state`'s `Dir`, through
 /// `ask`: Begin, TrashRestore and Commit as one action of its own. Every
 /// failure after Begin sends Abort, a refused restore and a call that got
-/// no answer alike: an action left open would answer each later Begin of
-/// the shell's with Busy until `fs` restarted (#1673's review).
+/// no answer alike, and so does a Begin that got no answer, which may have
+/// opened the action all the same: an action left open would answer each
+/// later Begin of the shell's with Busy until `fs` restarted (#1673's
+/// review). A refused Begin opened none, so it sends none.
 /// [`FsRefused::Kept`] when no try would do better: another copy holds the
 /// name, or the trash holds none.
 pub fn untrash_on(
@@ -264,7 +266,11 @@ pub fn untrash_on(
     match ask(Request::Begin { action }) {
         Ok(Reply::Done) => {}
         Ok(other) => return Err(FsRefused::Failed(answered(other))),
-        Err(why) => return Err(FsRefused::Failed(why)),
+        // It may have reached `fs` and opened the action all the same.
+        Err(why) => {
+            let _ = ask(Request::Abort);
+            return Err(FsRefused::Failed(why));
+        }
     }
     let why = match ask(Request::TrashRestore { path: name.into() }) {
         Ok(Reply::Done) => match ask(Request::Commit) {
