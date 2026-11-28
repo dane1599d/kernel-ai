@@ -201,10 +201,15 @@ pub fn send_ipi(lapic_id: u32, vector: u8) {
     x86_64::instructions::interrupts::without_interrupts(|| {
         if x2apic() {
             // One 64-bit write, the destination in its top half; x2APIC has no
-            // delivery status to wait on.
+            // delivery status to wait on. A WRMSR to the x2APIC MSRs is not
+            // serializing (SDM vol. 3, 11.12.3), so mfence; lfence first: a
+            // shootdown's stores must be seen before its IPI lands.
             let icr = (u64::from(lapic_id) << 32) | u64::from(u32::from(vector) | ICR_ASSERT);
-            // SAFETY: the ICR's MSR, in x2APIC mode.
-            unsafe { x2apic_msr(ICR_LOW).write(icr) };
+            // SAFETY: fences only; then the ICR's MSR, in x2APIC mode.
+            unsafe {
+                core::arch::asm!("mfence", "lfence", options(nostack, preserves_flags));
+                x2apic_msr(ICR_LOW).write(icr);
+            }
             return;
         }
         while lapic_read(ICR_LOW) & ICR_PENDING != 0 {

@@ -48,18 +48,12 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
     // comes online, runs pinned threads and takes the shootdown's IPIs.
     TestCase {
         cpus: Some(12),
-        expect: &[
-            "apic: x2APIC (apic=x2apic)",
-            "self-test: 12 of 12 CPUs online",
-        ],
+        expect: &["apic: x2APIC (apic=x2apic)", "smp: 12 CPU(s) online"],
         ..case("smp-x2apic", "test=smp apic=x2apic")
     },
     TestCase {
         cpus: Some(12),
-        expect: &[
-            "apic: x2APIC (apic=x2apic)",
-            "self-test: 12 of 12 CPUs online",
-        ],
+        expect: &["apic: x2APIC (apic=x2apic)", "smp: 12 CPU(s) online"],
         ..case("tlb-x2apic", "test=tlb apic=x2apic")
     },
     case("storm", "test=storm"),
