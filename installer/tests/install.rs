@@ -546,8 +546,8 @@ fn found(disk: &mut Mem) -> Found {
 }
 
 /// What a target holds, as the device shows it before it asks to go on:
-/// blank only when both GPT areas are zero, and what else is there when it
-/// is neither blank nor a GPT.
+/// blank only when the first 2 MiB and the last 1 MiB are zero, and what
+/// else is there when it is neither blank nor a GPT.
 #[test]
 fn the_current_contents_say_blank_gpt_or_what_else() {
     let running = Running::new(7, KAI_A_TYPE);
@@ -587,12 +587,16 @@ fn the_current_contents_say_blank_gpt_or_what_else() {
     let mut floppy = holding(&[(0, fat)]);
     assert_eq!(found(&mut floppy), Found::Fat);
     // Bytes only in the last sector, the last of the primary array (LBA 33)
-    // or the first of the backup array (sectors - 33).
+    // or the first of the backup array (sectors - 33), or at the edges of
+    // what is read, as literals: the last of the first 2 MiB (LBA 4095) and
+    // the first of the last 1 MiB (sectors - 2048).
     let n = disk_sectors();
     for lba in [
         n - 1,
         diskmap::FIRST_USABLE - 1,
         n - 1 - diskmap::ENTRY_SECTORS,
+        4095,
+        n - 2048,
     ] {
         let mut one = holding(&[(lba, [0x11; S])]);
         assert_eq!(found(&mut one), Found::Unknown, "bytes at {lba}");
@@ -634,6 +638,16 @@ fn the_current_contents_say_blank_gpt_or_what_else() {
         let refused = plan(target("z"), running.source(), &got);
         assert_eq!(refused, Err(Error::TargetUnreadable));
     }
+    // Planned over a blank disk that fails to read by the time of apply:
+    // refused as unreadable, and nothing written.
+    let blank = plan(target("w"), running.source(), &Current::Blank).unwrap();
+    let mut failing = Failing {
+        disk: Mem::new(n),
+        at: 100,
+    };
+    let got = apply(&blank, &mut running.disk.clone(), &mut failing);
+    assert_eq!(got, Err(Error::TargetUnreadable));
+    assert!(failing.disk.log.is_empty(), "wrote to a failing disk");
 
     // Planned over one LUKS disk: applied to a blank disk, to an ext4 disk,
     // or to another LUKS disk of the same size, refused and unwritten.
