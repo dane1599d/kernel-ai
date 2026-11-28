@@ -2,7 +2,7 @@
 //! slot that, as the kernel does on a 4Kn disk, refuses a write of part of a
 //! block, one off a block, or one past `MAX_IO`.
 
-use crate::blocks::{BLOCK, SECTOR, padded, write_blocks};
+use crate::blocks::{BLOCK, SECTOR, fits, padded, shown, write_blocks};
 use crate::plan::Release;
 use crate::slot::{Checkpoint, Mark, READ_BACK, SlotIo, SlotPartial};
 use alloc::string::String;
@@ -105,7 +105,7 @@ fn an_image_is_written_in_whole_blocks_padded_with_zeros_and_hashed_to_its_lengt
     let k = 3 * BLOCK as usize;
     for len in [1, k - SECTOR as usize, k, MAX_IO as usize + SECTOR as usize] {
         let image: Vec<u8> = (0..len).map(|i| (i as u8).wrapping_mul(7) | 1).collect();
-        let end = padded(len as u64) as usize;
+        let end = padded(len as u64).unwrap() as usize;
         let mut slot = Disk4k::new(end + 2 * BLOCK as usize);
         slot.write(0, &image).unwrap();
         assert_eq!(slot.bytes[..len], image[..], "{len}");
@@ -141,4 +141,25 @@ fn a_write_starts_on_a_block() {
     // An empty image writes nothing.
     slot.write(0, &[]).unwrap();
     assert_eq!(slot.writes.len(), 1);
+}
+
+/// The one room rule: never an empty image, and the image's whole blocks
+/// within the slot; a length near `u64::MAX` is refused, not wrapped.
+#[test]
+fn an_image_fits_a_slot_by_its_whole_blocks() {
+    let room = 64 * BLOCK;
+    assert!(!fits(0, room), "an empty image");
+    assert!(fits(1, room));
+    assert!(fits(room, room));
+    assert!(fits(room - 1, room), "padded to room exactly");
+    assert!(!fits(room + 1, room));
+    assert!(
+        !fits(room - SECTOR + 1, room - SECTOR),
+        "fits unpadded, not padded"
+    );
+    assert_eq!(padded(u64::MAX - 1), None);
+    assert!(!fits(u64::MAX - 1, u64::MAX));
+    assert_eq!(shown(2 * BLOCK), "8192 bytes");
+    assert_eq!(shown(BLOCK + 1), "4097 bytes (8192 in whole 4 KiB blocks)");
+    assert!(shown(u64::MAX).contains("more than whole 4 KiB blocks"));
 }

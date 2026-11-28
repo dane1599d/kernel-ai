@@ -58,6 +58,7 @@ use kabi::Error;
 use kabi::handle::{Handle, HandleInfo, Kind, MAX_STARTUP, MAX_TRANSFER, RecvInfo};
 use kabi::update::{BLOCK, DISK, IMPORT, MAX_IO, NONE, SECTOR, WRITABLE};
 use modelchan::asker::Asker;
+use updatenet::blocks;
 use user::{println, sys};
 
 user::entry!(main);
@@ -492,14 +493,18 @@ fn check(handle: Handle) -> Result<(), String> {
     // Before anything is staged: the running slot's image at its own size, as
     // an update writes one. That is its FAT32 volume, not the whole partition,
     // which is larger (ADR 0008 §1), rounded up to whole blocks ([`BLOCK`]);
-    // past the volume is the partition's.
-    let sectors = image_sectors(handle, active as u64)?.next_multiple_of(BLOCK / SECTOR);
-    let room = info(other as u64)?.sectors;
-    if sectors > room {
-        return Err(format!(
-            "the running slot's image is {sectors} sectors, more than {other:?}'s {room}"
-        ));
-    }
+    // past the volume is the partition's. The room rule is the update's own.
+    let image = image_sectors(handle, active as u64)? * SECTOR;
+    let room = info(other as u64)?.sectors * SECTOR;
+    let sectors = match blocks::padded(image) {
+        Some(padded) if blocks::fits(image, room) => padded / SECTOR,
+        _ => {
+            return Err(format!(
+                "the running slot's image is {}, more than {other:?}'s {room}",
+                blocks::shown(image)
+            ));
+        }
+    };
     let mut bad = nv.record.encode();
     bad[10] ^= 0xFF;
     if sys::bootrec_set(handle, &bad, NONE, false) != Err(Error::Invalid) {
@@ -587,8 +592,14 @@ fn image_sectors(handle: Handle, slot: u64) -> Result<u64, String> {
 }
 
 /// Copies `sectors` sectors of slot `from` into slot `to`, flushes, and reads
-/// them back. `sectors` is whole blocks, so every write is.
+/// them back. `sectors` must be whole blocks, so every write is: a count that
+/// is not is refused before anything is written.
 fn copy(handle: Handle, from: u64, to: u64, sectors: u64) -> Result<(), String> {
+    if !sectors.is_multiple_of(BLOCK / SECTOR) {
+        return Err(format!(
+            "a slot copy of {sectors} sectors is not whole blocks"
+        ));
+    }
     let step = MAX_IO / SECTOR;
     let mut buf = vec![0u8; MAX_IO as usize];
     let mut back = vec![0u8; MAX_IO as usize];

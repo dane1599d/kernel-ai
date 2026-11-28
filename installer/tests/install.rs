@@ -620,12 +620,28 @@ fn the_current_contents_say_blank_gpt_or_what_else() {
         zapped.put(lba, zero);
     }
     assert_eq!(found(&mut zapped), Found::Unknown);
-    // Bytes just past what is read: blank, as the row says.
+    // Bytes just past what is read: blank, as the row says; and as literals,
+    // the first sector past the first 2 MiB (LBA 4096) and the last before
+    // the last 1 MiB (sectors - 2049), so raising HEAD or TAIL fails too.
     let past = holding(&[
         (installer::HEAD, [0x11; S]),
         (n - installer::TAIL - 1, [0x11; S]),
     ]);
     assert_eq!(current(&mut past.clone()), Current::Blank);
+    for lba in [4096, n - 2049] {
+        let mut one = holding(&[(lba, [0x11; S])]);
+        assert_eq!(current(&mut one), Current::Blank, "bytes at {lba}");
+    }
+    // The print of a known disk, as a literal: the SHA-256 of the first 4096
+    // sectors then the last 2048, in order (worked out apart from this code).
+    let Current::Other { print, .. } = current(&mut luks.clone()) else {
+        panic!("the LUKS disk is not Other");
+    };
+    let hex: String = print.iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(
+        hex,
+        "b619f608cd2105f98eb4622a3e228815cbec10ecda556b105d5d7f29ecf664b6"
+    );
 
     // A disk that fails to read, in its GPT or past it: refused outright.
     for at in [1, 100] {
