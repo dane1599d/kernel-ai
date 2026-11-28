@@ -8,7 +8,8 @@
 //! - `extras` may hold `fuzzy`, `viewport_size`, `timeout`, `dpi` and
 //!   `testdriver`. `viewport_size` is a string, the `content` of the test's
 //!   `<meta name=viewport-size>` (sourcefile.py; `Optional[Text]` in
-//!   item.py), read as `WxH`; `[w, h]` is read too. Any other value runs the
+//!   item.py), read as `WxH`; `[w, h]` is read too, each side 1 to
+//!   [`MAX_VIEWPORT_SIDE`]. Any other value runs the
 //!   test at the default viewport and is noted in its result, never failing
 //!   the whole manifest.
 //!
@@ -69,7 +70,8 @@ pub struct Reftest {
     pub fuzzy: Vec<(FuzzyKey, Fuzzy)>,
     /// `viewport_size`, when the test sets one: width, height.
     pub viewport: Option<(u32, u32)>,
-    /// A `viewport_size` that is not `WxH` (or `[w, h]`), as written: the test
+    /// A `viewport_size` that is not `WxH` (or `[w, h]`) with sides 1 to
+    /// [`MAX_VIEWPORT_SIDE`], as written: the test
     /// runs at the default viewport, and its result says so.
     pub viewport_unread: Option<String>,
 }
@@ -183,9 +185,26 @@ fn item_of(path: &str, url_base: &str, item: &Value) -> Result<Reftest, String> 
     })
 }
 
-/// A `viewport_size` as width and height: the string `WxH`, or `[w, h]`.
+/// The largest `viewport_size` side read: every shot is a width x height
+/// picture held in memory, and 4096 x 4096 is 64 MiB at 4 bytes a pixel. WPT's
+/// own `viewport-size` tests stay far under it; a larger side is unread (the
+/// test runs at the default viewport, with a note), never a huge allocation.
+pub const MAX_VIEWPORT_SIDE: u32 = 4096;
+
+/// A `viewport_size` as width and height: the string `WxH`, or `[w, h]`, each
+/// side 1 to [`MAX_VIEWPORT_SIDE`]. A side is decimal digits only (around
+/// spaces): `u32`'s parser would also take a leading `+`, which the meta tag's
+/// `WxH` never has.
 pub fn viewport_of(v: &Value) -> Option<(u32, u32)> {
-    let side = |s: &str| s.trim().parse::<u32>().ok().filter(|&n| n > 0);
+    let fits = |n: u32| (1..=MAX_VIEWPORT_SIDE).contains(&n);
+    let side = |s: &str| {
+        let s = s.trim();
+        let digits = !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+        digits
+            .then(|| s.parse::<u32>().ok())
+            .flatten()
+            .filter(|&n| fits(n))
+    };
     match v {
         Value::String(s) => {
             let (w, h) = s.split_once('x')?;
@@ -195,7 +214,7 @@ pub fn viewport_of(v: &Value) -> Option<(u32, u32)> {
             let n = |v: &Value| {
                 v.as_u64()
                     .and_then(|n| u32::try_from(n).ok())
-                    .filter(|&n| n > 0)
+                    .filter(|&n| fits(n))
             };
             Some((n(&a[0])?, n(&a[1])?))
         }
