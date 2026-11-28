@@ -30,6 +30,7 @@
 //! cargo xtask image-hashes list IMAGE | compare LABEL=LISTING...   (the release image's hashes by partition and file, for repro.yml; see image_hashes.rs)
 //! cargo xtask release-boot --image PATH --model PATH [--accel kvm|tcg] [--timeout SECS]   (boots a --test-root image and imports the model; see release_boot.rs)
 //! cargo xtask release-repo prepare|prepare-timestamp|assemble [--dir DIR] | check   (the founder-signed release/pkgrepo; see release_repo/mod.rs)
+//! cargo xtask release notes [REV]   (a Markdown draft of the release notes from the pins; see release_notes.rs)
 //! cargo xtask release check [REV]   (the v0.1 checklist lines a machine checks, each met, missing or the founder's; see release_check.rs)
 //! cargo xtask limine   (fetches and checks Limine's pinned files, for the release's source tarball)
 //! cargo xtask wpt commit | run --wpt DIR [--renderer stub] [--filter PREFIX]... [--limit N] [--out DIR]   (WPT reftests at a pinned commit, P6 G10; web-wpt.yml only; see wpt/mod.rs)
@@ -91,6 +92,7 @@ mod relay;
 mod release_boot;
 mod release_check;
 mod release_image;
+mod release_notes;
 mod release_repo;
 mod reuse;
 mod screen;
@@ -155,7 +157,10 @@ fn main() -> ExitCode {
         Some("image-hashes") => image_hashes::main(&args[1..]),
         Some("release-boot") => release_boot::main(&args[1..]),
         Some("release-repo") => release_repo::main(&args[1..]),
-        Some("release") => release_check::main(&args[1..]),
+        Some("release") => match args.get(1).map(String::as_str) {
+            Some("notes") => release_notes::main(&args[2..]),
+            _ => release_check::main(&args[1..]),
+        },
         // The release's source tarball carries Limine's pinned files (ADR 0009 D7).
         Some("limine") => ensure_limine(&workspace_root().join("target"))
             .map(|efi| println!("xtask: Limine {LIMINE_VERSION} at {}", efi.display())),

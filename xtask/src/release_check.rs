@@ -64,7 +64,7 @@ pub struct Run {
 impl Run {
     /// How a line names the run: its id and event, and for a `pull_request`
     /// run what it tested.
-    fn named(&self) -> String {
+    pub(crate) fn named(&self) -> String {
         match self.event.as_str() {
             "pull_request" => format!("{} (pull_request: REV merged into its base)", self.id),
             event => format!("{} ({event})", self.id),
@@ -73,7 +73,7 @@ impl Run {
 }
 
 /// Runs from any event but `pull_request` first, each group newest first.
-fn own_tree_first(mut runs: Vec<Run>) -> Vec<Run> {
+pub(crate) fn own_tree_first(mut runs: Vec<Run>) -> Vec<Run> {
     runs.sort_by_key(|r| r.event == "pull_request");
     runs
 }
@@ -494,7 +494,7 @@ fn none_green(name: &str, short: &str, at: &[Run]) -> String {
 }
 
 /// The real repository: git in the workspace, and `gh` for the runs.
-struct Live;
+pub struct Live;
 
 fn output(cmd: &mut Command) -> Result<String, String> {
     let what = format!("{cmd:?}");
