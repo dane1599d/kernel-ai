@@ -44,10 +44,12 @@ FLUENCY_MIN=${KAI_FLUENCY_MIN:-90}
 #   user goals.rs), script, program and app requests and their repair text
 #   (shellcore request.rs, guard.rs, appbuild.rs, cmode/program.rs), the tune
 #   summary (shellcore tune.rs), the script prompt's known names, actions and
-#   engine text (script.rs, script/known.rs, actions.rs, engine.rs), the script
+#   engine text (script.rs, script/known.rs, actions.rs, engine.rs), what an
+#   answer to a waiting question tells the model's memory (answers.rs, split
+#   from actions.rs: `remember` hands its result to agentcore), the script
 #   request an answer to a question extends (eval.rs), the quarantined `query`
 #   text (script/net.rs) and the `:why` facts (livecore why.rs). Not listed, on
 #   purpose: xtask/src/fluency/ is the gate, not model input; kabi's CONTEXT_CAP
 #   and product_name! sit in files too busy to gate every edit.
-MODEL_PATHS=${KAI_MODEL_PATHS:-'^(llmproto/|infer/src/|quant/|gguf/|user/src/bin/llm|user/src/pool\.rs|agentabi/|shellcore/src/(agentcore(\.rs|/)|state\.rs|ui\.rs|apps(\.rs|/)|appbuild\.rs|request\.rs|guard\.rs|tune\.rs|cmode/program\.rs|script(\.rs|/(known|net)\.rs)|actions\.rs|engine\.rs|eval\.rs)|livecore/src/why\.rs|goalcore/src/planner\.rs|user/src/bin/(goals\.rs|shell/ui\.rs)|deskcore/src/(agent\.rs|view/mod\.rs))'}
+MODEL_PATHS=${KAI_MODEL_PATHS:-'^(llmproto/|infer/src/|quant/|gguf/|user/src/bin/llm|user/src/pool\.rs|agentabi/|shellcore/src/(agentcore(\.rs|/)|state\.rs|ui\.rs|apps(\.rs|/)|appbuild\.rs|request\.rs|guard\.rs|tune\.rs|cmode/program\.rs|script(\.rs|/(known|net)\.rs)|actions\.rs|answers\.rs|engine\.rs|eval\.rs)|livecore/src/why\.rs|goalcore/src/planner\.rs|user/src/bin/(goals\.rs|shell/ui\.rs)|deskcore/src/(agent\.rs|view/mod\.rs))'}
 NOBOOT=${KAI_BATCH_NOBOOT:-1}
