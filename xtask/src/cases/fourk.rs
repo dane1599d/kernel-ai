@@ -22,6 +22,9 @@ const NVME: Data = Data {
 
 /// The fixture model's copy, on both boots of both cases.
 const MODEL: &str = "model: 2101245 bytes of GGUF v3 copied from the kai-model disk";
+/// The model disk's own line (`block::register`): the fixture padded to whole
+/// 4 KiB blocks, read in them. No other disk of these cases has its size.
+const MODEL_DISK: &str = "4104 sectors (2052 KiB, 4096-byte blocks)";
 
 /// A boot of a 4 KiB case: the data disk `data`, the model disk on NVMe when
 /// `nvme`, both of 4 KiB blocks.
@@ -50,6 +53,7 @@ const NVME_2: TestCase = four_k(
     true,
     &[
         "blocks of 4096 bytes",
+        "4096-byte blocks), writable",
         MODEL,
         "filecheck: boot 2 read back what boot 1 wrote, byte for byte",
         "files: boot 2: filecheck's step through its Dir handle passed",
@@ -156,6 +160,7 @@ const OS_3: TestCase = TestCase {
         false,
         &[
             "block: kai-data is blk disk \"kai-boot\"",
+            MODEL_DISK,
             MODEL,
             "fs: up; kai-data has ",
             WROTE,
@@ -182,6 +187,7 @@ const OS_NVME_3: TestCase = TestCase {
         &[
             // The NVMe serial is padded to 20 bytes; the prefix is the point.
             "block: kai-data is nvme disk \"kai-boot",
+            MODEL_DISK,
             MODEL,
             "fs: up; kai-data has ",
             WROTE,
@@ -201,8 +207,10 @@ const OS_NVME_2: TestCase = TestCase {
 
 /// Part C: `updated` writes slot B of a 4Kn boot disk, from the update disk
 /// (`updated=update`, with a 4 KiB `kai-data` disk for `/system/trust`) or
-/// as a copy of the running slot (`test=update`). Each write is padded to
-/// whole 4 KiB blocks (`kabi::update::BLOCK`), and B then boots.
+/// as a copy of the running slot (`test=update`), in whole 4 KiB blocks
+/// (`kabi::update::BLOCK`). The write reads back hash-equal and the record
+/// arms B; the next boot rebuilds the slot disk, so it runs xtask's own B
+/// under that record, not the bytes `updated` wrote.
 const B_UP: &[&str] = &[
     "slots: booted kai-b (record read)",
     "slots: up in kai-b (trial, 2 tries left)",
@@ -409,7 +417,7 @@ mod tests {
             let boot = crate::qemu::BootDisk {
                 nvme,
                 four_k,
-                data: false,
+                ..Default::default()
             };
             crate::qemu::boot_from_disk_on(&mut args, "slots.img", boot).unwrap();
             args[3].clone()
@@ -433,6 +441,7 @@ mod tests {
                 assert!(b.slots && b.four_k, "{}", b.name);
                 assert_eq!(b.boot_data, case.boot_data, "{}", b.name);
                 assert!(!b.boot_data || b.data.is_none(), "{}", b.name);
+                assert!(!(b.boot_data && b.keeps_slot_b), "{}", b.name);
                 boot = b.then;
             }
         }

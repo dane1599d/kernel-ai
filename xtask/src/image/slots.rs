@@ -160,6 +160,24 @@ impl Plan {
             .copied()
             .ok_or_else(|| "the slot disk has no slot B".into())
     }
+
+    /// The partition `keep` names, as (first LBA, sectors).
+    fn kept(&self, keep: Keep) -> Result<(u64, u64), String> {
+        match keep {
+            Keep::SlotB => self.slot_b(),
+            Keep::Data => self
+                .data
+                .ok_or_else(|| "the slot disk has no kai-data".into()),
+        }
+    }
+}
+
+/// The one partition [`write`] may take from an old disk as it is, in place
+/// of the new one: nothing else (a volume, the ESP, the GPT) is ever old.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Keep {
+    SlotB,
+    Data,
 }
 
 /// The layout for the directory ESP `esp`, whose kernel and bundle every slot
@@ -268,14 +286,12 @@ pub(super) fn plan(
 /// Writes `plan`'s disk to `out` as a new file: the GPT and each volume where
 /// the layout puts it, a piece at a time, and zeros everywhere else, left
 /// sparse where the system allows. The disk is gigabytes, most of them the
-/// slots' free room, and is never held in memory. With `keep`, the range
-/// `(first, sectors)` is that disk's, as it is, in place of a new volume.
-pub(super) fn write(
-    plan: &Plan,
-    out: &Path,
-    keep: Option<(&Path, (u64, u64))>,
-) -> Result<(), String> {
+/// slots' free room, and is never held in memory. With `keep`, that
+/// partition is the old disk's, as it is, in place of a new volume.
+pub(super) fn write(plan: &Plan, out: &Path, keep: Option<(&Path, Keep)>) -> Result<(), String> {
     use std::io::{Seek, SeekFrom, Write};
+    let keep = keep.map(|(old, part)| plan.kept(part).map(|range| (old, range)));
+    let keep = keep.transpose()?;
     let shown = out.display();
     let fail = |e: std::io::Error| format!("cannot write {shown}: {e}");
     let mut file = fs::File::create(out).map_err(fail)?;
@@ -309,7 +325,7 @@ pub fn build_keeping_b(esp: &Path, out: &Path, cmdline: &str, record: &str) -> R
     }
     // The new disk beside the old, whose B it copies, then in its place.
     let next = out.with_extension("next");
-    write(&plan, &next, Some((out, plan.slot_b()?)))?;
+    write(&plan, &next, Some((out, Keep::SlotB)))?;
     fs::rename(&next, out).map_err(|e| format!("cannot write {}: {e}", out.display()))?;
     Ok(plan.bytes())
 }
