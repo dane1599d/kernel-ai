@@ -5,43 +5,63 @@
 //! something else ("don't touch the finals but trash the drafts in notes/old",
 //! "move everything except the pdfs into notes/archive") keeps the goal.
 //!
-//! Read in clauses. A clause ends at `,` `;` `:` `!` `?` or a sentence's `.`, and
-//! at `,` `;` `:` `!` `?` inside a word that is not a path ("the drafts,don't
-//! touch notes/q3"), and before "but", "then", "instead", "however", "though", "although", "while" or
-//! "whereas", and before an "and" that starts another order ("and trash ...",
-//! "and don't ..."). In a clause:
+//! Read in clauses. A clause ends at `,` `;` `:` `!` `?` or a sentence's `.`,
+//! and at `,` `;` `:` `!` `?` inside a word that is not a path ("the
+//! drafts,don't touch notes/q3"), and before "but", "then", "instead",
+//! "however", "though", "although", "while" or "whereas", and before an "and"
+//! that starts another order ("and trash ...", "and don't ..."). In a clause:
 //!
 //! - **A negation** ([`NEGATIONS`]) keeps off every path after it: "don't touch
-//!   notes/q3", "never move anything in notes/q3". So does one whose path is
-//!   its subject: "notes/q3 is not to be touched", "notes/q3 stays untouched",
-//!   "notes/q3 is off limits".
+//!   notes/q3", "never move anything in notes/q3", "neither notes/q3 nor
+//!   notes/q4". So does one whose path is its subject: "notes/q3 is not to be
+//!   touched", "notes/q3 isn't to be touched", "notes/q3 stays untouched",
+//!   "notes/q3 is off limits". A negation of worry ([`REASSURANCES`]: "don't
+//!   worry about it", "never mind") keeps nothing off. A "not" after "is",
+//!   "are", "was" or "were" with no path its subject, and "isn't", "aren't"
+//!   or "wasn't", describe files ("the files that are not pdfs"), so they read
+//!   only up to a destination.
 //! - **An exclusion** ([`EXCLUSIONS`], "apart from", "other than", "everything
-//!   but", "keep out of" ...) keeps off the paths after it up to a destination
-//!   ("into", "to", "onto"): "trash notes/ except notes/q3" keeps notes/q3 off,
-//!   "move everything except the pdfs into notes/archive" keeps nothing off.
-//! - **"leave ... alone"** (or "untouched", "be", "as is") keeps off the paths
-//!   between.
+//!   but", "keep out of", "leave out" ...) keeps off the paths after it up to a
+//!   destination ("into", "to", "onto"): "trash notes/ except notes/q3" keeps
+//!   notes/q3 off, "move everything except the pdfs into notes/archive" keeps
+//!   nothing off. So does "without" and a word ending in "ing": "sort notes/
+//!   without touching notes/q3".
+//! - **"leave ... alone"** (or "untouched", "unchanged") keeps off the paths
+//!   between. "be", "as" and "out" end it only right after a path: "leave
+//!   notes/q3 be", "leave notes/q3 out", but not "leave a note in notes/q3 to
+//!   be read later".
+//! - **A child folder by its bare name** after a negation or an exclusion, or
+//!   in "leave ... alone" ("except the q3 folder", "leave my q3 folder
+//!   alone"), refuses too, naming "q3": a goal cannot leave a folder out of
+//!   one it holds, so the person names its path or rewords. ("don't touch the
+//!   q3 folder" is refused before this check: "folder" is a row's cue, and
+//!   the goal's rows refuse a negated cue.)
 //!
 //! A negation reaches past a comma only into a list of paths ("don't touch the
-//! finals, notes/q3 or notes/q4") or when nothing but filler follows it ("don't,
-//! under any circumstances, touch notes/q3"). A negated clause that points back
-//! ("it", "them", "there") keeps off the path of a clause before it that held
-//! only that path: "notes/q3: don't touch it".
+//! finals, notes/q3 or notes/q4", "don't touch the finals, the drafts or
+//! notes/q3": a list word right before a path, with no row's cue ahead of it)
+//! or when nothing but filler follows it ("don't, under any circumstances,
+//! touch notes/q3"). A negated clause that points back ("it", "them", "there")
+//! keeps off the path of a clause before it that held only that path:
+//! "notes/q3: don't touch it".
 //!
-//! Apostrophe look-alikes (`’` `‘` `ʼ` `` ` `` `´` `′`) read as `'`.
+//! Apostrophe look-alikes (`’` `‘` `ʼ` `` ` `` `´` `′` `＇` `ʹ` `՚`) read as
+//! `'`, the same marks agentabi's consent words fold.
 //!
 //! Not read, so a goal is not refused for them (its card still lists its
 //! folders before it starts): a word that keeps a folder as it is without
-//! negating ("keep notes/q3 as it is", "notes/q3 is final", "protect notes/q3",
-//! "spare notes/q3", "refrain from"); "no" and "without", which describe files
-//! ("the files with no tag"), so "no changes to notes/q3" is not read; "only"
-//! ("only trash notes/old" says nothing of other folders); a negation in one
-//! clause and its path in another without a list, filler or a pointer
-//! ("don't touch anything. notes/q3 is where the finals are"); a path before
-//! its negation with more than "is", "must", "should" ... between ("notes/q3,
-//! which has the finals, must not change"); a pointer back to a clause that
-//! said more than its path ("sort notes/q3, but don't rename it"); and double
-//! negation ("don't skip notes/q3"), which reads as keeping it off.
+//! negating ("keep notes/q3 as it is", "keep notes/q3 private", "notes/q3 is
+//! final", "protect notes/q3", "spare notes/q3", "refrain from"); "no", and
+//! "without" before anything but an "-ing" word, which describe files ("the
+//! files with no tag"), so "no changes to notes/q3" is not read; "only"
+//! ("only trash notes/old" says nothing of other folders); a child folder
+//! named any other way ("the folder called q3", "the drafts in q3"); a negation in one clause and
+//! its path in another without a list, filler or a pointer ("don't touch
+//! anything. notes/q3 is where the finals are"); a path before its negation
+//! with more than "is", "must", "should" ... between ("notes/q3, which has the
+//! finals, must not change"); a pointer back to a clause that said more than
+//! its path ("sort notes/q3, but don't rename it"); and double negation
+//! ("don't skip notes/q3"), which reads as keeping it off.
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -65,6 +85,15 @@ const NEGATIONS: &[&str] = &[
     "cant",
     "can't",
     "cannot",
+    "isnt",
+    "isn't",
+    "arent",
+    "aren't",
+    "wasnt",
+    "wasn't",
+    "shant",
+    "shan't",
+    "neither",
     "avoid",
     "avoiding",
 ];
@@ -95,6 +124,26 @@ const EXCLUSION_PAIRS: &[(&str, &str)] = &[
     ("keep", "away"),
     ("stay", "away"),
     ("hands", "off"),
+    ("leave", "out"),
+];
+
+/// Words a negation of which keeps nothing off: "don't worry about it".
+const REASSURANCES: &[&str] = &["worry", "mind", "bother", "hesitate", "forget", "panic"];
+
+/// Copulas before which a "not" describes files instead of keeping them off:
+/// "the files that are not pdfs".
+const DESCRIBING: &[&str] = &["is", "are", "was", "were"];
+
+/// Negations that are a copula and "not" in one: "the files that aren't pdfs".
+const DESCRIBING_NOTS: &[&str] = &["isnt", "isn't", "arent", "aren't", "wasnt", "wasn't"];
+
+/// Words before a folder's bare name: "the q3 folder", "my q3 folder".
+const FOLDER_OWNERS: &[&str] = &["the", "my", "your", "our"];
+
+/// Words between "the" and "folder" that name no folder: "the new folder".
+const NO_FOLDER_NAME: &[&str] = &[
+    "new", "other", "same", "one", "empty", "own", "parent", "whole", "right", "wrong", "next",
+    "last", "first", "main", "top",
 ];
 
 /// Words before which an exclusion ends: where the goal puts things.
@@ -115,8 +164,12 @@ const COPULAS: &[&str] = &[
 /// Words after a path that keep it off: "notes/q3 stays untouched".
 const KEPT_AS_IS: &[&str] = &["alone", "untouched", "unchanged", "off-limits"];
 
-/// Words that end "leave ...": "leave notes/q3 alone", "leave notes/q3 be".
-const LEAVE_ENDS: &[&str] = &["alone", "untouched", "unchanged", "be", "as"];
+/// Words that end "leave ...": "leave notes/q3 alone".
+const LEAVE_ENDS: &[&str] = &["alone", "untouched", "unchanged"];
+
+/// Words that end "leave ..." only right after a path: "leave notes/q3 be",
+/// "leave notes/q3 out", but not "leave a note in notes/q3 to be read".
+const LEAVE_ENDS_AFTER_PATH: &[&str] = &["be", "as", "out"];
 
 /// Words after a negation that carry it past a comma: "don't, under any
 /// circumstances, touch notes/q3".
@@ -190,7 +243,7 @@ enum Carry {
 /// whether a word after "and" starts another order (a row's cue, as the goal's
 /// scope reads it).
 pub(crate) fn kept_off(line: &str, starts_order: impl Fn(&str) -> bool) -> Option<String> {
-    let clauses = clauses(line, starts_order);
+    let clauses = clauses(line, &starts_order);
     let mut carry = Carry::No;
     let mut topic: Option<&str> = None;
     for clause in &clauses {
@@ -207,14 +260,15 @@ pub(crate) fn kept_off(line: &str, starts_order: impl Fn(&str) -> bool) -> Optio
                 carry = Carry::Open;
                 continue;
             }
-            Carry::List if listed(words) => return first_path,
+            Carry::List if listed(words, &starts_order) => return first_path,
             _ => {}
         }
         if let Some(path) = in_clause(words) {
             return Some(path);
         }
-        let keeps_off = |w: &Word| is_negation(&w.text) || EXCLUSIONS.contains(&w.text.as_str());
-        if let Some(at) = words.iter().position(keeps_off) {
+        let keeps_off =
+            |i: usize| negates(words, i) || EXCLUSIONS.contains(&words[i].text.as_str());
+        if let Some(at) = (0..words.len()).find(|&i| keeps_off(i)) {
             let rest = &words[at + 1..];
             let points_back = rest.iter().any(|w| POINTERS.contains(&w.text.as_str()));
             match (topic, points_back) {
@@ -240,27 +294,58 @@ pub(crate) fn kept_off(line: &str, starts_order: impl Fn(&str) -> bool) -> Optio
 }
 
 /// Whether `words`, after a comma, go on a list of paths: "notes/q3 or
-/// notes/q4", "or notes/q4".
-fn listed(words: &[Word]) -> bool {
-    match words {
-        [first, ..] if first.path => true,
-        [first, second, ..] => LIST_WORDS.contains(&first.text.as_str()) && second.path,
-        _ => false,
+/// notes/q4", "or notes/q4", "the drafts or notes/q4" (a list word right
+/// before a path, with no row's cue ahead of it).
+fn listed(words: &[Word], starts_order: impl Fn(&str) -> bool) -> bool {
+    if words.first().is_some_and(|w| w.path) {
+        return true;
     }
+    for pair in words.windows(2) {
+        if starts_order(&pair[0].text) {
+            return false;
+        }
+        if LIST_WORDS.contains(&pair[0].text.as_str()) && pair[1].path {
+            return true;
+        }
+    }
+    false
 }
 
 /// The first path one clause keeps off on its own.
 fn in_clause(words: &[Word]) -> Option<String> {
     let text = |i: usize| words.get(i).map_or("", |w| w.text.as_str());
+    let to_destination = |from: usize| {
+        words
+            .iter()
+            .skip(from)
+            .take_while(|w| !DESTINATIONS.contains(&w.text.as_str()))
+    };
     for (i, word) in words.iter().enumerate() {
-        if is_negation(&word.text) {
-            if let Some(path) = words[i + 1..].iter().find(|w| w.path) {
-                return Some(path.text.clone());
-            }
+        if negates(words, i) {
             // Its subject: a path before it with only copulas between.
             if let Some(path) = subject(&words[..i]) {
                 return Some(path);
             }
+            // A "not" that describes files reads only up to a destination:
+            // "move the files that are not pdfs into notes/other".
+            let found = match describes(words, i) {
+                true => to_destination(i + 1).find(|w| w.path),
+                false => words[i + 1..].iter().find(|w| w.path),
+            };
+            if let Some(path) = found {
+                return Some(path.text.clone());
+            }
+            if let Some(name) = folder_name(to_destination(i + 1)) {
+                return Some(name);
+            }
+        }
+        // "sort notes/ without touching notes/q3".
+        if word.text == "without"
+            && text(i + 1).len() > 4
+            && text(i + 1).ends_with("ing")
+            && let Some(path) = to_destination(i + 2).find(|w| w.path)
+        {
+            return Some(path.text.clone());
         }
         let pair = EXCLUSION_PAIRS
             .iter()
@@ -269,23 +354,28 @@ fn in_clause(words: &[Word]) -> Option<String> {
         // "but" in "everything but" is the pair's; "but not" is too.
         if excluded {
             let from = i + if pair { 2 } else { 1 };
-            let found = words
-                .iter()
-                .skip(from)
-                .take_while(|w| !DESTINATIONS.contains(&w.text.as_str()))
-                .find(|w| w.path);
-            if let Some(path) = found {
+            if let Some(path) = to_destination(from).find(|w| w.path) {
                 return Some(path.text.clone());
+            }
+            if let Some(name) = folder_name(to_destination(from)) {
+                return Some(name);
             }
         }
         if word.text == "leave" {
-            let end = words[i + 1..]
-                .iter()
-                .position(|w| LEAVE_ENDS.contains(&w.text.as_str()));
-            if let Some(end) = end
-                && let Some(path) = words[i + 1..i + 1 + end].iter().find(|w| w.path)
-            {
-                return Some(path.text.clone());
+            let end = words[i + 1..].iter().enumerate().position(|(j, w)| {
+                LEAVE_ENDS.contains(&w.text.as_str())
+                    || (LEAVE_ENDS_AFTER_PATH.contains(&w.text.as_str())
+                        && j > 0
+                        && words[i + j].path)
+            });
+            if let Some(end) = end {
+                let between = &words[i + 1..i + 1 + end];
+                if let Some(path) = between.iter().find(|w| w.path) {
+                    return Some(path.text.clone());
+                }
+                if let Some(name) = folder_name(between.iter()) {
+                    return Some(name);
+                }
             }
         }
         let kept_as_is = KEPT_AS_IS.contains(&word.text.as_str())
@@ -311,6 +401,36 @@ fn is_negation(word: &str) -> bool {
     NEGATIONS.contains(&word)
 }
 
+/// Whether `words[at]` is a negation that keeps something off: not "don't
+/// worry".
+fn negates(words: &[Word], at: usize) -> bool {
+    is_negation(&words[at].text)
+        && words
+            .get(at + 1)
+            .is_none_or(|next| !REASSURANCES.contains(&next.text.as_str()))
+}
+
+/// Whether the negation at `words[at]` describes files ("that are not pdfs",
+/// "that aren't pdfs") instead of keeping them off.
+fn describes(words: &[Word], at: usize) -> bool {
+    let word = words[at].text.as_str();
+    DESCRIBING_NOTS.contains(&word)
+        || (word == "not" && at > 0 && DESCRIBING.contains(&words[at - 1].text.as_str()))
+}
+
+/// The name in "the q3 folder", a child folder kept off by its bare name, which
+/// the goal cannot leave out of a folder it holds.
+fn folder_name<'a>(words: impl Iterator<Item = &'a Word>) -> Option<String> {
+    let words: Vec<&Word> = words.collect();
+    words.windows(3).find_map(|w| {
+        let named = FOLDER_OWNERS.contains(&w[0].text.as_str())
+            && !w[1].path
+            && !NO_FOLDER_NAME.contains(&w[1].text.as_str())
+            && matches!(w[2].text.as_str(), "folder" | "folders");
+        named.then(|| w[1].text.clone())
+    })
+}
+
 fn filler(word: &Word) -> bool {
     !word.path && CARRY_FILLER.contains(&word.text.as_str())
 }
@@ -320,7 +440,8 @@ fn clauses(line: &str, starts_order: impl Fn(&str) -> bool) -> Vec<Clause> {
     let line: String = line
         .chars()
         .map(|c| match c {
-            '\u{2018}' | '\u{2019}' | '\u{02bc}' | '`' | '\u{00b4}' | '\u{2032}' => '\'',
+            '\u{2018}' | '\u{2019}' | '\u{02bc}' | '`' | '\u{00b4}' | '\u{2032}' | '\u{ff07}'
+            | '\u{02b9}' | '\u{055a}' => '\'',
             c => c.to_ascii_lowercase(),
         })
         .collect();
