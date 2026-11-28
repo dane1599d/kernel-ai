@@ -105,10 +105,10 @@ pub fn args(
         "stdio",
         "-device",
         "isa-debug-exit,iobase=0xf4,iosize=0x04",
-        // The hardware watchdog (ADR 0008 §5): the kernel arms it on a boot of
-        // slot A or B, keeps it armed only for a trial, and its reset is
-        // QEMU's default action. At slot
-        // 0x1e, which q35 leaves free, so no other device's address moves.
+        // The hardware watchdog (ADR 0008 §5): the kernel arms it from the PCI
+        // bind on a boot of slot A or B whose lever runs, keeps it armed only
+        // for a trial, and its reset is QEMU's default action. At slot 0x1e,
+        // which q35 leaves free, so no other device's address moves.
         "-device",
         "i6300esb,addr=0x1e",
         "-netdev",
