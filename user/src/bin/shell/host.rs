@@ -551,8 +551,13 @@ impl Host for System {
 
     /// As its own action: only the person's `rules refused remove`, at start
     /// of no line's file changes, calls it.
-    fn refused_rules_trash(&self, name: &str) -> Result<(), String> {
+    fn refused_rules_trash(&self, name: &str) -> Result<u64, String> {
         self.state.trash(name, self.files.next_action())
+    }
+
+    /// As its own action, as the trash was: `undo` of the remove.
+    fn refused_rules_untrash(&self, name: &str) -> Result<(), shellcore::FsRefused> {
+        self.state.untrash(name, self.files.next_action())
     }
 
     fn net_grants_read(&self) -> Result<Option<String>, String> {

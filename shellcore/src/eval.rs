@@ -11,6 +11,14 @@ use rhai::{AST, EvalAltResult};
 
 impl Shell {
     pub(crate) fn eval_line(&mut self, input: &str) -> Reply {
+        // `rules refused remove`'s question takes only the very next line, a
+        // typed y or n: any other line leaves it, `:c` and an open entry's
+        // too, so no later `y` answers it (#1655's review).
+        if let Some(n) = self.refused_asking.take()
+            && let Some(reply) = self.refused_answer(n, input.trim())
+        {
+            return reply;
+        }
         // An open Rhai entry takes the next line first, `:c` included.
         if let Some(entry) = self.partial.take() {
             return self.continue_entry(entry, input);
@@ -32,10 +40,6 @@ impl Shell {
                 .is_some_and(|id| id.parse::<u64>().is_ok())
         {
             return self.answer(rest);
-        }
-        // `rules refused remove`'s question takes only a typed y or n.
-        if let Some(reply) = self.refused_answer(input) {
-            return reply;
         }
         if let Some(reply) = self.answer_bare(input) {
             return reply;

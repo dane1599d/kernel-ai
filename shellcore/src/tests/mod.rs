@@ -228,6 +228,9 @@ struct FakeHost {
     /// whether one can be written.
     rules_aside: RefCell<Vec<(String, String)>>,
     rules_aside_ok: Cell<bool>,
+    /// What `refused_rules_trash` moved, oldest first.
+    rules_trash: RefCell<Vec<(String, String)>>,
+    rules_trash_fails: Cell<bool>,
     pub withheld_disk: RefCell<Option<String>>,
     /// Why the withheld file cannot be read, when a test says it cannot.
     pub withheld_error: RefCell<Option<String>>,
@@ -469,6 +472,8 @@ impl FakeHost {
             rules_disk: RefCell::new(None),
             rules_aside: RefCell::new(Vec::new()),
             rules_aside_ok: Cell::new(false),
+            rules_trash: RefCell::new(Vec::new()),
+            rules_trash_fails: Cell::new(false),
             withheld_disk: RefCell::new(None),
             withheld_error: RefCell::new(None),
             read_errors: RefCell::new(Vec::new()),

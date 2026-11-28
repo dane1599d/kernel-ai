@@ -6,17 +6,33 @@
 //! lost unless the person asks for it: a refused file is only ever kept, and
 //! only this line takes one away.
 //!
+//! The move is a log entry of its own, with the generation `fs` committed it
+//! as, so `log` shows it and `undo` moves the copy back (#1655's review). The
+//! undo has no redo: only this line, which asks, takes a copy away again.
+//!
+//! The question waits for the very next line at the console. Any other line
+//! leaves it, and so does a `y` while a newer question is open (a proposal,
+//! a tune trial, `undo`'s, the card's), which that `y` was meant for. Each
+//! outcome is audited: put in the trash, kept (`n`), left, not put in the
+//! trash.
+//!
 //! Only the person's own line at the terminal reaches it. It is not a
 //! registry row and no Rhai function, so no model call, script, standing
 //! instruction or goal names it, and the desk panel and app windows refuse
 //! the remove (only the console answers its question, as with `undo`'s).
 
 use crate::actions::answers::yes_or_no;
+use crate::actlog::{Change, Entry, Form, State};
 use crate::rules::Rules;
-use crate::{MAX_REFUSED_RULES, Reply, Shell, refused_rules_file};
+use crate::undo::{Inverse, Refused};
+use crate::{FsRefused, MAX_REFUSED_RULES, Reply, Shell, refused_rules_file};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+
+/// The log's action word for the move, which a bare `undo` past its undo
+/// names.
+pub(crate) const REMOVE_ACTION: &str = "rules_refused_remove";
 
 /// What a panel or an app window is told for a `rules refused remove` line.
 pub(crate) const REMOVE_AT_TERMINAL: &str =
@@ -85,6 +101,11 @@ impl Shell {
                 "usage: rules refused remove <number>, 1 to {MAX_REFUSED_RULES}"
             ));
         };
+        // A question open now is the card's (the line left the rest): this
+        // one asks after it, so any open when the answer comes is newer.
+        if self.card_for_desk.is_some() || self.desk_ask_waiting() {
+            return Reply::err("answer the card's question first, then ask again");
+        }
         let name = refused_rules_file(n);
         match self.host.refused_rules_read(&name) {
             Ok(Some((_, kept_ns))) => {
@@ -103,25 +124,96 @@ impl Shell {
         }
     }
 
-    /// The person's `y` or `n` to `rules refused remove`'s question. `None`
-    /// when none waits, or the line is neither (the question is then left),
-    /// or names a variable.
-    pub(crate) fn refused_answer(&mut self, input: &str) -> Option<Reply> {
-        let n = self.refused_asking.take()?;
-        let yes = yes_or_no(input).filter(|_| !self.scope.contains(input))?;
+    /// The person's `y` or `n` to the question about copy `n`, which
+    /// `eval_line` took for this line. `None` when the line is neither, names
+    /// a variable, or a newer question is open: the question is then left.
+    pub(crate) fn refused_answer(&mut self, n: usize, input: &str) -> Option<Reply> {
         let name = refused_rules_file(n);
+        let newer = self.pending.is_some()
+            || self.tuner.proposing()
+            || self.undo_asking.is_some()
+            || self.card_for_desk.is_some()
+            || self.desk_ask_waiting();
+        let answer = yes_or_no(input).filter(|_| !self.scope.contains(input));
+        let Some(yes) = answer.filter(|_| !newer) else {
+            let why = match newer && answer.is_some() {
+                true => "a newer question is open",
+                false => "another line came first",
+            };
+            self.host.audit(&format!(
+                "rules refused remove {n} left: {why}; {name} kept"
+            ));
+            return None;
+        };
         if !yes {
+            self.host
+                .audit(&format!("rules refused remove {n}: {name} kept (n)"));
             return Some(Reply::ok(format!("Kept {name}")));
         }
         Some(match self.host.refused_rules_trash(&name) {
-            Ok(()) => {
+            Ok(generation) => {
                 self.host.audit(&format!(
-                    "rules refused remove {n}: {name} put in the trash"
+                    "rules refused remove {n}: {name} put in the trash (fs generation {generation})"
                 ));
-                Reply::ok(format!("Put {name} in the trash"))
+                self.log_refused_trash(n, &name, generation);
+                Reply::ok(format!("Put {name} in the trash; undo puts it back"))
             }
-            Err(why) => Reply::err(format!("{name} was not put in the trash: {why}")),
+            Err(why) => {
+                self.host.audit(&format!(
+                    "rules refused remove {n}: {name} not put in the trash: {why}"
+                ));
+                Reply::err(format!("{name} was not put in the trash: {why}"))
+            }
         })
+    }
+
+    /// The move of copy `n` to the trash, as `fs` committed it, logged so
+    /// `log` shows it and `undo` puts it back.
+    fn log_refused_trash(&mut self, n: usize, name: &str, generation: u64) {
+        let id = self.next_id;
+        self.next_id += 1;
+        let line = format!("rules refused remove {n}");
+        self.log.push(Entry {
+            agent: agentid::Name::kai(),
+            id,
+            t_ns: self.host.now_ns(),
+            form: Form::Call,
+            of: None,
+            tier: None,
+            pack: None,
+            consent: String::from("typed"),
+            state: State::Done,
+            request: line.clone(),
+            script: line,
+            outcome: format!("{name} put in the trash"),
+            changes: alloc::vec![Change {
+                action: String::from(REMOVE_ACTION),
+                owner: String::from("fs"),
+                res: format!("/system/state/{name}"),
+                before: String::from("kept"),
+                after: format!("in the trash (fs generation {generation})"),
+                inverse: Some(Inverse::Refused { n: n as u64 }),
+            }],
+        });
+        self.save_log();
+    }
+
+    /// `undo` of `rules refused remove <n>`: copy `n` back from the trash.
+    pub(crate) fn refused_untrash(&mut self, n: u64) -> Result<String, Refused> {
+        let n = usize::try_from(n)
+            .ok()
+            .filter(|n| (1..=MAX_REFUSED_RULES).contains(n))
+            .ok_or_else(|| Refused::Kept(format!("no refused rules file {n} is kept")))?;
+        let name = refused_rules_file(n);
+        match self.host.refused_rules_untrash(&name) {
+            Ok(()) => {
+                self.host
+                    .audit(&format!("undo of rules refused remove {n}: {name} back"));
+                Ok(format!("{name} back from the trash"))
+            }
+            Err(FsRefused::Failed(why)) => Err(Refused::Failed(why)),
+            Err(FsRefused::Kept(why)) => Err(Refused::Kept(why)),
+        }
     }
 }
 

@@ -320,14 +320,34 @@ impl Host for FakeHost {
             .map(|(_, kept)| (kept.clone(), KEPT_NS)))
     }
 
-    fn refused_rules_trash(&self, name: &str) -> Result<(), String> {
-        let mut aside = self.rules_aside.borrow_mut();
-        let before = aside.len();
-        aside.retain(|(n, _)| n != name);
-        match aside.len() < before {
-            true => Ok(()),
-            false => Err(format!("{name}: no such file")),
+    fn refused_rules_trash(&self, name: &str) -> Result<u64, String> {
+        if self.rules_trash_fails.get() {
+            return Err(String::from("the disk did not answer"));
         }
+        let mut aside = self.rules_aside.borrow_mut();
+        let at = aside
+            .iter()
+            .position(|(n, _)| n == name)
+            .ok_or_else(|| format!("{name}: no such file"))?;
+        let mut trash = self.rules_trash.borrow_mut();
+        trash.push(aside.remove(at));
+        Ok(40 + trash.len() as u64)
+    }
+
+    /// The newest trashed copy of `name` back, unless the name is taken.
+    fn refused_rules_untrash(&self, name: &str) -> Result<(), crate::FsRefused> {
+        let mut aside = self.rules_aside.borrow_mut();
+        if aside.iter().any(|(n, _)| n == name) {
+            return Err(crate::FsRefused::Kept(format!("{name} exists again")));
+        }
+        let mut trash = self.rules_trash.borrow_mut();
+        let at = trash
+            .iter()
+            .rposition(|(n, _)| n == name)
+            .ok_or_else(|| crate::FsRefused::Kept(format!("no {name} in the trash")))?;
+        aside.push(trash.remove(at));
+        aside.sort();
+        Ok(())
     }
 
     fn net_grants_read(&self) -> Result<Option<String>, String> {

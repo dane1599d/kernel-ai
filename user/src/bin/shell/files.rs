@@ -549,15 +549,16 @@ impl State {
         text.map(|text| Some((text, mtime)))
     }
 
-    /// Moves file `name` to the trash, as one action of its own.
-    pub fn trash(&self, name: &str, action: u64) -> Result<(), String> {
+    /// Moves file `name` to the trash, as one action of its own: the
+    /// generation it committed as.
+    pub fn trash(&self, name: &str, action: u64) -> Result<u64, String> {
         let dir = self
             .dir
             .ok_or_else(|| String::from("no /system/state here"))?;
         expect_done(dir, Request::Begin { action })?;
         match expect_done(dir, Request::Trash { name: name.into() }) {
             Ok(()) => match ask(dir, Request::Commit)?.0 {
-                Reply::Committed { .. } => Ok(()),
+                Reply::Committed { generation } => Ok(generation),
                 other => Err(unexpected(&other)),
             },
             Err(why) => {
@@ -565,6 +566,35 @@ impl State {
                 Err(why)
             }
         }
+    }
+
+    /// Moves the newest trashed file that was `name` back, as one action of
+    /// its own. [`FsRefused::Kept`] when the name is taken again or the trash
+    /// holds none: trying again would find the same.
+    pub fn untrash(&self, name: &str, action: u64) -> Result<(), FsRefused> {
+        let failed = FsRefused::Failed;
+        let dir = self
+            .dir
+            .ok_or_else(|| failed(String::from("no /system/state here")))?;
+        expect_done(dir, Request::Begin { action }).map_err(failed)?;
+        let request = Request::TrashRestore { path: name.into() };
+        let why = match ask(dir, request).map_err(failed)?.0 {
+            Reply::Done => {
+                return match ask(dir, Request::Commit).map_err(failed)?.0 {
+                    Reply::Committed { .. } => Ok(()),
+                    other => Err(failed(unexpected(&other))),
+                };
+            }
+            Reply::Failed(Error::Exists) => FsRefused::Kept(format!(
+                "{name} is kept again since, under the same name; remove that one first"
+            )),
+            Reply::Failed(Error::NotFound) => {
+                FsRefused::Kept(format!("the trash holds no {name}: it was emptied since"))
+            }
+            other => failed(unexpected(&other)),
+        };
+        let _ = ask(dir, Request::Abort);
+        Err(why)
     }
 
     /// Writes the whole of file `name` into the action now open, the one that
