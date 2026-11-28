@@ -528,6 +528,45 @@ impl State {
         text.map(Some)
     }
 
+    /// File `name` and when it was last written (nanoseconds since 1970), as
+    /// [`State::read`] reads it.
+    pub fn read_kept(&self, name: &str) -> Result<Option<(String, u64)>, String> {
+        let Some(dir) = self.dir else {
+            return Ok(None);
+        };
+        let request = Request::Open {
+            path: name.to_string(),
+            rights: Rights::READ.bits(),
+            how: How::Existing,
+        };
+        let (file, mtime) = match ask(dir, request)? {
+            (Reply::Opened(stat, _), Some(handle)) => (handle, stat.mtime),
+            (Reply::Failed(Error::NotFound), _) => return Ok(None),
+            (other, _) => return Err(format!("{name}: {}", unexpected(&other))),
+        };
+        let text = read_all(file);
+        close(file);
+        text.map(|text| Some((text, mtime)))
+    }
+
+    /// Moves file `name` to the trash, as one action of its own.
+    pub fn trash(&self, name: &str, action: u64) -> Result<(), String> {
+        let dir = self
+            .dir
+            .ok_or_else(|| String::from("no /system/state here"))?;
+        expect_done(dir, Request::Begin { action })?;
+        match expect_done(dir, Request::Trash { name: name.into() }) {
+            Ok(()) => match ask(dir, Request::Commit)?.0 {
+                Reply::Committed { .. } => Ok(()),
+                other => Err(unexpected(&other)),
+            },
+            Err(why) => {
+                let _ = ask(dir, Request::Abort);
+                Err(why)
+            }
+        }
+    }
+
     /// Writes the whole of file `name` into the action now open, the one that
     /// changed files.
     pub fn write_in(&self, name: &str, text: &str) -> Result<(), String> {

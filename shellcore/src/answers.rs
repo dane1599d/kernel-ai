@@ -11,7 +11,7 @@ use alloc::string::String;
 use termcore::menu::{Answer, read_answer};
 
 /// `y`, `n`, `yes` or `no`, any case.
-fn yes_or_no(text: &str) -> Option<bool> {
+pub(crate) fn yes_or_no(text: &str) -> Option<bool> {
     match text.trim().to_ascii_lowercase().as_str() {
         "y" | "yes" => Some(true),
         "n" | "no" => Some(false),

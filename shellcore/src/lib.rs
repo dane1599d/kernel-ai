@@ -75,6 +75,7 @@ mod panel;
 mod pkg;
 mod power;
 mod profiles;
+mod refused;
 mod request;
 mod rules;
 pub mod script;
@@ -109,7 +110,7 @@ use engine::Line;
 pub use guard::placeholder_target;
 pub use host::{
     Consent, FsChange, FsRead, FsRefused, FsUndone, Host, MAX_REFUSED_RULES, NO_FILES, NO_NET,
-    Proof, SetAside, refused_rules_name,
+    Proof, SetAside, refused_rules_file, refused_rules_full, refused_rules_name,
 };
 pub use ledger::LogFailed;
 pub use panel::PanelResult;
@@ -253,6 +254,9 @@ pub struct Shell {
     tiers: &'static [(&'static str, Tier)],
     /// The entry an `undo` waits on a yes for, because something changed it since.
     undo_asking: Option<u64>,
+    /// The kept refused rules file `rules refused remove <n>` waits on the
+    /// person's yes for: its number.
+    refused_asking: Option<usize>,
     /// Standing rules the menu's "Always allow" wrote.
     rules: rules::Rules,
     /// Standing instructions (P3 task 11), and the ones `rules_remove` ended,
@@ -445,6 +449,7 @@ impl Shell {
             tuner: tune::Tuner::default(),
             tiers,
             undo_asking: None,
+            refused_asking: None,
             rules: rules::Rules::default(),
             standing: standing::Standing::default(),
             instructions_removed: Vec::new(),
