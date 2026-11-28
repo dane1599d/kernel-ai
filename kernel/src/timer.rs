@@ -42,7 +42,8 @@ pub fn init_ap() {
     arm(now + period_ns());
 }
 
-/// Calibrates the local APIC timer against the HPET and starts ticking.
+/// Calibrates the local APIC timer against the HPET (or the PM timer standing
+/// in for it) and starts ticking.
 /// Interrupts must still be disabled.
 pub fn init() -> Result<(), &'static str> {
     let asked = crate::cmdline()
@@ -68,8 +69,9 @@ pub fn init() -> Result<(), &'static str> {
     percpu::this().tick_start_ns.store(now, Ordering::Relaxed);
     arm(now + period_ns());
     log!(
-        "timer: APIC {} counts/ms, HPET {} Hz, ticking at {} Hz",
+        "timer: APIC {} counts/ms, {} {} Hz, ticking at {} Hz",
         per_ms,
+        hpet::reference(),
         hpet::frequency_hz(),
         rate_hz()
     );

@@ -95,11 +95,13 @@ pub fn args(
     sizing: Sizing,
 ) -> Vec<String> {
     let memory = format!("{}M", vm_memory_mib(disk, sizing));
-    // G56: `--no-8042` takes the 8042 away, and QEMU's FADT then says so.
-    let machine = if sizing.no_8042 {
-        "q35,i8042=off"
-    } else {
-        "q35"
+    // G56: `--no-8042` takes the 8042 away, and QEMU's FADT then says so;
+    // G57: `--no-hpet` the HPET, and its ACPI table with it.
+    let machine = match (sizing.no_8042, sizing.no_hpet) {
+        (false, false) => "q35",
+        (true, false) => "q35,i8042=off",
+        (false, true) => "q35,hpet=off",
+        (true, true) => "q35,i8042=off,hpet=off",
     };
     let mut args: Vec<String> = [
         "-machine",
@@ -749,6 +751,7 @@ mod tests {
         let shaped = Sizing {
             cpu_model: Some("EPYC-Genoa"),
             no_8042: true,
+            no_hpet: true,
             ..Sizing::default()
         };
         let list = super::args(&firmware, Accel::Kvm, true, None, shaped);
@@ -758,7 +761,7 @@ mod tests {
         );
         assert!(
             list.windows(2)
-                .any(|w| w[0] == "-machine" && w[1] == "q35,i8042=off")
+                .any(|w| w[0] == "-machine" && w[1] == "q35,i8042=off,hpet=off")
         );
     }
 }
