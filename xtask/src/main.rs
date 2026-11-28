@@ -530,7 +530,7 @@ fn execute(options: &Options) -> Result<(), String> {
                     .max(Some(cases::CASE_MEMORY_MIB))
                     .max(case.memory_mib)
                     .max(model_mib.map(cases::with_case_room)),
-                ..options.sizing
+                cpus: case.cpus.or(options.sizing.cpus),
             };
             let mut args = qemu::args(&firmware, accel, true, disk.as_ref(), sizing);
             if let Some(mock) = &https_mock {

@@ -88,6 +88,9 @@ pub struct TestCase {
     /// Guest memory in MiB when the case needs more than its disk does (`bigmap`
     /// needs RAM above 4 GiB); `--mem` still wins if larger.
     pub memory_mib: Option<u64>,
+    /// vCPUs the case boots with, whatever `--cpus` says: `smp-x2apic`'s 12,
+    /// above [`crate::options::MAX_VM_CPUS`] (P6 G48).
+    pub cpus: Option<usize>,
     /// Attach the disk as an NVMe controller (`-device nvme`) instead of
     /// virtio-blk.
     pub nvme: bool,
@@ -335,6 +338,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         disk: None,
         server: true,
         memory_mib: None,
+        cpus: None,
         kvm_only: false,
         nvme: false,
         four_k: false,

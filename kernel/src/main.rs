@@ -614,7 +614,7 @@ fn init_devices() -> &'static acpitables::Platform {
         // First, so any later failure's reboot finds the register mapped.
         power::init(platform);
         let apic_id = apic::init_local(platform)?;
-        smp::set_boot_lapic(u32::from(apic_id));
+        smp::set_boot_lapic(apic_id);
         let hpet = platform
             .hpet
             .ok_or("no HPET; a PIT fallback is not implemented yet")?;

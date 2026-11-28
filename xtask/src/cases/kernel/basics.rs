@@ -44,6 +44,18 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
     case("watchdog", "test=watchdog"),
     case("smp", "test=smp"),
     case("tlb", "test=tlb"),
+    // x2APIC with more CPUs than xAPIC's old limit here (P6 G48): every CPU
+    // comes online, runs pinned threads and takes the shootdown's IPIs.
+    TestCase {
+        cpus: Some(12),
+        expect: &["apic: x2APIC (apic=x2apic)", "smp: 12 CPU(s) online"],
+        ..case("smp-x2apic", "test=smp apic=x2apic")
+    },
+    TestCase {
+        cpus: Some(12),
+        expect: &["apic: x2APIC (apic=x2apic)", "smp: 12 CPU(s) online"],
+        ..case("tlb-x2apic", "test=tlb apic=x2apic")
+    },
     case("storm", "test=storm"),
     case("fpu", "test=fpu"),
     case("probe", "test=probe"),

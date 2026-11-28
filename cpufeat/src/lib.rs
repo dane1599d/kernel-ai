@@ -7,6 +7,8 @@
 
 #![no_std]
 
+pub mod apic;
+
 /// XCR0 bits for the x87, SSE, AVX (upper ymm), opmask and two ZMM state components.
 pub const XCR0_X87: u64 = 1 << 0;
 pub const XCR0_SSE: u64 = 1 << 1;

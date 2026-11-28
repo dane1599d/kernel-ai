@@ -106,7 +106,7 @@ fn write_data(byte: u8) -> Result<(), &'static str> {
 /// Enables both ports with IRQ1, IRQ12 and scancode translation, turns on mouse
 /// streaming, and routes IRQ1 and IRQ12. A mouse that does not answer is logged
 /// and the keyboard still works.
-pub fn init(platform: &Platform, apic_id: u8) -> Result<(), &'static str> {
+pub fn init(platform: &Platform, apic_id: u32) -> Result<(), &'static str> {
     while status() & OUTPUT_FULL != 0 {
         // SAFETY: draining stale bytes from the i8042 data port.
         unsafe { inb(DATA) };
