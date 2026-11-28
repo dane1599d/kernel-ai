@@ -76,6 +76,7 @@ mod pkg;
 mod power;
 mod profiles;
 mod refused;
+pub use refused::untrash_on;
 mod request;
 mod rules;
 pub mod script;
@@ -255,8 +256,8 @@ pub struct Shell {
     /// The entry an `undo` waits on a yes for, because something changed it since.
     undo_asking: Option<u64>,
     /// The kept refused rules file `rules refused remove <n>` waits on the
-    /// person's yes for: its number.
-    refused_asking: Option<usize>,
+    /// person's yes for: its number, and when it asked.
+    refused_asking: Option<(usize, u64)>,
     /// Standing rules the menu's "Always allow" wrote.
     rules: rules::Rules,
     /// Standing instructions (P3 task 11), and the ones `rules_remove` ended,
@@ -546,12 +547,18 @@ impl Shell {
     pub fn eval_console(&mut self, input: &str) -> Reply {
         // The terminal asks for the card the shell said waits: never a typed
         // line, and never the panel's or an app's.
+        // `rules refused remove`'s question takes only the very next line:
+        // the card, `net denied` and an agent's answer, which never reach
+        // `eval_line`, leave it too (#1673's review).
+        let refused = self.refused_asking.take();
         if input == termcore::menu::TAKE_CARD {
+            self.refused_left(refused);
             let reply = self.take_card();
             self.save_log();
             return reply;
         }
         if let Some(reply) = self.status_line(input) {
+            self.refused_left(refused);
             return reply;
         }
         let answering = input.strip_prefix("answer ").and_then(|rest| {
@@ -568,11 +575,13 @@ impl Shell {
         // terminal, or not at all (`agentconsent`).
         if let Some((id, word)) = answering
             && !lapsed
-            && let Some(refused) = self.agent_answer(id, word, Shell::console_mark())
+            && let Some(answered) = self.agent_answer(id, word, Shell::console_mark())
         {
+            self.refused_left(refused);
             self.save_log();
-            return refused;
+            return answered;
         }
+        self.refused_asking = refused;
         let mut reply = self.eval(input);
         self.desk_answered(answering, &reply, lapsed);
         if reply.confirm.is_none() && !reply.more && !self.notices.is_empty() {

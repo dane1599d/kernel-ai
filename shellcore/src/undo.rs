@@ -110,6 +110,11 @@ pub enum Inverse {
     /// a send read back from disk has no undo and never goes; its redo is
     /// none, since a send always asks again.
     Unsend { entry: u64 },
+    /// Move refused rules file `n` ([`crate::refused_rules_file`]) back out of
+    /// `/system/state`'s trash, where `rules refused remove` put it (#1655's
+    /// review). Its redo is none: only the person's `rules refused remove`,
+    /// which asks, takes a copy away (`Shell::revert_entry`).
+    Refused { n: u64 },
     /// An inverse this shell cannot read, as `/system/log` holds it: one a
     /// newer shell wrote, read back after a slot rollback. It has no undo
     /// here, and is written back word for word, so the newer shell finds it
@@ -291,6 +296,7 @@ pub fn target(inverse: Inverse) -> String {
         Inverse::NetGrant { id, held: true } => format!("network grant #{id} taken back"),
         Inverse::NetGrant { id, held: false } => format!("network grant #{id}"),
         Inverse::Unsend { .. } => String::from("the send not sent"),
+        Inverse::Refused { n } => format!("refused rules file {n}"),
         Inverse::Unread(_) => String::from("what a newer shell recorded"),
     }
 }
@@ -430,6 +436,7 @@ fn revert_one(
         | Inverse::Goal { .. }
         | Inverse::NetGrant { .. }
         | Inverse::Unsend { .. }
+        | Inverse::Refused { .. }
         | Inverse::Model { .. }
         | Inverse::Fetched { .. } => Err(Refused::Failed(String::from(
             "it is put back by the shell's own store",
@@ -491,6 +498,8 @@ pub fn reverse(inverse: Inverse) -> Inverse {
         Inverse::Unsend { entry } => Inverse::Unsend { entry },
         // Never used either: a removed model's redo is logged with no inverse.
         Inverse::Fetched { sha } => Inverse::Fetched { sha },
+        // Never used either: a restored copy's redo is logged with no inverse.
+        Inverse::Refused { n } => Inverse::Refused { n },
         Inverse::Unread(raw) => Inverse::Unread(raw),
         Inverse::Appearance {
             setting,
@@ -542,6 +551,7 @@ pub fn inverse_word(inverse: Option<Inverse>) -> String {
         Some(Inverse::Generation { from, to }) => format!("generation:{from}:{to}"),
         Some(Inverse::Local { from, to }) => format!("local:{from}:{to}"),
         Some(Inverse::Fs { txn }) => format!("fs:{txn}"),
+        Some(Inverse::Refused { n }) => format!("refused:{n}"),
         Some(Inverse::Fired {
             rule,
             action,
@@ -674,6 +684,9 @@ pub fn parse_inverse(text: &str) -> Option<Option<Inverse>> {
                 from: sha(parts.next())?,
             }
         }
+        "refused" => Inverse::Refused {
+            n: number(parts.next())?,
+        },
         "fetched" => Inverse::Fetched {
             sha: modelchan::listing::sha256(parts.next()?).ok()?,
         },
