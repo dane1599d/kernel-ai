@@ -49,6 +49,28 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
         then: Some(&NO_HPET_BOOT),
         ..case("boot-no-hpet", "test")
     },
+    // ADR 0007 section 5, v0.3: the kernel reads QEMU's IVRS, gives its one
+    // IOMMU a pass-through device table and a command buffer, and one
+    // COMPLETION_WAIT comes back; the boot then goes on as any other.
+    TestCase {
+        iommu: true,
+        expect: &[
+            "iommu: 1 unit in the IVRS (0 entries not read)",
+            "iommu: 00:02.0 at 0xfed80000: a completion wait came back in ",
+            "boot-ok",
+        ],
+        forbid: &[
+            "pkg: FAIL",
+            "cannot ask yet",
+            "dropped a result",
+            "did not reach the app",
+            "supervision: supervisor died",
+            crate::cases::ROOM_WARNING,
+            "; left off",
+            "iommu: off on the command line",
+        ],
+        ..case("iommu", "test")
+    },
     // P6 row 1 (ADR 0006): the nesting census. The kernel logs the VMX, SVM,
     // NPT and NRIPS bits it sees; nesting-census.yml reads them per runner.
     TestCase {

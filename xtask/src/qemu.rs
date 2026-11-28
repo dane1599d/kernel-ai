@@ -103,6 +103,13 @@ pub fn args(
         (false, true) => "q35,hpet=off",
         (true, true) => "q35,i8042=off,hpet=off",
     };
+    // The IOMMU before every PCI device, so it takes the first free slot
+    // (00:02.0, as acpitables' IVRS fixtures were captured).
+    let iommu: &[&str] = if sizing.iommu {
+        &["-device", "amd-iommu"]
+    } else {
+        &[]
+    };
     let mut args: Vec<String> = [
         "-machine",
         machine,
@@ -127,6 +134,9 @@ pub fn args(
     .iter()
     .map(|s| s.to_string())
     .collect();
+    for (at, word) in iommu.iter().enumerate() {
+        args.insert(2 + at, word.to_string());
+    }
     args.push("-smp".into());
     args.push(vm_cpus(accel, sizing).to_string());
     args.push("-drive".into());
@@ -763,5 +773,23 @@ mod tests {
             list.windows(2)
                 .any(|w| w[0] == "-machine" && w[1] == "q35,i8042=off,hpet=off")
         );
+    }
+
+    /// The IOMMU comes right after the machine, ahead of every device, and
+    /// only for a case that asks.
+    #[test]
+    fn an_iommu_case_gets_amd_iommu_ahead_of_the_devices() {
+        let firmware = Firmware {
+            code: PathBuf::from("code.fd"),
+            vars: PathBuf::from("target/ovmf-vars.fd"),
+        };
+        let sizing = Sizing {
+            iommu: true,
+            ..Sizing::default()
+        };
+        let list = super::args(&firmware, Accel::Kvm, true, None, sizing);
+        assert_eq!(list[..4], ["-machine", "q35", "-device", "amd-iommu"]);
+        let plain = super::args(&firmware, Accel::Kvm, true, None, Sizing::default());
+        assert!(!plain.iter().any(|w| w == "amd-iommu"));
     }
 }

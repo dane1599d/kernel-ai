@@ -95,6 +95,8 @@ pub struct TestCase {
     pub no_8042: bool,
     /// Boot q35 with `hpet=off`, whatever `--no-hpet` says (G57).
     pub no_hpet: bool,
+    /// Boot with `-device amd-iommu` (ADR 0007 section 5).
+    pub iommu: bool,
     /// Attach the disk as an NVMe controller (`-device nvme`) instead of
     /// virtio-blk.
     pub nvme: bool,
@@ -353,6 +355,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         cpus: None,
         no_8042: false,
         no_hpet: false,
+        iommu: false,
         kvm_only: false,
         nvme: false,
         four_k: false,

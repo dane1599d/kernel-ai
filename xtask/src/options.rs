@@ -112,6 +112,9 @@ pub struct Sizing {
     /// `--no-hpet`: q35 with `hpet=off`, so the kernel's reference clock is
     /// the FADT's PM timer (G57).
     pub no_hpet: bool,
+    /// `-device amd-iommu`, first among the devices: an AMD IOMMU and its
+    /// IVRS (ADR 0007 section 5). Set by a case, not by a flag.
+    pub iommu: bool,
 }
 
 /// The most vCPUs `--cpus` and the host-sized runs give a VM, kept at 8 so

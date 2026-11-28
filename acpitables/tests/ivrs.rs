@@ -200,3 +200,79 @@ fn many_blocks_are_not_compared_pairwise() {
     assert_eq!(iommus.len(), 40_000);
     assert!(iommus.windows(2).all(|w| w[0].device_id < w[1].device_id));
 }
+
+/// Firmware memory from 0: an RSDP, an XSDT at 0x100, a MADT at 0x1000 and
+/// `ivrs` at 0x2000.
+struct Machine(Vec<u8>);
+
+impl acpitables::PhysMem for Machine {
+    fn read(&self, phys: u64, len: usize) -> Option<&[u8]> {
+        let at = usize::try_from(phys).ok()?;
+        self.0.get(at..at.checked_add(len)?)
+    }
+}
+
+fn machine(ivrs: &[u8]) -> Machine {
+    fn seal(mem: &mut [u8], at: usize, len: usize, checksum_at: usize) {
+        mem[at + checksum_at] = 0;
+        let sum = mem[at..at + len]
+            .iter()
+            .fold(0u8, |s, &b| s.wrapping_add(b));
+        mem[at + checksum_at] = 0u8.wrapping_sub(sum);
+    }
+    let sdt = |signature: &[u8; 4], body: &[u8]| {
+        let mut t = vec![0u8; 36];
+        t[..4].copy_from_slice(signature);
+        t.extend_from_slice(body);
+        let len = t.len() as u32;
+        t[4..8].copy_from_slice(&len.to_le_bytes());
+        t
+    };
+    let mut mem = vec![0u8; 0x2000 + ivrs.len()];
+    let pointers: Vec<u8> = [0x1000u64, 0x2000]
+        .iter()
+        .flat_map(|p| p.to_le_bytes())
+        .collect();
+    let xsdt = sdt(b"XSDT", &pointers);
+    mem[0x100..0x100 + xsdt.len()].copy_from_slice(&xsdt);
+    seal(&mut mem, 0x100, xsdt.len(), 9);
+    // A local APIC at 0xFEE00000 and one enabled CPU.
+    let mut body = 0xFEE0_0000u32.to_le_bytes().to_vec();
+    body.extend_from_slice(&1u32.to_le_bytes());
+    body.extend_from_slice(&[0, 8, 0, 0, 1, 0, 0, 0]);
+    let madt = sdt(b"APIC", &body);
+    mem[0x1000..0x1000 + madt.len()].copy_from_slice(&madt);
+    seal(&mut mem, 0x1000, madt.len(), 9);
+    mem[0x2000..].copy_from_slice(ivrs);
+    mem[..8].copy_from_slice(b"RSD PTR ");
+    mem[15] = 2;
+    mem[20..24].copy_from_slice(&36u32.to_le_bytes());
+    mem[24..32].copy_from_slice(&0x100u64.to_le_bytes());
+    seal(&mut mem, 0, 20, 8);
+    seal(&mut mem, 0, 36, 32);
+    Machine(mem)
+}
+
+/// The kernel's one parse reads the IVRS too (ADR 0007 section 5): QEMU's
+/// table comes out as `ivrs::parse` reads it, and a damaged one is left out
+/// as if absent, with the rest of the platform kept.
+#[test]
+fn the_platform_parse_keeps_the_ivrs() {
+    let (_, bytes) = FIXTURES[0];
+    let platform = acpitables::parse(&machine(bytes), 0).unwrap();
+    assert_eq!(platform.ivrs, Some(ivrs::parse(bytes).unwrap()));
+    assert_eq!(platform.ivrs.unwrap().iommus().len(), 1);
+    assert!(platform.ignored.is_empty());
+    let mut damaged = bytes.to_vec();
+    damaged[40] ^= 0xff;
+    let platform = acpitables::parse(&machine(&damaged), 0).unwrap();
+    assert_eq!(platform.ivrs, None);
+    assert_eq!(platform.cpus, [0]);
+    assert_eq!(
+        platform.ignored,
+        [(
+            "IVRS",
+            acpitables::Error::BadChecksum("system description table")
+        )]
+    );
+}
