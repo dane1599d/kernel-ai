@@ -84,6 +84,8 @@ pub struct Platform {
     pub reset: Option<fadt::Reset>,
     /// The FADT says the machine has no 8042 keyboard controller.
     pub no_8042: bool,
+    /// The FADT's ACPI PM timer: the reference clock when there is no HPET.
+    pub pm_timer: Option<fadt::PmTimer>,
     /// Damaged optional tables (FADT, MCFG) left out, as if absent, with why; at
     /// most [`MAX_IGNORED`]. ACPICA too only warns about them.
     pub ignored: Vec<(&'static str, Error)>,

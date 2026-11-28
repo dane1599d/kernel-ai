@@ -615,10 +615,7 @@ fn init_devices() -> &'static acpitables::Platform {
         power::init(platform);
         let apic_id = apic::init_local(platform)?;
         smp::set_boot_lapic(apic_id);
-        let hpet = platform
-            .hpet
-            .ok_or("no HPET; a PIT fallback is not implemented yet")?;
-        hpet::init(hpet)?;
+        hpet::init(platform)?;
         hpet::select_clock(cmdline());
         if cmdline().split_whitespace().any(|word| word == "stamp=ms") {
             serial::stamp_lines(true);

@@ -95,9 +95,17 @@ pub fn args(
     sizing: Sizing,
 ) -> Vec<String> {
     let memory = format!("{}M", vm_memory_mib(disk, sizing));
+    // G56: `--no-8042` takes the 8042 away, and QEMU's FADT then says so;
+    // G57: `--no-hpet` the HPET, and its ACPI table with it.
+    let machine = match (sizing.no_8042, sizing.no_hpet) {
+        (false, false) => "q35",
+        (true, false) => "q35,i8042=off",
+        (false, true) => "q35,hpet=off",
+        (true, true) => "q35,i8042=off,hpet=off",
+    };
     let mut args: Vec<String> = [
         "-machine",
-        "q35",
+        machine,
         "-m",
         memory.as_str(),
         "-no-reboot",
@@ -134,12 +142,14 @@ pub fn args(
     if let Some(disk) = disk {
         args.extend(disk.qemu_args());
     }
-    let (accel_name, cpu) = match accel {
-        // -cpu max exposes SMEP, SMAP and UMIP wherever the accelerator can.
-        Accel::Kvm => ("kvm", "max"),
-        Accel::Whpx => ("whpx", "max"),
-        Accel::Tcg | Accel::Auto => ("tcg", "max"),
+    let accel_name = match accel {
+        Accel::Kvm => "kvm",
+        Accel::Whpx => "whpx",
+        Accel::Tcg | Accel::Auto => "tcg",
     };
+    // -cpu max exposes SMEP, SMAP and UMIP wherever the accelerator can;
+    // `--cpu-model` names a real core's set instead (G56).
+    let cpu = sizing.cpu_model.unwrap_or("max");
     args.extend([
         "-accel".into(),
         accel_name.into(),
@@ -472,7 +482,9 @@ mod tests {
         Typist, ci_warning, command_word, forward_https, from_programs, input_args, model_sizing,
         power_off_verdict, reset_verdict, without_stamp,
     };
+    use crate::Firmware;
     use crate::cases::{TestCase, case};
+    use std::path::PathBuf;
 
     /// Only `guest-shutdown` passes: a reset that paused QEMU is a FAIL, and so
     /// is no event at all.
@@ -683,10 +695,7 @@ mod tests {
 
     #[test]
     fn a_model_gets_every_host_core_up_to_eight_under_acceleration() {
-        let none = Sizing {
-            cpus: None,
-            mem_mib: None,
-        };
+        let none = Sizing::default();
         let cpus = |accel, host| model_sizing(accel, none, host).cpus;
         assert_eq!(cpus(Accel::Kvm, 16), Some(8));
         assert_eq!(cpus(Accel::Whpx, 6), Some(6));
@@ -696,5 +705,63 @@ mod tests {
             ..none
         };
         assert_eq!(model_sizing(Accel::Kvm, asked, 16).cpus, Some(2));
+    }
+
+    #[test]
+    fn qemu_args_use_relative_drives_and_debug_exit() {
+        let firmware = Firmware {
+            code: PathBuf::from("code.fd"),
+            vars: PathBuf::from("target/ovmf-vars.fd"),
+        };
+        let list = super::args(&firmware, Accel::Tcg, true, None, Default::default());
+        assert!(list.contains(&"format=raw,file=fat:rw:esp".to_string()));
+        assert!(list.windows(2).any(|w| w[0] == "-m" && w[1] == "512M"));
+        let sized = Sizing {
+            cpus: Some(8),
+            mem_mib: Some(6144),
+            ..Sizing::default()
+        };
+        let big = super::args(&firmware, Accel::Kvm, true, None, sized);
+        assert!(big.windows(2).any(|w| w[0] == "-m" && w[1] == "6144M"));
+        assert!(big.windows(2).any(|w| w[0] == "-smp" && w[1] == "8"));
+        let small = Sizing {
+            mem_mib: Some(256),
+            ..Sizing::default()
+        };
+        // Never below what the base system (or a model disk) needs.
+        let floor = super::args(&firmware, Accel::Kvm, true, None, small);
+        assert!(floor.windows(2).any(|w| w[0] == "-m" && w[1] == "512M"));
+        assert!(!list.iter().any(|arg| arg == "-blockdev"));
+        assert!(list.contains(&"isa-debug-exit,iobase=0xf4,iosize=0x04".to_string()));
+        assert!(list.windows(2).any(|w| w[0] == "-accel" && w[1] == "tcg"));
+        assert!(
+            list.windows(2)
+                .any(|w| w[0] == "-display" && w[1] == "none")
+        );
+        assert!(list.windows(2).any(|w| w[0] == "-machine" && w[1] == "q35"));
+        assert!(list.windows(2).any(|w| w[0] == "-cpu" && w[1] == "max"));
+    }
+
+    #[test]
+    fn a_board_shape_names_the_cpu_model_and_drops_the_8042() {
+        let firmware = Firmware {
+            code: PathBuf::from("code.fd"),
+            vars: PathBuf::from("target/ovmf-vars.fd"),
+        };
+        let shaped = Sizing {
+            cpu_model: Some("EPYC-Genoa"),
+            no_8042: true,
+            no_hpet: true,
+            ..Sizing::default()
+        };
+        let list = super::args(&firmware, Accel::Kvm, true, None, shaped);
+        assert!(
+            list.windows(2)
+                .any(|w| w[0] == "-cpu" && w[1] == "EPYC-Genoa")
+        );
+        assert!(
+            list.windows(2)
+                .any(|w| w[0] == "-machine" && w[1] == "q35,i8042=off,hpet=off")
+        );
     }
 }
