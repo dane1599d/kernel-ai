@@ -13,9 +13,10 @@
 //!   everywhere else, TCG included.
 //!
 //! The TSC is kept only if it calibrates, and then agrees with the HPET within
-//! [`DRIFT_PPM`] over [`DRIFT_WINDOW_NS`]; otherwise the HPET stays the clock.
-//! A TSC that changed rate after that window would go unseen; under KVM it runs
-//! at a fixed rate the host sets, and `clock=hpet` keeps the HPET.
+//! [`DRIFT_PPM`] between two windows of [`DRIFT_WINDOW_NS`]; otherwise the HPET
+//! stays the clock. A TSC that changed rate after those windows would go
+//! unseen; under KVM it runs at a fixed rate the host sets, and `clock=hpet`
+//! keeps the HPET.
 //!
 //! With `clock=icount`, `nanos` reads the TSC at exactly 1 GHz, unmeasured: under
 //! QEMU's `-icount` the TSC is the virtual clock in nanoseconds, a fixed number per
@@ -234,15 +235,20 @@ pub fn select_clock(cmdline: &str) {
 /// and steadily so, for a while after power-on, so a rate counts only once two
 /// windows in a row agree and, when the hypervisor reports the TSC's rate, match
 /// it; with none in [`WINDOWS`] the HPET stays the clock. A settled rate must
-/// then hold within [`DRIFT_PPM`] over [`DRIFT_WINDOW_NS`].
+/// then hold within [`DRIFT_PPM`] between two windows of [`DRIFT_WINDOW_NS`].
 fn try_tsc(why: &str) {
     let reported_hz = cpufeat::hypervisor_tsc_khz().map(|khz| u64::from(khz) * 1000);
     let mut last = measure();
     for window in 2..=WINDOWS {
         let rate = measure();
         if settled(rate, last, reported_hz) {
+            // Two windows of DRIFT_WINDOW_NS each, not the 25 ms rate that
+            // settled against one: an HPET read's jitter is about 10 ppm of
+            // 100 ms but four times that of 25 ms, which put 19 of 345 KVM
+            // boots over DRIFT_PPM on a steady TSC (#1628's review).
+            let base = measure_over(DRIFT_WINDOW_NS);
             let check = measure_over(DRIFT_WINDOW_NS);
-            let ppm = cpufeat::drift_ppm(rate, check);
+            let ppm = cpufeat::drift_ppm(base, check);
             if ppm > DRIFT_PPM {
                 log!(
                     "clock: the HPET: the TSC settled at {} MHz but then drifted {ppm} ppm against the HPET over {} ms, over {DRIFT_PPM} ({why})",
