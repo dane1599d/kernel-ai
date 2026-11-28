@@ -31,7 +31,7 @@ use crate::memory::stack;
 use crate::memory::user::USER_FRAMES;
 use crate::process::{self, SpawnRequest};
 use crate::{hpet, ipc, log, memory, smp, threads};
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use kabi::{ExitReason, Limits, cap};
 
 /// Pages each test process may hold: its image, heap, stacks and their tables.
@@ -558,4 +558,84 @@ pub fn check() -> Result<(), &'static str> {
         return Err("threads: a worker started on another CPU than its own");
     }
     Ok(())
+}
+
+/// The clock-switch case: how long every CPU reads the clock, and when in that
+/// the HPET is put back as the clock; how long a CPU's time may stand still.
+const SWITCH_READ_NS: u64 = 1_000_000_000;
+const SWITCH_AT_NS: u64 = 400_000_000;
+const SWITCH_STILL_NS: u64 = 10_000_000;
+/// Across the readers: the furthest any CPU's time went back, the longest it
+/// stood still, both in ns of the HPET's counter, and how many have finished.
+static SWITCH_BACK: AtomicU64 = AtomicU64::new(0);
+static SWITCH_STILL: AtomicU64 = AtomicU64::new(0);
+static SWITCH_DONE: AtomicUsize = AtomicUsize::new(0);
+
+/// `test=runaway-stall` (above), or with `switch`, `test=clock-switch`: the
+/// switch from the TSC back to the HPET a confirmed re-check makes, forced
+/// while every CPU reads `nanos()` in a loop. No CPU's time may go back, or
+/// stand still while the HPET's counter moves on more than [`SWITCH_STILL_NS`]
+/// (#1680's review).
+pub fn clock_check(switch: bool) -> Result<(), &'static str> {
+    if !switch {
+        return stall_check();
+    }
+    if !hpet::tsc_clock() {
+        return Err("clock-switch: the TSC is not the clock, so there is nothing to switch");
+    }
+    let cpus = smp::online();
+    let started = hpet::counter_nanos();
+    for cpu in 0..cpus {
+        threads::spawn_pinned(cpu, "clock-reader", read_clock, 0)?;
+    }
+    while hpet::counter_nanos() - started < SWITCH_AT_NS {
+        threads::sleep_ms(10);
+    }
+    let step = hpet::fall_back_for_test().ok_or("clock-switch: the TSC stopped being the clock")?;
+    while SWITCH_DONE.load(Ordering::Acquire) < cpus {
+        threads::sleep_ms(10);
+    }
+    let (back, still) = (
+        SWITCH_BACK.load(Ordering::Relaxed),
+        SWITCH_STILL.load(Ordering::Relaxed),
+    );
+    log!(
+        "clock-switch: {cpus} CPUs read the clock across the switch to the HPET (a {step} ns step): back at most {back} ns, still at most {} us",
+        still / 1_000
+    );
+    if hpet::tsc_clock() {
+        return Err("clock-switch: the TSC is still the clock");
+    }
+    if back > 0 {
+        return Err("clock-switch: a CPU's time went back");
+    }
+    if still > SWITCH_STILL_NS {
+        return Err("clock-switch: a CPU's time stood still past the bound");
+    }
+    log!("clock-switch: no CPU's time went back or stood still across the switch");
+    Ok(())
+}
+
+/// One CPU's reader for [`clock_check`].
+fn read_clock(_: usize) {
+    let started = hpet::counter_nanos();
+    let mut last = hpet::nanos();
+    let mut moved_at = started;
+    loop {
+        let now = hpet::nanos();
+        let counter = hpet::counter_nanos();
+        if now < last {
+            SWITCH_BACK.fetch_max(last - now, Ordering::Relaxed);
+        }
+        if now > last {
+            moved_at = counter;
+        } else {
+            SWITCH_STILL.fetch_max(counter.saturating_sub(moved_at), Ordering::Relaxed);
+        }
+        last = last.max(now);
+        if counter - started >= SWITCH_READ_NS {
+            break;
+        }
+    }
+    SWITCH_DONE.fetch_add(1, Ordering::Release);
 }

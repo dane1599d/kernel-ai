@@ -26,6 +26,12 @@ on:
       - user/src/kaifs.rs
       - kernel/src/part_tests.rs
       - kernel/src/block.rs
+      # The clock: its default moved the floors (#1628).
+      - cpufeat/**
+      - kernel/src/hpet.rs
+      - kernel/src/timer.rs
+      - acpitables/src/hpet_counter.rs
+      - acpitables/src/lib.rs
       - scripts/throughput_floor.py
       - .github/workflows/throughput.yml
   pull_request:
@@ -39,6 +45,12 @@ on:
       - user/src/kaifs.rs
       - kernel/src/part_tests.rs
       - kernel/src/block.rs
+      # The clock: its default moved the floors (#1628).
+      - cpufeat/**
+      - kernel/src/hpet.rs
+      - kernel/src/timer.rs
+      - acpitables/src/hpet_counter.rs
+      - acpitables/src/lib.rs
       - scripts/throughput_floor.py
       - .github/workflows/throughput.yml
 

@@ -507,7 +507,7 @@ extern "C" fn boot_continue() -> ! {
         SelfTest::Threads => run_case(thread_tests::check),
         SelfTest::ThreadsKill => run_case(thread_tests::kill_check),
         SelfTest::ThreadPin => run_case(thread_tests::pin_check),
-        SelfTest::RunawayStall => run_case(thread_tests::stall_check),
+        SelfTest::Clock { switch } => run_case(|| thread_tests::clock_check(switch)),
         SelfTest::Matvec => run_case(compute_tests::matvec_check),
         SelfTest::ComputeKeys => run_case(compute_tests::keys_check),
         SelfTest::Bigmap => run_case(bigmap_tests::check),
@@ -616,7 +616,7 @@ fn init_devices() -> &'static acpitables::Platform {
         let apic_id = apic::init_local(platform)?;
         smp::set_boot_lapic(apic_id);
         hpet::init(platform)?;
-        hpet::select_clock(cmdline());
+        hpet::select_clock(cmdline(), platform.virtualbox());
         if cmdline().split_whitespace().any(|word| word == "stamp=ms") {
             serial::stamp_lines(true);
             log!("serial: each line starts with [the kernel clock h the HPET], in seconds");

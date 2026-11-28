@@ -14,14 +14,15 @@
 //! - `clock=tsc`: the TSC wherever it calibrates (`cargo xtask vbox` boots so);
 //! - `clock=hpet`: the HPET always;
 //! - neither: the TSC under KVM ([`cpufeat::default_clock`]), whether or not it
-//!   is invariant or the hypervisor reports its rate (P6 G67); the HPET
-//!   everywhere else, TCG included.
+//!   is invariant or the hypervisor reports its rate (P6 G67), but not under
+//!   VirtualBox's KVM provider (its ACPI tables say VBOX); the HPET everywhere
+//!   else, TCG included.
 //!
 //! The TSC is kept only if it calibrates, and then agrees with the HPET within
 //! [`DRIFT_PPM`] between two windows of [`DRIFT_WINDOW_NS`]; otherwise the HPET
-//! stays the clock. A TSC that changed rate after those windows would go
-//! unseen; under KVM it runs at a fixed rate the host sets, and `clock=hpet`
-//! keeps the HPET.
+//! stays the clock. After boot it is re-checked against the HPET every
+//! [`RECHECK_NS`] ([`recheck`]): a TSC that changed rate later puts the HPET back
+//! as the clock, unless `clock=tsc` asked for the TSC, which only warns.
 //!
 //! With `clock=icount`, `nanos` reads the TSC at exactly 1 GHz, unmeasured: under
 //! QEMU's `-icount` the TSC is the virtual clock in nanoseconds, a fixed number per
@@ -34,7 +35,9 @@
 use crate::percpu::{self, MAX_CPUS};
 use crate::{log, memory};
 use acpitables::fadt::PM_TIMER_HZ;
+use acpitables::hpet_counter::{Recheck, Verdict};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use spin::Mutex;
 use x86_64::structures::paging::PageTableFlags;
 
 const CAPABILITIES: u64 = 0x000;
@@ -59,9 +62,36 @@ static NANOS_ZERO: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPU
 /// microseconds, so their clocks can disagree by that much, and no caller may
 /// see time go back.
 static LATEST: AtomicU64 = AtomicU64::new(0);
-/// One window of measuring the TSC against the HPET, and at most how many.
+/// One window of measuring the TSC against the HPET, and at most how many: 5 s
+/// when the hypervisor reports the TSC's rate, which a settled rate must match,
+/// and 1 s when it reports none, so a TSC that never settles costs a no-bits KVM
+/// boot less time with interrupts off (#1628's review).
 const WINDOW_NS: u64 = 25_000_000;
 const WINDOWS: u32 = 200;
+const WINDOWS_UNREPORTED: u32 = 40;
+/// After boot, CPU 0's tick compares the TSC clock with the HPET every
+/// [`RECHECK_NS`], and [`CONFIRM_NS`] after a miss; past [`RECHECK_PPM`] twice in
+/// a row the HPET is the clock again ([`recheck`]). Without it a TSC that
+/// changed rate later would scale every sleep, deadline, tick and the date with
+/// no error logged. The cadence counts ticks, which run on the clock under
+/// test: a TSC 0.1% off moves it by 10 ms.
+const RECHECK_NS: u64 = 10_000_000_000;
+const CONFIRM_NS: u64 = 1_000_000_000;
+pub const RECHECK_PPM: u64 = 1_000;
+/// The re-check's window and largest drift ([`acpitables::hpet_counter::Recheck`]).
+static RECHECK: Mutex<Option<Recheck>> = Mutex::new(None);
+/// The tick of CPU 0 at which the next re-check is due.
+static RECHECK_DUE: AtomicU64 = AtomicU64::new(u64::MAX);
+/// `clock=tsc` asked for the TSC: a re-check that misses only warns, once.
+static EXPLICIT: AtomicBool = AtomicBool::new(false);
+static WARNED: AtomicBool = AtomicBool::new(false);
+/// The largest drift a re-check saw, in ppm, for the timer case's log.
+static RECHECK_MAX_PPM: AtomicU64 = AtomicU64::new(0);
+/// Added to the HPET once a re-check put it back as the clock: how far the TSC
+/// clock had run ahead of it, so time never steps back.
+static HPET_OFFSET: AtomicU64 = AtomicU64::new(0);
+/// The re-check put the HPET back as the clock.
+static FELL_BACK: AtomicBool = AtomicBool::new(false);
 /// TSC ticks spun between two HPET reads while calibrating.
 const SPIN_TICKS: u64 = 1 << 20;
 /// After calibrating, the TSC must keep its rate against the HPET within this
@@ -108,7 +138,8 @@ pub fn reads() -> u64 {
     READS.load(Ordering::Relaxed)
 }
 
-/// Whether `nanos` reads the TSC (`clock=tsc` settled) rather than the HPET.
+/// Whether `nanos` reads the TSC (it settled, or `clock=icount`) rather than the
+/// HPET.
 pub fn tsc_clock() -> bool {
     TSC_MULT.load(Ordering::Acquire) != 0
 }
@@ -174,12 +205,107 @@ pub fn split_reads() -> u64 {
 /// From CPU 0's tick: with a 32-bit counter (or the PM timer's 24 bits, which
 /// wrap every 4.7 s) and the TSC as the clock, reads the counter once a second
 /// so the carry never misses a wrap. The HPET clock reads it every tick anyway;
-/// a 64-bit counter needs nothing.
+/// a 64-bit counter needs nothing. With the TSC as the clock, every
+/// [`RECHECK_NS`] it is checked against the HPET ([`recheck`]).
 pub fn on_tick(tick: u64) {
-    if !WIDE.load(Ordering::Relaxed) && tsc_clock() && tick.is_multiple_of(crate::timer::rate_hz())
-    {
+    let rate = crate::timer::rate_hz();
+    if !WIDE.load(Ordering::Relaxed) && tsc_clock() && tick.is_multiple_of(rate) {
         main_counter();
     }
+    let due = RECHECK_DUE.load(Ordering::Relaxed);
+    if due == 0 {
+        RECHECK_DUE.store(
+            tick + rate * (RECHECK_NS / 1_000_000_000),
+            Ordering::Relaxed,
+        );
+    } else if tick >= due {
+        let confirming = recheck();
+        let next_ns = if confirming { CONFIRM_NS } else { RECHECK_NS };
+        RECHECK_DUE.store(tick + rate * next_ns / 1_000_000_000, Ordering::Relaxed);
+    }
+}
+
+/// The TSC clock on CPU 0 and the HPET at one moment, as a zero pair is taken
+/// ([`zero_pair`]): one slow HPET read does not make a sample.
+fn recheck_sample(mult: u64) -> (u64, u64) {
+    let (ticks, hpet) = zero_pair();
+    let since = ticks.saturating_sub(TSC_ZERO[0].load(Ordering::Relaxed));
+    let scaled = ((u128::from(since) * u128::from(mult)) >> 32) as u64;
+    (NANOS_ZERO[0].load(Ordering::Relaxed) + scaled, hpet)
+}
+
+/// From CPU 0's tick: ends a re-check window (see [`RECHECK_NS`]) and acts on
+/// it; whether the next window is the confirming one. A confirmed miss puts the
+/// HPET back as the clock ([`fall_back`]), or with `clock=tsc` warns once.
+fn recheck() -> bool {
+    let mult = TSC_MULT.load(Ordering::Acquire);
+    let Some(mut guard) = RECHECK.try_lock() else {
+        return false;
+    };
+    let Some(check) = guard.as_mut() else {
+        return false;
+    };
+    if mult == 0 {
+        return false;
+    }
+    let verdict = check.step(recheck_sample(mult), RECHECK_PPM);
+    RECHECK_MAX_PPM.store(check.max_ppm, Ordering::Relaxed);
+    let confirming = check.confirming();
+    if verdict != Verdict::Switch {
+        return confirming;
+    }
+    if EXPLICIT.load(Ordering::Relaxed) {
+        if !WARNED.swap(true, Ordering::Relaxed) {
+            let r = reference();
+            log!(
+                "ci-warning: clock: the TSC clock moved over {RECHECK_PPM} ppm from the {r} in two re-checks; kept, as clock=tsc asks"
+            );
+        }
+        return confirming;
+    }
+    *guard = None;
+    drop(guard);
+    let step = fall_back();
+    let r = reference();
+    log!(
+        "ci-warning: clock: the {r} again: the TSC clock moved over {RECHECK_PPM} ppm from it in two re-checks in a row; time steps forward {step} ns"
+    );
+    false
+}
+
+/// Puts the HPET back as the clock, offset to the latest time any CPU has seen
+/// so no reader sees time go back, and stops the re-checks; how far the clock
+/// stepped forward, when the TSC clock ran slow.
+fn fall_back() -> u64 {
+    RECHECK_DUE.store(u64::MAX, Ordering::Relaxed);
+    let mult = TSC_MULT.load(Ordering::Acquire);
+    let now = x86_64::instructions::interrupts::without_interrupts(|| match mult {
+        0 => 0,
+        mult => tsc_nanos(mult),
+    });
+    let base = now.max(LATEST.load(Ordering::Relaxed));
+    let hpet = hpet_nanos();
+    HPET_OFFSET.store(base.saturating_sub(hpet), Ordering::Relaxed);
+    FELL_BACK.store(true, Ordering::Relaxed);
+    // Last, so a reader that sees the HPET as the clock also sees its offset.
+    TSC_MULT.store(0, Ordering::Release);
+    hpet.saturating_sub(base)
+}
+
+/// The largest drift between the TSC clock and the HPET any re-check saw.
+pub fn recheck_max_ppm() -> u64 {
+    RECHECK_MAX_PPM.load(Ordering::Relaxed)
+}
+
+/// Puts the HPET back as the clock now, as a confirmed re-check miss would:
+/// the `clock-switch` case, with the step it made. `None` when the TSC is not
+/// the clock.
+pub fn fall_back_for_test() -> Option<u64> {
+    if !tsc_clock() {
+        return None;
+    }
+    *RECHECK.lock() = None;
+    Some(fall_back())
 }
 
 fn write(offset: u64, value: u64) {
@@ -269,17 +395,9 @@ fn measure_over(window_ns: u64) -> u64 {
     (u128::from(ticks) * 1_000_000_000 / u128::from(now - start_ns)) as u64
 }
 
-/// Whether a measured TSC rate is one to trust: within 1% of the rate the
-/// hypervisor reports (CPUID 0x40000010), when it reports one, and within 0.5% of
-/// the window before.
-fn settled(rate: u64, last: u64, reported_hz: Option<u64>) -> bool {
-    let steady = rate != 0 && rate.abs_diff(last) * 200 < last;
-    steady && reported_hz.is_none_or(|hz| rate.abs_diff(hz) * 100 < hz)
-}
-
 /// Picks the clock (see the module's docs) and logs which, and why. Runs on the
 /// boot CPU before the others start.
-pub fn select_clock(cmdline: &str) {
+pub fn select_clock(cmdline: &str, virtualbox: bool) {
     let r = reference();
     let said = |word: &str| cmdline.split_whitespace().any(|w| w == word);
     if said("clock=icount") {
@@ -292,6 +410,7 @@ pub fn select_clock(cmdline: &str) {
         log!("clock: the {r} (clock=hpet)");
         return;
     }
+    EXPLICIT.store(said("clock=tsc"), Ordering::Relaxed);
     let why = match said("clock=tsc") {
         true => "clock=tsc",
         false => match cpufeat::default_clock(
@@ -299,6 +418,12 @@ pub fn select_clock(cmdline: &str) {
             cpufeat::invariant_tsc(),
             cpufeat::hypervisor_tsc_khz(),
         ) {
+            // VirtualBox's KVM provider shows KVM's signature, but its TSC runs
+            // slow, and steadily so, after power-on (#1628's review).
+            cpufeat::DefaultClock::Tsc(_) if virtualbox => {
+                log!("clock: the {r} (VirtualBox's ACPI tables; clock=tsc tries the TSC)");
+                return;
+            }
             cpufeat::DefaultClock::Tsc(why) => why,
             cpufeat::DefaultClock::Hpet(why) => {
                 log!("clock: the {r} ({why})");
@@ -313,15 +438,20 @@ pub fn select_clock(cmdline: &str) {
 /// logs the outcome with `why` it was tried. VirtualBox runs a guest's TSC slow,
 /// and steadily so, for a while after power-on, so a rate counts only once two
 /// windows in a row agree and, when the hypervisor reports the TSC's rate, match
-/// it; with none in [`WINDOWS`] the HPET stays the clock. A settled rate must
+/// it; with none in [`WINDOWS`] ([`WINDOWS_UNREPORTED`] with no reported rate)
+/// the HPET stays the clock. A settled rate must
 /// then hold within [`DRIFT_PPM`] between two windows of [`DRIFT_WINDOW_NS`].
 fn try_tsc(why: &str) {
     let r = reference();
     let reported_hz = cpufeat::hypervisor_tsc_khz().map(|khz| u64::from(khz) * 1000);
+    let windows = match reported_hz {
+        Some(_) => WINDOWS,
+        None => WINDOWS_UNREPORTED,
+    };
     let mut last = measure();
-    for window in 2..=WINDOWS {
+    for window in 2..=windows {
         let rate = measure();
-        if settled(rate, last, reported_hz) {
+        if acpitables::hpet_counter::settled(rate, last, reported_hz) {
             // Two windows of DRIFT_WINDOW_NS each, not the 25 ms rate that
             // settled against one: an HPET read's jitter is about 10 ppm of
             // 100 ms but four times that of 25 ms, which put 19 of 345 KVM
@@ -341,6 +471,9 @@ fn try_tsc(why: &str) {
             set_zero(0);
             // Last, so a reader that sees the rate also sees the zero points.
             TSC_MULT.store(mult.max(1), Ordering::Release);
+            *RECHECK.lock() = Some(Recheck::new(recheck_sample(mult.max(1))));
+            // The first tick schedules the first re-check.
+            RECHECK_DUE.store(0, Ordering::Relaxed);
             log!(
                 "clock: the TSC, {} MHz, settled after {window} windows and within {ppm} ppm of the {r} over {} ms ({why}; hypervisor says {} MHz)",
                 check / 1_000_000,
@@ -429,19 +562,30 @@ pub fn skip_for_test(ns: u64) {
 }
 
 fn clock_nanos() -> u64 {
-    let mult = TSC_MULT.load(Ordering::Acquire);
-    if mult == 0 {
-        return hpet_nanos();
-    }
     // With interrupts off, the thread cannot move to another CPU between reading
-    // this CPU's zero point and its TSC.
-    let now = x86_64::instructions::interrupts::without_interrupts(|| {
-        let cpu = percpu::index();
-        let ticks = tsc().saturating_sub(TSC_ZERO[cpu].load(Ordering::Relaxed));
-        let scaled = (u128::from(ticks) * u128::from(mult)) >> 32;
-        NANOS_ZERO[cpu].load(Ordering::Relaxed) + scaled as u64
+    // this CPU's zero point and its TSC, nor be preempted between seeing the TSC
+    // as the clock and reading it (#1680's review).
+    let tsc_now = x86_64::instructions::interrupts::without_interrupts(|| {
+        match TSC_MULT.load(Ordering::Acquire) {
+            0 => None,
+            mult => Some(tsc_nanos(mult)),
+        }
     });
+    let now = match tsc_now {
+        Some(now) => now,
+        None if !FELL_BACK.load(Ordering::Relaxed) => return hpet_nanos(),
+        None => hpet_nanos() + HPET_OFFSET.load(Ordering::Relaxed),
+    };
     now.max(LATEST.fetch_max(now, Ordering::Relaxed))
+}
+
+/// This CPU's TSC clock at `mult` nanoseconds per tick (32.32), unfloored; with
+/// interrupts off already, or for a caller that does not mind a move.
+fn tsc_nanos(mult: u64) -> u64 {
+    let cpu = percpu::index();
+    let ticks = tsc().saturating_sub(TSC_ZERO[cpu].load(Ordering::Relaxed));
+    let scaled = (u128::from(ticks) * u128::from(mult)) >> 32;
+    NANOS_ZERO[cpu].load(Ordering::Relaxed) + scaled as u64
 }
 
 /// Nanoseconds on the HPET's own counter, whatever the clock is: what the host
