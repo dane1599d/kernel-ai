@@ -461,6 +461,22 @@ fn an_untrash_that_fails_aborts_its_action() {
             ]
         );
     }
+    // A Begin that got no answer may have opened one: it is aborted.
+    let mut sent = Vec::new();
+    let done = crate::untrash_on("rules.refused.2", 9, |request| {
+        sent.push(request.clone());
+        match request {
+            Request::Begin { .. } => Err(String::from("the fs service did not answer (TimedOut)")),
+            _ => Ok(Fs::Done),
+        }
+    });
+    assert_eq!(
+        done,
+        Err(crate::FsRefused::Failed(String::from(
+            "the fs service did not answer (TimedOut)"
+        )))
+    );
+    assert_eq!(sent, [begin.clone(), Request::Abort]);
     // A Begin refused opened no action: nothing to abort.
     let mut sent = Vec::new();
     let done = crate::untrash_on("rules.refused.2", 9, |request| {
