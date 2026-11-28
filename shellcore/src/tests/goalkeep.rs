@@ -452,3 +452,47 @@ fn a_negated_folder_is_refused_by_the_rows() {
         ))
     );
 }
+
+/// #1650's LOWs: misses main also had. A row's cue inside a list item does
+/// not end the list, an Oxford comma does not either, and a child folder by
+/// its bare name is read as a negation's subject.
+#[test]
+fn a_cue_in_a_list_item_an_oxford_comma_and_a_bare_folder_subject_are_kept_off() {
+    for (line, path) in [
+        (
+            "trash the drafts in notes/old, but don't touch the finals, the new drafts or notes/q3",
+            "notes/q3",
+        ),
+        (
+            "trash the drafts in notes/old, but don't touch the finals, the drafts, or notes/q3",
+            "notes/q3",
+        ),
+        (
+            "trash the drafts in notes/old, but don't touch the finals, the drafts, the new drafts, or notes/q3",
+            "notes/q3",
+        ),
+        (
+            "trash the drafts in notes/; the q3 folder isn't to be touched",
+            "q3",
+        ),
+        (
+            "trash the drafts in notes/; the q3 folder is not to be touched",
+            "q3",
+        ),
+    ] {
+        assert_eq!(
+            crate::goalscope::scope(line, |_| Ok(())),
+            Err(kept_off_refusal(path)),
+            "{line}"
+        );
+    }
+    // An order after the list still ends it.
+    for line in [
+        "don't touch the finals, trash the drafts or notes/old",
+        "don't touch the finals, just trash the drafts or notes/old",
+        "don't touch the finals, the drafts, trash notes/old",
+    ] {
+        let scope = crate::goalscope::scope(line, |_| Ok(()));
+        assert!(scope.is_ok(), "{line}: {scope:?}");
+    }
+}
