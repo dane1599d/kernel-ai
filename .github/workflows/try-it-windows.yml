@@ -15,8 +15,10 @@
 # QEMU for Windows is Stefan Weil's build (the one qemu.org's download page
 # links for Windows), installed to C:\Program Files\qemu, where xtask looks
 # (`find_qemu`), with its own edk2 firmware. The installer is pinned by its
-# SHA-512. Read access only; no secret. Started weekly, by hand, or by a pull
-# request that changes this file.
+# SHA-512. The checkout is byte for byte the committed tree, LF and all
+# (`* -text` in .gitattributes), as a person's clone is. Read access only; no
+# secret. Started weekly, by hand, or by a pull request that changes this file
+# or .gitattributes.
 name: Try it on Windows, weekly
 
 on:
@@ -25,6 +27,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/try-it-windows.yml
+      - .gitattributes
   workflow_dispatch:
 
 permissions:
