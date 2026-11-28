@@ -2,6 +2,7 @@
 //!
 //! - [`FrameBitmap`]: physical frame allocator, one bit per 4 KiB frame.
 //! - [`ReclaimPolicy`] and [`Clock`]: the swappable page-reclaim policy and its default.
+//! - [`bounce`]: the virtio bounce pool's fixed-size slots (P6 G66).
 //! - [`dma`]: which buffers a device can reach unbounced, and sector-sized disk reads.
 //! - [`window`]: the model window's page tables, 2 MiB read-only pages in one slot.
 
@@ -9,6 +10,7 @@
 
 extern crate alloc;
 
+pub mod bounce;
 pub mod dma;
 mod frames;
 mod reclaim;
