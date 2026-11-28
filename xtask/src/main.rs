@@ -614,7 +614,7 @@ fn execute(options: &Options) -> Result<(), String> {
             }
             args.push("-monitor".into());
             args.push(format!("tcp:127.0.0.1:{monitor},server=on,wait=off"));
-            let (input, qmp) = qemu::input_args(case)?;
+            let (input, qmp) = qemu::input_args(case, sizing.no_8042)?;
             args.extend(input);
             let args = wsl::wrap(wsl.as_ref(), args)?;
             let run = qemu::TestRun {

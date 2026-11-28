@@ -691,7 +691,7 @@ mod tests {
                     case.name
                 );
             }
-            let (_, qmp) = crate::qemu::input_args(case).unwrap();
+            let (_, qmp) = crate::qemu::input_args(case, false).unwrap();
             assert!(qmp.is_some(), "{}: no QMP for its reset verdict", case.name);
         }
         // reboot, reboot-8042, panic-reset, fail-reset, efi-reset,

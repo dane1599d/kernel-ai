@@ -8,7 +8,9 @@
 # - `no-8042`: `--no-8042`, q35 with `i8042=off`, so QEMU's FADT says there is
 #   no 8042. The `no-8042` case itself, which ci.yml boots on every run, checks
 #   the kernel's skip line and that the USB keyboard still types; here every
-#   core case boots without one.
+#   core case boots without one. A case that types keys (`sched`, of these)
+#   gets a USB keyboard on xHCI, as such a board has, so its keys arrive over
+#   USB and its wake latency is the xHCI interrupt's; nothing is skipped.
 #
 # Weekly and by workflow_dispatch; never a gate.
 name: board shapes
