@@ -8,8 +8,13 @@
 //! which parses the build and boot tasks main.rs falls through to), and a
 //! flag typed after it is a string literal in that subcommand's module (the
 //! `mod::main` its dispatch line calls; a module that cannot be found falls
-//! back to all of xtask/src). A flag in prose is checked against all of
-//! xtask/src, except [`FOREIGN`] ones. The section is read as text, not
+//! back to all of xtask/src). The tasks options.rs parses share one `match`, so
+//! a flag there counts for a task when its arm's `if` guard allows it
+//! (`task == Task::Run`, `task != Task::Build`). A flag a dispatched
+//! subcommand takes from a file shared with others, outside its own module,
+//! is refused: the lint fails loud, and the fix is to name the flag in the
+//! module or to list it in [`FOREIGN`]. A flag in prose is checked against
+//! all of xtask/src, except [`FOREIGN`] ones. The section is read as text, not
 //! Markdown: fenced blocks, inline code spans and link targets.
 
 use std::fs;
@@ -137,12 +142,44 @@ impl Source {
     /// it (the parser in options.rs takes it).
     fn dispatched(&self, sub: &str) -> Option<&str> {
         let quoted = format!("\"{sub}\"");
-        let line = self
-            .main
-            .lines()
-            .find(|l| l.contains("Some(") && l.contains(&quoted) && l.contains("=>"))?;
-        let call = line.split("=>").nth(1)?.trim();
+        // The arm whose pattern (before the `=>`) quotes the name.
+        let call = self.main.lines().find_map(|l| {
+            let (pattern, call) = l.split_once("=>")?;
+            (pattern.contains("Some(") && pattern.contains(&quoted)).then_some(call.trim())
+        })?;
         Some(call.split("::").next().unwrap_or(call).trim())
+    }
+}
+
+impl Source {
+    /// Whether options.rs's `task` (a subcommand it parses) reads `flag`: an
+    /// arm that starts with the flag's literal and whose `if` guard, a chain
+    /// of `task == Task::X` and `task != Task::Y` terms, allows the task.
+    /// Other guard terms are taken as true.
+    fn options_read(&self, task: &str, flag: &str) -> bool {
+        let name = format!("Task::{}", task[..1].to_uppercase() + &task[1..]);
+        let head = format!("\"{flag}\"");
+        self.options.lines().any(|line| {
+            let line = line.trim_start();
+            let Some((pattern, _)) = line.split_once("=>") else {
+                return false;
+            };
+            let Some(guard) = pattern.trim().strip_prefix(&head) else {
+                return false;
+            };
+            guard.split("&&").all(|term| {
+                let term = term.trim().trim_start_matches("if").trim();
+                match term.split_once("Task::") {
+                    Some((op, other)) if op.trim() == "task ==" => {
+                        format!("Task::{other}").trim() == name
+                    }
+                    Some((op, other)) if op.trim() == "task !=" => {
+                        format!("Task::{other}").trim() != name
+                    }
+                    _ => true,
+                }
+            })
+        })
     }
 }
 
@@ -197,7 +234,12 @@ fn sources() -> Source {
 /// What the README's `lines` get wrong against `source` (xtask's text) and the
 /// repo at `repo`: one line each, and how many commands, flags and paths it
 /// checked.
-fn lint(lines: &[&str], source: &Source, repo: &Path) -> (Vec<String>, [usize; 3]) {
+fn lint(
+    lines: &[&str],
+    source: &Source,
+    repo: &Path,
+    foreign: &[&str],
+) -> (Vec<String>, [usize; 3]) {
     let (mut errors, mut seen) = (Vec::new(), [0; 3]);
     let literal = |text: &str, word: &str| text.contains(&format!("\"{word}\""));
     let mut shown = Vec::new();
@@ -207,8 +249,8 @@ fn lint(lines: &[&str], source: &Source, repo: &Path) -> (Vec<String>, [usize; 3
         let sub = words.next().unwrap_or("");
         // The text a flag after `sub` must be a literal in.
         let scope = match source.dispatched(sub) {
-            Some(module) => source.module(module),
-            None if literal(&source.options, sub) => &source.options,
+            Some(module) => Some(source.module(module)),
+            None if literal(&source.options, sub) => None,
             None => {
                 errors.push(format!("`{command}`: xtask has no `{sub}` subcommand"));
                 continue;
@@ -216,7 +258,11 @@ fn lint(lines: &[&str], source: &Source, repo: &Path) -> (Vec<String>, [usize; 3
         };
         for flag in flags(&command) {
             seen[1] += 1;
-            if !literal(scope, &flag) {
+            let read = match scope {
+                Some(text) => literal(text, &flag),
+                None => source.options_read(sub, &flag),
+            };
+            if !read {
                 errors.push(format!("`{command}`: `{sub}` does not read `{flag}`"));
             }
         }
@@ -231,7 +277,7 @@ fn lint(lines: &[&str], source: &Source, repo: &Path) -> (Vec<String>, [usize; 3
     shown.sort();
     shown.dedup();
     for flag in shown {
-        if FOREIGN.contains(&flag.as_str()) {
+        if foreign.contains(&flag.as_str()) {
             continue;
         }
         seen[1] += 1;
@@ -257,7 +303,7 @@ fn the_readmes_try_it_matches_the_tooling() {
         "the Try it section: {} lines",
         lines.len()
     );
-    let (errors, seen) = lint(&lines, &sources(), &root());
+    let (errors, seen) = lint(&lines, &sources(), &root(), FOREIGN);
     // It reads the commands, flags and paths: today's README has several of each.
     assert!(seen[0] >= 4 && seen[1] >= 4 && seen[2] >= 1, "{seen:?}");
     assert!(errors.is_empty(), "\n{}", errors.join("\n"));
@@ -273,9 +319,13 @@ cargo xtask vbox --start    # boots it
 cargo xtask vbox --begin
 cargo xtask doctor --start
 cargo xtask vboxes
+cargo xtask test --turbo
+cargo xtask run --all
+cargo xtask run --turbo --any
+cargo xtask test --all --any
 ```
 
-Run `cargo xtask doctor`; `--name NAME` and `--rename NAME` pick a VM. See
+Run `cargo xtask doctor`; `--mine` is another tool's; `--name NAME` and `--rename NAME` pick a VM. See
 [the models](xtask/models.json), [titled](xtask/models.json \"the pins\"),
 [angled](<xtask/models.json>) and [gone](xtask/nope.json), or `xtask/src/main.rs`
 and `xtask/src/none.rs`; `rust-toolchain.toml` and `missing.toml` are top-level
@@ -286,7 +336,7 @@ files. A [link](https://example.com/x/y) and [here](#anchor) do not count.
 ";
     let source = Source {
         main: "Some(\"vbox\") => vbox::main(&a),\nSome(\"doctor\") => doctor::main(&a),".into(),
-        options: "\"run\"".into(),
+        options: "\"run\" \"test\"\n\"--turbo\" if task == Task::Run => x,\n\"--all\" if task != Task::Run && task != Task::Build => y,\n\"--any\" => z,".into(),
         modules: vec![
             ("vbox".into(), "\"--start\"".into()),
             ("doctor".into(), "\"--check\"".into()),
@@ -294,18 +344,34 @@ files. A [link](https://example.com/x/y) and [here](#anchor) do not count.
         all: "\"--start\" \"--check\" \"--name\"".into(),
     };
     let lines = section(readme);
-    let (errors, seen) = lint(&lines, &source, &root());
+    let (errors, seen) = lint(&lines, &source, &root(), &["--mine"]);
     let has = |what: &str| errors.iter().filter(|e| e.contains(what)).count();
-    assert_eq!(errors.len(), 7, "{errors:#?}");
+    assert_eq!(errors.len(), 9, "{errors:#?}");
     assert_eq!(has("`vboxes`"), 1, "{errors:#?}");
     // A flag that is another subcommand's is refused, and so is a renamed one.
     assert_eq!(has("`doctor` does not read `--start`"), 1, "{errors:#?}");
     assert_eq!(has("`vbox` does not read `--begin`"), 1, "{errors:#?}");
     assert_eq!(has("--rename"), 1, "{errors:#?}");
+    // An options.rs flag is read by the tasks its guard allows, and no others.
+    assert_eq!(has("`test` does not read `--turbo`"), 1, "{errors:#?}");
+    assert_eq!(has("`run` does not read `--all`"), 1, "{errors:#?}");
     // A link with a title or in angle brackets is read; so is a top-level file.
     assert_eq!(has("xtask/nope.json"), 1, "{errors:#?}");
     assert_eq!(has("xtask/src/none.rs"), 1, "{errors:#?}");
     assert_eq!(has("`missing.toml`"), 1, "{errors:#?}");
     // The `## Next` section is not read.
-    assert_eq!(seen, [5, 5, 6]);
+    assert_eq!(seen, [9, 11, 6]);
+}
+
+#[test]
+fn dispatch_reads_the_pattern_not_a_line_that_quotes_the_name() {
+    let source = Source {
+        main: "// Some(\"run\") => nothing::main()\nlet x = Some(\"a\") => 1; \"vbox\";\nSome(\"vbox\" | \"vm\") => vbox::main(&a),".into(),
+        options: String::new(),
+        modules: Vec::new(),
+        all: String::new(),
+    };
+    assert_eq!(source.dispatched("vm"), Some("vbox"));
+    assert_eq!(source.dispatched("vbox"), Some("vbox"));
+    assert_eq!(source.dispatched("nope"), None);
 }

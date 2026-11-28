@@ -571,6 +571,8 @@ jobs:
     for line in [
         "  contents: read",
         "  contents: write-ish-name",
+        "  #contents: write",
+        "  # contents: write",
         "permissions: read-all",
     ] {
         let text = format!("permissions: {{}}\njobs:\n{line}\n");

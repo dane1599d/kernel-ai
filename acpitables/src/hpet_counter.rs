@@ -8,7 +8,8 @@
 //! earlier good value, and otherwise the halves are read high, low, high until the
 //! two high halves agree.
 //! A 32-bit main counter (CAPABILITIES bit 13 clear) cannot tear but wraps every
-//! 2^32 ticks (300 s at 14.318 MHz): [`extend32`] carries it into 64 bits.
+//! 2^32 ticks (300 s at 14.318 MHz): [`extend32`] carries it into 64 bits, and
+//! [`extend24`] the ACPI PM timer's 24 bits (P6 G57).
 
 /// How far a 64-bit read may lie from the last good value and still be kept:
 /// half the distance of a torn read, and about 21 s at 100 MHz.
@@ -58,6 +59,13 @@ pub fn counter_is_64bit(capabilities: u64) -> bool {
 /// Right while the counter is read at least every 2^31 ticks (150 s at 14.3 MHz).
 pub fn extend32(low: u32, last: u64) -> u64 {
     let step = low.wrapping_sub(last as u32) as i32;
+    last.wrapping_add_signed(i64::from(step))
+}
+
+/// [`extend32`] for a 24-bit counter, the ACPI PM timer's without
+/// TMR_VAL_EXT, which wraps every 4.7 s: `low`'s top 8 bits are ignored.
+pub fn extend24(low: u32, last: u64) -> u64 {
+    let step = (low.wrapping_sub(last as u32) << 8) as i32 >> 8;
     last.wrapping_add_signed(i64::from(step))
 }
 
@@ -198,6 +206,21 @@ mod tests {
         for n in 1..64u64 {
             last = extend32((n << 30 | 0x7) as u32, last);
             assert_eq!(last, n << 30 | 0x7, "read {n}");
+        }
+    }
+
+    #[test]
+    fn a_24_bit_counter_is_carried_across_its_wraps() {
+        assert_eq!(extend24(0x10, 0xFF_FFF0), 0x100_0010);
+        // The top byte of a 32-bit port read is ignored.
+        assert_eq!(extend24(0xAB00_0010, 0xFF_FFF0), 0x100_0010);
+        // A little behind another CPU's count stays behind it.
+        assert_eq!(extend24(0xFF_FFF0, 0x100_0010), 0xFF_FFF0);
+        // Read every 2^22 ticks (1.2 s at 3.58 MHz) across 16 wraps.
+        let mut last = 0x7;
+        for n in 1..64u64 {
+            last = extend24((n << 22 | 0x7) as u32, last);
+            assert_eq!(last, n << 22 | 0x7, "read {n}");
         }
     }
 

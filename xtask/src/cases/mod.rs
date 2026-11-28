@@ -91,6 +91,10 @@ pub struct TestCase {
     /// vCPUs the case boots with, whatever `--cpus` says: `smp-x2apic`'s 12,
     /// above [`crate::options::MAX_VM_CPUS`] (P6 G48).
     pub cpus: Option<usize>,
+    /// Boot q35 with `i8042=off`, whatever `--no-8042` says (G56).
+    pub no_8042: bool,
+    /// Boot q35 with `hpet=off`, whatever `--no-hpet` says (G57).
+    pub no_hpet: bool,
     /// Attach the disk as an NVMe controller (`-device nvme`) instead of
     /// virtio-blk.
     pub nvme: bool,
@@ -149,6 +153,9 @@ pub struct TestCase {
     /// With `then`: the rest of the first console line containing this text
     /// must differ between the two boots (ENTROPY's sample).
     pub differs: Option<&'static str>,
+    /// With `differs`: the two boots' rests must instead start with numbers
+    /// within this many percent of each other (`boot-no-hpet`'s timer rate).
+    pub near_pct: Option<u64>,
     /// Attach a virtio-rng (`-device virtio-rng-pci`).
     pub rng: bool,
     /// Boot from the slot disk (`image/slots.rs`, ADR 0008) with a `kai.slot`
@@ -344,6 +351,8 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         server: true,
         memory_mib: None,
         cpus: None,
+        no_8042: false,
+        no_hpet: false,
         kvm_only: false,
         nvme: false,
         four_k: false,
@@ -364,6 +373,7 @@ pub(crate) const fn case(name: &'static str, cmdline: &'static str) -> TestCase 
         data_mib: None,
         then: None,
         differs: None,
+        near_pct: None,
         rng: false,
         slots: false,
         update: None,
@@ -451,6 +461,30 @@ const LANES: &[&[TestCase]] = &[
 ];
 
 /// The cases `cargo xtask test` boots.
+/// `near_pct`'s check: `previous` and `got`, the rests of two boots' `text`
+/// lines, start with numbers within `pct` percent of the first.
+pub fn near(text: &str, previous: &str, got: &str, pct: u64) -> Result<(), String> {
+    let number = |rest: &str| -> Option<u64> {
+        let digits = rest.trim_start();
+        let end = digits
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(digits.len());
+        digits[..end].parse().ok()
+    };
+    let (Some(first), Some(then)) = (number(previous), number(got)) else {
+        return Err(format!(
+            "FAIL: {text:?} gave no number to compare: {previous:?} then {got:?}"
+        ));
+    };
+    if first.abs_diff(then) * 100 > first * pct {
+        return Err(format!(
+            "FAIL: {text:?} gave {first} then {then}, more than {pct}% apart"
+        ));
+    }
+    println!("xtask: {text:?} gave {first} then {then}, within {pct}%");
+    Ok(())
+}
+
 pub fn test_cases() -> Vec<&'static TestCase> {
     LANES.iter().flat_map(|lane| lane.iter()).collect()
 }
@@ -471,6 +505,22 @@ pub fn named_only() -> Vec<&'static TestCase> {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+
+    #[test]
+    fn near_compares_the_numbers_two_boots_start_with() {
+        let text = "timer: APIC ";
+        assert!(
+            near(
+                text,
+                "62500 counts/ms, HPET",
+                "62188 counts/ms, PM timer",
+                1
+            )
+            .is_ok()
+        );
+        assert!(near(text, "62500 counts/ms", "61800 counts/ms", 1).is_err());
+        assert!(near(text, "counts", "62500", 1).is_err());
+    }
 
     #[test]
     fn a_kvm_only_case_says_it_is_skipped_under_tcg() {
