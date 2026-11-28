@@ -234,3 +234,10 @@ path = "fuzz_targets/acpi_tables.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "ivrs_tables"
+path = "fuzz_targets/ivrs_tables.rs"
+test = false
+doc = false
+bench = false
