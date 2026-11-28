@@ -26,8 +26,8 @@
 //! A boot of A or B runs with the hardware watchdog armed
 //! ([`crate::watchdog`]) from the PCI bind. Once the lever has read the record
 //! it stays armed for a trial, until probation commits it, and is disarmed
-//! for a committed slot, no record or one that does not decode. A firmware
-//! read error leaves it armed: the read may pass on the next boot.
+//! for a committed slot, no record or one that does not decode or fit. Any
+//! other failed read leaves it armed, petted, for the whole boot.
 
 use crate::efi::{self, Guid, KAI, NV_BS_RT};
 use crate::{bootfiles, ipc, log, threads};
@@ -98,6 +98,8 @@ fn read_record() -> Result<Option<Record>, Unread> {
     let found = match efi::get_variable(&KAI, RECORD, &mut bytes) {
         Ok(len) => Some(&bytes[..len]),
         Err(efi::Error::NotFound) => None,
+        // A record over 128 bytes never fits, so it is as good as undecodable.
+        Err(efi::Error::BufferTooSmall(_)) => return Err(Unread::Undecodable),
         Err(_) => return Err(Unread::Firmware),
     };
     bootslot::read(found).map_err(|bootslot::Undecodable| Unread::Undecodable)
@@ -106,9 +108,9 @@ fn read_record() -> Result<Option<Record>, Unread> {
 /// Why [`read_record`] has no record to give.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Unread {
-    /// GetVariable failed.
+    /// GetVariable failed, other than for a record too large to read.
     Firmware,
-    /// The bytes are there and do not decode.
+    /// The bytes are there and do not decode, or are over 128 bytes.
     Undecodable,
 }
 
@@ -279,9 +281,9 @@ fn lever(test: bool) {
         Ok(record) => record,
         Err(unread) => {
             log!("{}; booting without the lever", unread.message());
-            // A record that does not decode never will, and R stays up on
-            // it; a failed read may pass next time, so a trial that hangs
-            // still resets (#1632's review).
+            // A record that does not decode (or fit) never will, and R stays
+            // up on it. Any other failed read stays armed for the whole boot,
+            // petted, so a trial that hangs still resets (#1632's review).
             if unread == Unread::Undecodable {
                 crate::watchdog::disarm();
             }
@@ -339,9 +341,11 @@ fn lever(test: bool) {
         while !HUNG.load(Ordering::Acquire) {
             threads::sleep_ms(10);
         }
-        threads::sleep_ms(1_000);
+        // Past the first pet the every-CPU rule refuses, 1 to 2 s after the
+        // hang, and still over 2 s before the reset (#1648's review).
+        threads::sleep_ms(2_500);
         log!(
-            "slots: slot-do=hang-cpu1: CPU {} still ticks 1 s after CPU 1 stopped",
+            "slots: slot-do=hang-cpu1: CPU {} still ticks 2.5 s after CPU 1 stopped",
             crate::percpu::index()
         );
         loop {

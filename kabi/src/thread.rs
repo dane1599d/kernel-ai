@@ -10,8 +10,8 @@
 
 use crate::layout::{MODEL_BASE, MODEL_MAX, STACK_TOP, USER_END};
 
-/// Workers a process may run at once, besides its main thread: one for each CPU
-/// the kernel can bring up.
+/// Workers a process may run at once, besides its main thread. The kernel brings
+/// up as many as 16 CPUs (P6 G48); a pool of more workers than CPUs clamps here.
 pub const MAX_WORKERS: usize = 8;
 /// Largest stack a worker may ask for, in pages: 1 MiB.
 pub const MAX_STACK_PAGES: u64 = 256;

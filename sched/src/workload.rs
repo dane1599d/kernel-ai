@@ -320,16 +320,22 @@ mod tests {
         let firsts: Vec<u64> = sizes.iter().step_by(CALIBRATION_RUNS).copied().collect();
         assert_eq!(firsts, [200, 400, 800, 1_600]);
         assert_eq!(speed, Some(500_000));
-        // A clock that never moves: no speed, after the largest runs.
-        let mut largest = 0;
+        // A clock that never moves: no speed, after every size up to the
+        // largest (#1665's review).
+        let mut sizes = Vec::new();
         assert_eq!(
             calibrate(|n| {
-                largest = largest.max(n);
+                sizes.push(n);
                 0
             }),
             None
         );
-        assert_eq!(largest, MAX_CALIBRATION_ITERS);
+        let firsts: Vec<u64> = sizes.iter().step_by(CALIBRATION_RUNS).copied().collect();
+        // 200 to 12,800, then the cap at 16,384.
+        let doubling = (0..7).map(|k| CALIBRATION_ITERS << k);
+        let expected: Vec<u64> = doubling.chain([MAX_CALIBRATION_ITERS]).collect();
+        assert_eq!(firsts, expected);
+        assert_eq!(sizes.len(), firsts.len() * CALIBRATION_RUNS);
     }
 
     #[test]

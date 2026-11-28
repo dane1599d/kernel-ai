@@ -137,7 +137,7 @@ pub(super) const HC_HANGS: TestCase = TestCase {
             "slots: booted kai-a (record read)",
             "watchdog: armed for 5 s",
             "slots: slot-do=hang: interrupts off on CPU 1 for good",
-            "slots: slot-do=hang-cpu1: CPU 0 still ticks 1 s after CPU 1 stopped",
+            "slots: slot-do=hang-cpu1: CPU 0 still ticks 2.5 s after CPU 1 stopped",
         ],
     )
 };

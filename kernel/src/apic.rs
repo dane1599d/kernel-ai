@@ -3,8 +3,8 @@
 //! The local APIC runs in one of two modes, the same on every CPU:
 //! - xAPIC, its registers in a memory-mapped page: the default;
 //! - x2APIC (P6 G48), its registers as MSRs 0x800 + offset / 16, with 32-bit
-//!   IDs and a 64-bit ICR: used when firmware hands over in it (it cannot be
-//!   turned off again without a reset), or when `apic=x2apic` asks and CPUID
+//!   IDs and a 64-bit ICR: used when firmware hands over in it (it can go back
+//!   to xAPIC only through disabled), or when `apic=x2apic` asks and CPUID
 //!   offers it. Each application processor switches to the boot CPU's mode.
 //!
 //! The I/O APIC's destination field stays 8 bits (no interrupt remapping), so
@@ -107,14 +107,10 @@ pub fn init_local(platform: &Platform) -> Result<u32, &'static str> {
             cpufeat::apic::Mode::X2Apic(why) => (true, why),
             cpufeat::apic::Mode::XApic(why) => (false, why),
         };
+    enable(&mut msr, value, x2);
     if x2 {
-        // SAFETY: from xAPIC (or x2APIC) mode, setting both bits enters (or
-        // keeps) x2APIC mode with the same base.
-        unsafe { msr.write(value | APIC_GLOBAL_ENABLE | X2APIC_ENABLE) };
         X2APIC.store(true, Ordering::Relaxed);
     } else {
-        // SAFETY: setting the global enable bit keeps the current base address.
-        unsafe { msr.write(value | APIC_GLOBAL_ENABLE) };
         let base = memory::map_physical(platform.local_apic, 0x1000, DEVICE)?;
         LAPIC.store(base, Ordering::Relaxed);
     }
@@ -122,6 +118,21 @@ pub fn init_local(platform: &Platform) -> Result<u32, &'static str> {
     lapic_write(SPURIOUS, 0x100 | u32::from(SPURIOUS_VECTOR));
     crate::log!("apic: {why}");
     Ok(local_id())
+}
+
+/// Enables the local APIC whose IA32_APIC_BASE reads `value`, keeping its base,
+/// and with `x2` puts it in x2APIC mode. EN goes first, then EN|EXTD: a disabled
+/// APIC may move only to xAPIC, so both bits from disabled would #GP (SDM vol. 3
+/// §11.12.5; #1637's review). From xAPIC or x2APIC either write is a valid move.
+fn enable(msr: &mut Msr, value: u64, x2: bool) {
+    // SAFETY: setting the global enable bit keeps the current base address,
+    // and the mode: xAPIC, or x2APIC if firmware handed over in it.
+    unsafe { msr.write(value | APIC_GLOBAL_ENABLE) };
+    if x2 {
+        // SAFETY: from xAPIC (or x2APIC) mode, setting EXTD with EN enters (or
+        // keeps) x2APIC mode with the same base.
+        unsafe { msr.write(value | APIC_GLOBAL_ENABLE | X2APIC_ENABLE) };
+    }
 }
 
 pub fn end_of_interrupt() {
@@ -180,17 +191,11 @@ pub fn route_isa_irq(
 /// local APIC at the same address.
 pub fn init_ap() -> u32 {
     let mut msr = Msr::new(IA32_APIC_BASE);
-    let mode = match x2apic() {
-        true => APIC_GLOBAL_ENABLE | X2APIC_ENABLE,
-        false => APIC_GLOBAL_ENABLE,
-    };
-    // SAFETY: IA32_APIC_BASE exists on every x86_64 CPU; this sets the enable
-    // bit, and in x2APIC mode the x2APIC bit too (the boot CPU found CPUID
-    // offers it, and every CPU of the machine has the same local APIC).
-    unsafe {
-        let value = msr.read();
-        msr.write(value | mode);
-    }
+    // SAFETY: IA32_APIC_BASE exists on every x86_64 CPU.
+    let value = unsafe { msr.read() };
+    // In x2APIC mode the boot CPU found CPUID offers it, and every CPU of the
+    // machine has the same local APIC.
+    enable(&mut msr, value, x2apic());
     lapic_write(TASK_PRIORITY, 0);
     lapic_write(SPURIOUS, 0x100 | u32::from(SPURIOUS_VECTOR));
     local_id()
