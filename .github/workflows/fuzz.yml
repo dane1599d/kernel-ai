@@ -69,10 +69,10 @@ jobs:
           fi
           # Each target is a file and a [[bin]] of fuzz/Cargo.toml with that
           # file as its path, so a file with no [[bin]] fails here, not in its
-          # own job (#1517's review).
-          bins=$(awk '/^\[\[bin\]\]/ { name = ""; next }
-            /^name *=/ { name = $3 }
-            /^path *=/ && name != "" { print name, $3 }' fuzz/Cargo.toml | tr -d '"')
+          # own job (#1517's review). scripts/fuzz/bins.awk reads the tables,
+          # with or without spaces around `=` (#1585's review), and
+          # scripts/fuzz/test.sh checks it in CI.
+          bins=$(awk -f scripts/fuzz/bins.awk fuzz/Cargo.toml)
           for t in $targets; do
             [ -f "fuzz/fuzz_targets/$t.rs" ] || { echo "::error::no fuzz target $t (fuzz/fuzz_targets/$t.rs)"; exit 1; }
             echo "$bins" | grep -qxF "$t fuzz_targets/$t.rs" \

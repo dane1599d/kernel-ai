@@ -112,6 +112,9 @@ jobs:
       - name: The merge batcher lands, resumes and tidies as it should (stub gh)
         if: steps.scope.outputs.code == 'true'
         run: bash scripts/batch/test/run.sh
+      - name: The fuzz plan reads fuzz/Cargo.toml's [[bin]] tables (scripts/fuzz)
+        if: steps.scope.outputs.code == 'true'
+        run: bash scripts/fuzz/test.sh
       - name: Dependency licences and advisories (deny.toml, ADR 0009 D6)
         if: steps.scope.outputs.code == 'true'
         run: |
