@@ -31,6 +31,26 @@ pub const fn fits(length: u64, room: u64) -> bool {
     }
 }
 
+/// The sectors a copy of the running slot writes: an image of `image`
+/// sectors into a slot of `room`, by [`fits`], in whole blocks. Both counts
+/// come from the disk, so their bytes are worked out checked: a count past
+/// `u64` bytes is refused, not wrapped to one that fits.
+pub fn copy_sectors(image: u64, room: u64) -> Result<u64, String> {
+    let bytes = |sectors: u64, what: &str| {
+        sectors
+            .checked_mul(SECTOR)
+            .ok_or_else(|| format!("{what} is {sectors} sectors, more bytes than u64 counts"))
+    };
+    let (image, room) = (bytes(image, "the image")?, bytes(room, "the slot")?);
+    match padded(image) {
+        Some(padded) if fits(image, room) => Ok(padded / SECTOR),
+        _ => Err(format!(
+            "the image is {}, more than the slot's {room}",
+            shown(image)
+        )),
+    }
+}
+
 /// `len` for a refusal: its bytes, and the whole blocks it takes when that
 /// is more.
 pub fn shown(len: u64) -> String {
