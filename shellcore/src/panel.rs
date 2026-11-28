@@ -55,7 +55,7 @@ pub(crate) struct Terminal {
     pub(crate) clarifying: Option<String>,
     pub(crate) pending: Option<crate::actions::Pending>,
     pub(crate) undo_asking: Option<u64>,
-    pub(crate) refused_asking: Option<usize>,
+    pub(crate) refused_asking: Option<(usize, u64)>,
     pub(crate) c: crate::cmode::CMode,
 }
 

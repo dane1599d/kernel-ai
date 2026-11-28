@@ -29,6 +29,7 @@ impl Shell {
             if let Some(why) = self
                 .bare_send_refusal()
                 .or_else(|| self.bare_unfetch_refusal())
+                .or_else(|| self.bare_untrash_refusal())
             {
                 return Reply::err(why);
             }
@@ -97,6 +98,27 @@ impl Shell {
             .map_or("", |c| c.before.as_str());
         Some(format!(
             "Can't redo removing model {model}: fetch it again to bring it back. To undo an older entry, name it: undo <number>"
+        ))
+    }
+
+    /// Why a bare `undo` stops: since the newest live entry, an undo moved a
+    /// refused rules file back, which has no redo. Going on to an older entry
+    /// would undo something the person did not mean.
+    fn bare_untrash_refusal(&self) -> Option<String> {
+        let back = self
+            .log
+            .entries()
+            .rev()
+            .take_while(|e| !e.live())
+            .filter(|e| e.of.is_some())
+            .find_map(|e| {
+                e.changes
+                    .iter()
+                    .find(|c| c.action == crate::refused::REMOVE_ACTION && c.inverse.is_none())
+            })?;
+        let name = back.res.rsplit('/').next().unwrap_or("it");
+        Some(format!(
+            "Can't redo bringing {name} back: rules refused remove takes it away again, and asks. To undo an older entry, name it: undo <number>"
         ))
     }
 
@@ -262,6 +284,38 @@ impl Shell {
                     Err(why) => {
                         left.push(change);
                         stopped = Some(Reply::err(format!("{}{why}", undone(&said))));
+                        break;
+                    }
+                }
+            }
+            // A refused rules file comes back from the trash; its redo has no
+            // inverse, since only the person's `rules refused remove`, which
+            // asks, takes one away.
+            if let undo::Inverse::Refused { n } = inverse {
+                match self.refused_untrash(n) {
+                    Ok(text) => {
+                        said.push(text);
+                        redo.push(Change {
+                            before: change.after.clone(),
+                            after: change.before.clone(),
+                            inverse: None,
+                            ..change
+                        });
+                        continue;
+                    }
+                    Err(Refused::Kept(why)) => {
+                        self.host.audit(&format!("undo #{id} kept: {why}"));
+                        left.push(change);
+                        stopped = Some(Reply::err(format!("{}{why}", undone(&said))));
+                        break;
+                    }
+                    Err(Refused::Failed(why) | Refused::Moved(why)) => {
+                        self.host.audit(&format!("undo #{id} failed: {why}"));
+                        left.push(change);
+                        stopped = Some(Reply::err(format!(
+                            "{}{why}; try undo again",
+                            undone(&said)
+                        )));
                         break;
                     }
                 }

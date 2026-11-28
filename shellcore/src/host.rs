@@ -438,10 +438,18 @@ pub trait Host {
         Ok(None)
     }
     /// Moves the refused rules file kept as `name` to the trash, as an action
-    /// of its own. Only the person's `rules refused remove <n>`, after their
-    /// yes, calls it.
-    fn refused_rules_trash(&self, _name: &str) -> Result<(), String> {
+    /// of its own: the generation it committed as. Only the person's `rules
+    /// refused remove <n>`, after their yes, calls it.
+    fn refused_rules_trash(&self, _name: &str) -> Result<u64, String> {
         Err(String::from("this host keeps no refused file"))
+    }
+    /// Moves the refused rules file trashed as `name` back, as an action of
+    /// its own: `undo` of `rules refused remove`. [`FsRefused::Kept`] when
+    /// no try would: the name is taken again, or the trash holds none.
+    fn refused_rules_untrash(&self, _name: &str) -> Result<(), FsRefused> {
+        Err(FsRefused::Failed(String::from(
+            "this host keeps no refused file",
+        )))
     }
     /// The keep-running list as `/system/state/keep` holds it, and why not
     /// when it could not be read.

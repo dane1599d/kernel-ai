@@ -320,14 +320,43 @@ impl Host for FakeHost {
             .map(|(_, kept)| (kept.clone(), KEPT_NS)))
     }
 
-    fn refused_rules_trash(&self, name: &str) -> Result<(), String> {
-        let mut aside = self.rules_aside.borrow_mut();
-        let before = aside.len();
-        aside.retain(|(n, _)| n != name);
-        match aside.len() < before {
-            true => Ok(()),
-            false => Err(format!("{name}: no such file")),
+    fn refused_rules_trash(&self, name: &str) -> Result<u64, String> {
+        if self.rules_trash_fails.get() {
+            return Err(String::from("the disk did not answer"));
         }
+        let mut aside = self.rules_aside.borrow_mut();
+        let at = aside
+            .iter()
+            .position(|(n, _)| n == name)
+            .ok_or_else(|| format!("{name}: no such file"))?;
+        let mut trash = self.rules_trash.borrow_mut();
+        trash.push(aside.remove(at));
+        Ok(40 + trash.len() as u64)
+    }
+
+    /// The newest trashed copy of `name` back, unless the name is taken:
+    /// [`crate::untrash_on`] over a `/system/state` held in memory.
+    fn refused_rules_untrash(&self, name: &str) -> Result<(), crate::FsRefused> {
+        use fsproto::{Error, Reply, Request};
+        crate::untrash_on(name, 1, |request| {
+            Ok(match request {
+                Request::TrashRestore { path } => {
+                    let mut aside = self.rules_aside.borrow_mut();
+                    let mut trash = self.rules_trash.borrow_mut();
+                    if aside.iter().any(|(n, _)| *n == path) {
+                        Reply::Failed(Error::Exists)
+                    } else if let Some(at) = trash.iter().rposition(|(n, _)| *n == path) {
+                        aside.push(trash.remove(at));
+                        aside.sort();
+                        Reply::Done
+                    } else {
+                        Reply::Failed(Error::NotFound)
+                    }
+                }
+                Request::Commit => Reply::Committed { generation: 50 },
+                _ => Reply::Done,
+            })
+        })
     }
 
     fn net_grants_read(&self) -> Result<Option<String>, String> {
