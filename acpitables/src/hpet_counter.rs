@@ -90,6 +90,26 @@ pub fn best_pair(samples: impl IntoIterator<Item = (u64, u64, u64)>) -> Option<(
         .map(|(before, hpet, after)| (before + after.wrapping_sub(before) / 2, hpet))
 }
 
+/// Whether a measured TSC rate is one to trust: within 1% of the rate the
+/// hypervisor reports (CPUID 0x40000010), when it reports one, and within 0.5%
+/// of `last`, the window before. With no reported rate, the second alone (and
+/// the kernel's drift check after it) stands between a KVM boot and a wrong
+/// rate, so it is tested here (#1628's review).
+pub fn settled(rate: u64, last: u64, reported_hz: Option<u64>) -> bool {
+    let steady = rate != 0 && rate.abs_diff(last) * 200 < last;
+    steady && reported_hz.is_none_or(|hz| rate.abs_diff(hz) * 100 < hz)
+}
+
+/// How far the TSC clock moved from the HPET over one re-check, in parts per
+/// million of the HPET's time: `tsc` and `hpet` are each clock's nanoseconds at
+/// the start and the end of it. A TSC whose rate changed after boot (a host
+/// without a constant TSC, a migration without TSC scaling) shows here.
+pub fn recheck_ppm(tsc: (u64, u64), hpet: (u64, u64)) -> u64 {
+    let tsc_span = tsc.1.saturating_sub(tsc.0);
+    let hpet_span = hpet.1.saturating_sub(hpet.0).max(1);
+    (u128::from(tsc_span.abs_diff(hpet_span)) * 1_000_000 / u128::from(hpet_span)) as u64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,5 +267,38 @@ mod tests {
         // QEMU's HPET (64-bit), then a 14.318 MHz one with bit 13 clear.
         assert!(counter_is_64bit(0x0098_9680_8086_A201));
         assert!(!counter_is_64bit(0x0429_B17F_1022_8210));
+    }
+
+    #[test]
+    fn a_rate_is_settled_only_when_steady_and_near_the_reported_one() {
+        let ghz = 2_700_000_000;
+        assert!(settled(ghz, ghz + 1_000, None), "steady, nothing reported");
+        // A 0.6% step between windows is refused; 0.4% is taken.
+        assert!(!settled(ghz + ghz / 1000 * 6, ghz, None));
+        assert!(settled(ghz + ghz / 1000 * 4, ghz, None));
+        assert!(!settled(0, 0, None), "a rate of 0");
+        assert!(
+            settled(ghz, ghz, Some(ghz + ghz / 200)),
+            "0.5% from the report"
+        );
+        assert!(
+            !settled(ghz, ghz, Some(ghz + ghz / 50)),
+            "2% from the report"
+        );
+    }
+
+    #[test]
+    fn a_recheck_measures_the_tsc_clock_against_the_hpet() {
+        let s = 1_000_000_000;
+        assert_eq!(recheck_ppm((0, 10 * s), (0, 10 * s)), 0);
+        // 10 ms fast or slow over 10 s.
+        assert_eq!(
+            recheck_ppm((5, 10 * s + 10_000_005), (7, 10 * s + 7)),
+            1_000
+        );
+        assert_eq!(recheck_ppm((0, 10 * s - 10_000_000), (0, 10 * s)), 1_000);
+        // A clock that went back, or an HPET that did not move, cannot panic.
+        assert_eq!(recheck_ppm((9, 1), (0, s)), 1_000_000);
+        assert!(recheck_ppm((0, s), (5, 5)) > 1_000);
     }
 }

@@ -160,15 +160,27 @@ pub fn boot_check() -> Result<(), &'static str> {
 pub fn sixty_second_check() -> Result<(), &'static str> {
     let ticks_60s = 60 * rate_hz();
     log!("timer: measure-start, counting {ticks_60s} ticks");
+    let counter = hpet::counter_nanos();
     let elapsed = wait_ticks(ticks_60s, 90_000_000_000)?;
+    let counted = hpet::counter_nanos().saturating_sub(counter);
     log!(
-        "timer: measure-end, {} ms of HPET time",
+        "timer: measure-end, {} ms of kernel clock time",
         elapsed / 1_000_000
     );
     let error_ppm = elapsed.abs_diff(60_000_000_000) / 60_000;
     log!("timer: error {} ppm (limit 20000)", error_ppm);
     if error_ppm > 20_000 {
         return Err("timer: 1 kHz tick drifted more than 2% over 60 s");
+    }
+    // On the TSC the ticks above measure the TSC against itself; this measures
+    // it against the HPET's own counter (#1628's review).
+    let clock_ppm = acpitables::hpet_counter::recheck_ppm((0, elapsed), (0, counted));
+    log!(
+        "timer: the clock is {clock_ppm} ppm from the HPET's counter (limit {})",
+        hpet::RECHECK_PPM
+    );
+    if hpet::tsc_clock() && clock_ppm > hpet::RECHECK_PPM {
+        return Err("timer: the TSC clock drifted from the HPET over 60 s");
     }
     Ok(())
 }

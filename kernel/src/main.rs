@@ -619,7 +619,7 @@ fn init_devices() -> &'static acpitables::Platform {
             .hpet
             .ok_or("no HPET; a PIT fallback is not implemented yet")?;
         hpet::init(hpet)?;
-        hpet::select_clock(cmdline());
+        hpet::select_clock(cmdline(), platform.virtualbox());
         if cmdline().split_whitespace().any(|word| word == "stamp=ms") {
             serial::stamp_lines(true);
             log!("serial: each line starts with [the kernel clock h the HPET], in seconds");

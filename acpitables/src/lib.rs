@@ -87,6 +87,8 @@ pub struct Platform {
     /// Damaged optional tables (FADT, MCFG) left out, as if absent, with why; at
     /// most [`MAX_IGNORED`]. ACPICA too only warns about them.
     pub ignored: Vec<(&'static str, Error)>,
+    /// The RSDP's OEM ID: who wrote the tables ("VBOX  " for VirtualBox).
+    pub oem_id: [u8; 6],
 }
 
 /// How an ISA IRQ reaches the I/O APIC.
@@ -98,6 +100,13 @@ pub struct Route {
 }
 
 impl Platform {
+    /// Whether VirtualBox wrote the tables: it can show KVM's CPUID signature
+    /// (`--paravirtprovider kvm`, its default for Linux guests) while its TSC
+    /// runs slow after power-on (#1628's review).
+    pub fn virtualbox(&self) -> bool {
+        &self.oem_id == b"VBOX  "
+    }
+
     /// ISA IRQs are edge-triggered and active-high unless the MADT overrides them.
     pub fn isa_route(&self, irq: u8) -> Route {
         match self.overrides.iter().find(|o| o.irq == irq) {
@@ -158,6 +167,7 @@ pub fn parse(mem: &impl PhysMem, rsdp: u64) -> Result<Platform, Error> {
     let root_table = table(mem, root)?;
     let entries = &root_table[SDT_HEADER_LEN..];
     let mut platform = Platform::default();
+    platform.oem_id.copy_from_slice(&head[9..15]);
     let mut found_madt = false;
     for chunk in entries.chunks_exact(entry_size) {
         let address = if entry_size == 8 {
@@ -375,6 +385,7 @@ mod tests {
         mem[0x600..0x600 + mcfg.len()].copy_from_slice(&mcfg);
         let mut rsdp = vec![0u8; 36];
         rsdp[..8].copy_from_slice(b"RSD PTR ");
+        rsdp[9..15].copy_from_slice(b"KAITST");
         rsdp[15] = 2;
         rsdp[20..24].copy_from_slice(&36u32.to_le_bytes());
         rsdp[24..32].copy_from_slice(&0x100u64.to_le_bytes());
@@ -393,6 +404,12 @@ mod tests {
         assert_eq!(platform.io_apics[0].address, 0xFEC0_0000);
         assert_eq!(platform.overrides.len(), 2);
         assert_eq!(platform.hpet, Some(0xFED0_0000));
+        assert_eq!(&platform.oem_id, b"KAITST");
+        let vbox = Platform {
+            oem_id: *b"VBOX  ",
+            ..Platform::default()
+        };
+        assert!(vbox.virtualbox() && !platform.virtualbox());
         assert_eq!(
             platform.ecam,
             vec![Ecam {
