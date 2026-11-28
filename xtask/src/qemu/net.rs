@@ -62,11 +62,24 @@ pub fn net_behind_bridge(args: &mut Vec<String>) {
     }
 }
 
-/// The `qemu-xhci` controller with the case's USB devices, and a QMP socket
-/// when the case sends `@` lines, powers off or resets (its SHUTDOWN reason);
-/// the port goes to the test run.
+/// The `qemu-xhci` controller with the case's USB devices, the HD Audio
+/// controller and codec for an `hda` case, and a QMP socket when the case
+/// sends `@` lines, powers off or resets (its SHUTDOWN reason); the port goes
+/// to the test run.
 pub fn input_args(case: &TestCase) -> Result<(Vec<String>, Option<u16>), String> {
     let mut args = Vec::new();
+    if case.hda {
+        // The WAV backend takes the samples at the sample rate, so the
+        // stream's position moves as on hardware, and keeps them to listen to.
+        args.extend([
+            "-audiodev".into(),
+            format!("wav,id=kai-audio,path={}", crate::cases::HDA_WAV),
+            "-device".into(),
+            "intel-hda,id=kai-hda".into(),
+            "-device".into(),
+            "hda-duplex,bus=kai-hda.0,audiodev=kai-audio".into(),
+        ]);
+    }
     if !case.usb.is_empty() {
         args.extend(["-device".into(), "qemu-xhci,id=xhci".into()]);
         for device in case.usb {

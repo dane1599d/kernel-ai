@@ -1,7 +1,8 @@
 //! Virtio devices on PCI: the DMA layer the drivers share, the one walk over the
 //! buses that finds them, and the read-only block driver. The network card's own
 //! code is in `net` and the GPU's in `display`; the same pass finds the NVMe
-//! controllers for `nvme` and the xHCI controllers for `usb`.
+//! controllers for `nvme`, the xHCI controllers for `usb` and the HD Audio
+//! controllers for `hda`.
 
 pub mod blk;
 pub mod hal;
@@ -45,4 +46,5 @@ pub fn init(platform: &acpitables::Platform, cmdline: &str) {
     crate::nvme::init(found.nvme);
     crate::block::scan();
     crate::usb::init(found.usb);
+    crate::hda::init(found.hda, cmdline);
 }

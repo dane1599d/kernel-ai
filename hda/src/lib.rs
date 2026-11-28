@@ -23,7 +23,7 @@ pub mod verb;
 #[cfg(test)]
 mod tests;
 
-pub use controller::{Controller, Playing, Regs};
+pub use controller::{Controller, Opened, Playing, Regs, Tone};
 pub use graph::{Codec, FunctionGroup, Path};
 pub use stream::Format;
 

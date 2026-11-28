@@ -65,6 +65,11 @@ pub const TABLE: &[Row] = &[
     },
     // QEMU's watchdog (ADR 0008 §5), `kernel/src/watchdog.rs`.
     kernel(Key::Id(0x8086, 0x25ab), "i6300esb"),
+    // HD Audio (ADR 0007's audio row, v0.3), `kernel/src/hda.rs`, on MSI or
+    // polled, never INTx. Every controller is class 04/03; QEMU's
+    // `intel-hda` is ICH6's, 8086:2668.
+    kernel(Key::Id(0x8086, 0x2668), "hda"),
+    kernel(Key::Class(0x04, 0x03, 0x00), "hda"),
 ];
 
 /// The identity of a function, as the match sees it.
@@ -181,6 +186,19 @@ mod tests {
         );
         assert_eq!(driver(ids(0x1b36, 0x0010, (1, 8, 2))), Some("nvme"));
         assert_eq!(driver(ids(0x1b36, 0x000d, (0x0c, 3, 0x30))), Some("xhci"));
+        // QEMU's intel-hda (ICH6), and any other HD Audio controller by class.
+        assert_eq!(driver(ids(0x8086, 0x2668, (0x04, 3, 0x00))), Some("hda"));
+        assert_eq!(driver(ids(0x1022, 0x15e3, (0x04, 3, 0x00))), Some("hda"));
+        assert_eq!(
+            driver(ids(0x8086, 0x2668, (0x04, 1, 0x00))),
+            Some("hda"),
+            "by ID"
+        );
+        assert_eq!(
+            driver(ids(0x1234, 0x5678, (0x04, 1, 0x00))),
+            None,
+            "AC'97 is not HD Audio"
+        );
         assert!(
             lookup(TABLE, ids(0x1b36, 0x000d, (0x0c, 3, 0x30)))
                 .unwrap()

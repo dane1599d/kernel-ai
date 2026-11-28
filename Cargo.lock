@@ -1667,6 +1667,7 @@ dependencies = [
  "editcore",
  "fsproto",
  "gfxcore",
+ "hda",
  "kabi",
  "kaibundle",
  "kaiprofile",

@@ -1,7 +1,8 @@
-//! Capabilities and MSI-X (ADR 0007 section 4): a bounded walk of a function's
-//! capability list, its MSI-X capability, the address of the BAR its table sits
-//! in (read, never sized, so a running device is not disturbed), and the
-//! message a vector is delivered with.
+//! Capabilities, MSI-X and MSI (ADR 0007 section 4): a bounded walk of a
+//! function's capability list, its MSI-X capability, its MSI capability for a
+//! device that has only that (HD Audio controllers may), the address of the
+//! BAR an MSI-X table sits in (read, never sized, so a running device is not
+//! disturbed), and the message a vector is delivered with.
 
 use crate::{ConfigRegionAccess, PciAddress};
 use alloc::vec::Vec;
@@ -19,6 +20,15 @@ const MSIX_ENABLE: u32 = 1 << 31;
 const MSIX_FUNCTION_MASK: u32 = 1 << 30;
 /// Bytes of one MSI-X table entry: address low, address high, data, control.
 pub const ENTRY_BYTES: u64 = 16;
+/// The MSI capability's ID.
+pub const CAP_MSI: u8 = 0x05;
+/// MSI message control (the header's upper half): enable, 64-bit address,
+/// per-vector masking; Multiple Message Enable (bits 22:20) is left 0, one
+/// vector.
+const MSI_ENABLE: u32 = 1 << 16;
+const MSI_MME: u32 = 0b111 << 20;
+const MSI_64: u32 = 1 << 23;
+const MSI_MASKABLE: u32 = 1 << 24;
 
 fn read(access: &impl ConfigRegionAccess, address: PciAddress, offset: u16) -> u32 {
     // SAFETY: the caller's access covers this function's configuration space;
@@ -88,6 +98,73 @@ pub fn msix(access: &impl ConfigRegionAccess, address: PciAddress) -> Option<Msi
         table_offset: table & !0x7,
         pba_bar: (pba & 0x7) as u8,
         pba_offset: pba & !0x7,
+    })
+}
+
+/// A function's MSI capability (PCI Local Bus 3.0 section 6.8.1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Msi {
+    pub offset: u16,
+    /// The message address has an upper half.
+    pub wide: bool,
+    /// It has a per-vector mask register.
+    pub maskable: bool,
+}
+
+impl Msi {
+    fn data_at(&self) -> u16 {
+        self.offset + if self.wide { 0x0C } else { 0x08 }
+    }
+
+    fn mask_at(&self) -> u16 {
+        self.offset + if self.wide { 0x10 } else { 0x0C }
+    }
+
+    /// Points the function's one vector at `address` with `data`, unmasks it,
+    /// and turns MSI on with a single message enabled.
+    pub fn enable(
+        &self,
+        access: &impl ConfigRegionAccess,
+        address: PciAddress,
+        message: (u64, u32),
+    ) {
+        let (to, data) = message;
+        let header = read(access, address, self.offset);
+        // Off while the message changes.
+        write(
+            access,
+            address,
+            self.offset,
+            header & !(MSI_ENABLE | MSI_MME),
+        );
+        write(access, address, self.offset + 4, to as u32);
+        if self.wide {
+            write(access, address, self.offset + 8, (to >> 32) as u32);
+        }
+        write(access, address, self.data_at(), data & 0xFFFF);
+        if self.maskable {
+            let mask = read(access, address, self.mask_at());
+            write(access, address, self.mask_at(), mask & !1);
+        }
+        write(
+            access,
+            address,
+            self.offset,
+            (header & !MSI_MME) | MSI_ENABLE,
+        );
+    }
+}
+
+/// The function's MSI capability, if it has one.
+pub fn msi(access: &impl ConfigRegionAccess, address: PciAddress) -> Option<Msi> {
+    let (_, offset) = capabilities(access, address)
+        .into_iter()
+        .find(|(id, _)| *id == CAP_MSI)?;
+    let header = read(access, address, offset);
+    Some(Msi {
+        offset,
+        wide: header & MSI_64 != 0,
+        maskable: header & MSI_MASKABLE != 0,
     })
 }
 
@@ -196,6 +273,55 @@ mod tests {
         assert_eq!(control & 0xFFFF, u32::from(CAP_MSIX), "the header is kept");
         msix.enable(&space, AT(), false);
         assert_eq!(space.get(0x70) & MSIX_ENABLE, 0);
+    }
+
+    #[test]
+    fn msi_is_found_and_enabled_with_one_unmasked_vector() {
+        // xhci_like's MSI at 0x50: 32-bit, no mask, MME left at 4 by firmware.
+        let space = xhci_like();
+        space.set(0x50, space.get(0x50) | (0b010 << 20));
+        let msi32 = msi(&space, AT()).unwrap();
+        assert_eq!(
+            msi32,
+            Msi {
+                offset: 0x50,
+                wide: false,
+                maskable: false
+            }
+        );
+        msi32.enable(&space, AT(), message(1, 0x41));
+        assert_eq!(space.get(0x54), 0xFEE0_1000);
+        assert_eq!(space.get(0x58), 0x41, "data right after a 32-bit address");
+        let control = space.get(0x50);
+        assert_eq!(
+            control & (MSI_ENABLE | MSI_MME),
+            MSI_ENABLE,
+            "one vector, on"
+        );
+        assert_eq!(control & 0xFFFF, 0x05 | (0x70 << 8), "the header is kept");
+
+        // A 64-bit, maskable MSI (as QEMU's intel-hda has) at 0x60, alone.
+        let space = Space::default();
+        space.set(0x04, STATUS_CAPABILITIES);
+        space.set(CAPABILITY_POINTER, 0x60);
+        space.set(0x60, u32::from(CAP_MSI) | MSI_64 | MSI_MASKABLE);
+        space.set(0x70, 0xFFFF_FFFF);
+        let msi64 = msi(&space, AT()).unwrap();
+        assert_eq!(
+            msi64,
+            Msi {
+                offset: 0x60,
+                wide: true,
+                maskable: true
+            }
+        );
+        msi64.enable(&space, AT(), (0x1_FEE0_0000, 0x1_0042));
+        assert_eq!((space.get(0x64), space.get(0x68)), (0xFEE0_0000, 1));
+        assert_eq!(space.get(0x6C), 0x0042, "16 bits of data");
+        assert_eq!(space.get(0x70), 0xFFFF_FFFE, "vector 0 unmasked");
+        assert!(space.get(0x60) & MSI_ENABLE != 0);
+        assert_eq!(msix(&space, AT()), None);
+        assert_eq!(msi(&Space::default(), AT()), None);
     }
 
     #[test]

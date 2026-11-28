@@ -134,6 +134,8 @@ struct State {
     corb_size: u8,
     /// Commands the CORB carried.
     commands: usize,
+    /// Each BDL entry's interrupt-on-completion, as the stream read them.
+    ioc: Vec<bool>,
 }
 
 struct FakeRegs(RefCell<State>);
@@ -154,6 +156,7 @@ impl FakeRegs {
             played: None,
             corb_size: 0x42,
             commands: 0,
+            ioc: Vec::new(),
         }))
     }
 
@@ -254,6 +257,7 @@ impl State {
                 let e = bdl.add(16 * i);
                 let addr = e.cast::<u64>().read() as *const u8;
                 let len = e.add(8).cast::<u32>().read() as usize;
+                self.ioc.push(e.add(12).cast::<u32>().read() & 1 != 0);
                 bytes.extend_from_slice(std::slice::from_raw_parts(addr, len));
             }
         }
@@ -491,19 +495,27 @@ fn the_tone_plays_on_qemus_hda_duplex() {
     let regs = FakeRegs::new(qemu_duplex());
     let mut hda = Controller::new(FakeHost::default(), &regs);
     let playing = hda.play_tone().unwrap();
-    assert_eq!(playing.version, (1, 0));
+    assert_eq!(playing.opened.version, (1, 0));
     assert_eq!(
-        (playing.codecs, playing.codec, playing.vendor),
+        (
+            playing.opened.codecs,
+            playing.opened.codec,
+            playing.opened.vendor
+        ),
         (1, 0, 0x1AF4_0022)
     );
     assert_eq!(
-        (playing.group.nid, playing.group.first, playing.group.count),
+        (
+            playing.opened.group.nid,
+            playing.opened.group.first,
+            playing.opened.group.count
+        ),
         (1, 2, 4)
     );
-    assert_eq!(nids(&playing.path), [3, 2], "pin 3 to DAC 2");
-    assert_eq!(playing.path.hops()[0].kind, Kind::Pin);
+    assert_eq!(nids(&playing.opened.path), [3, 2], "pin 3 to DAC 2");
+    assert_eq!(playing.opened.path.hops()[0].kind, Kind::Pin);
     // ICH6's four input streams come first: the first output stream is 4.
-    assert_eq!((playing.stream, playing.buffer), (4, 8192));
+    assert_eq!((playing.tone.stream, playing.tone.buffer), (4, 8192));
     let s = regs.state();
     let c = &s.codec;
     assert!(c.sent(1, Verb::set_power_state(0)));
@@ -554,7 +566,7 @@ fn a_line_out_through_a_selector_is_taken_first() {
     let regs = FakeRegs::new(pc_codec());
     let mut hda = Controller::new(FakeHost::default(), &regs);
     let playing = hda.play_tone().unwrap();
-    assert_eq!(nids(&playing.path), [0x14, 0x0F, 0x03]);
+    assert_eq!(nids(&playing.opened.path), [0x14, 0x0F, 0x03]);
     let s = regs.state();
     assert!(s.codec.sent(0x0F, Verb::set_connection_select(1)));
     assert!(s.codec.sent(0x0F, Verb::set_amp(true, 0, false, 0x3F)));
@@ -597,7 +609,7 @@ fn without_a_line_out_the_speaker_then_the_headphones() {
     let regs = FakeRegs::new(c);
     let mut hda = Controller::new(FakeHost::default(), &regs);
     let playing = hda.play_tone().unwrap();
-    assert_eq!(nids(&playing.path), [0x16, 0x0C, 0x02]);
+    assert_eq!(nids(&playing.opened.path), [0x16, 0x0C, 0x02]);
     let s = regs.state();
     let c = &s.codec;
     assert!(c.sent(0x16, Verb::set_pin_control(0xC0)), "out and HP amp");
@@ -717,8 +729,8 @@ fn a_codec_at_another_address_and_unsolicited_responses() {
     }
     let mut hda = Controller::new(FakeHost::default(), &regs);
     let playing = hda.play_tone().unwrap();
-    assert_eq!((playing.codecs, playing.codec), (0b100, 2));
-    assert_eq!(nids(&playing.path), [3, 2]);
+    assert_eq!((playing.opened.codecs, playing.opened.codec), (0b100, 2));
+    assert_eq!(nids(&playing.opened.path), [3, 2]);
     // STATESTS was cleared after it was read.
     assert_eq!(regs.read16(STATESTS), 0);
 }
@@ -731,7 +743,7 @@ fn a_small_corb_wraps() {
     regs.state().corb_size = 0x20;
     let mut hda = Controller::new(FakeHost::default(), &regs);
     let playing = hda.play_tone().unwrap();
-    assert_eq!(nids(&playing.path), [0x14, 0x0F, 0x03]);
+    assert_eq!(nids(&playing.opened.path), [0x14, 0x0F, 0x03]);
     assert!(regs.state().commands > 3 * 16, "{}", regs.state().commands);
     assert_eq!(regs.read8(CORBSIZE) & 3, 1);
 }
@@ -830,4 +842,34 @@ fn mmio_is_regs() {
     assert_eq!(Regs::read16(&mmio, CORBRP), 0x1234);
     assert_eq!(Regs::read32(&mmio, CORBCTL), 0x0002_0002);
     assert_eq!(file[CORBRP as usize / 4], 0x1234_0000);
+}
+
+#[test]
+fn open_is_silent_and_the_tone_can_interrupt() {
+    let regs = FakeRegs::new(qemu_duplex());
+    let mut hda = Controller::new(FakeHost::default(), &regs);
+    assert_eq!(hda.output_stream(), Ok(4));
+    let opened = hda.open().unwrap();
+    assert_eq!(nids(&opened.path), [3, 2]);
+    assert!(regs.state().played.is_none(), "no stream runs after open");
+    assert_eq!(hda.position(), None);
+    assert!(regs.state().codec.sent(2, Verb::set_stream_channel(1, 0)));
+
+    hda.set_interrupts(true);
+    let tone = hda.start_tone(&opened).unwrap();
+    assert_eq!((tone.stream, tone.buffer), (4, 8192));
+    assert_eq!(regs.state().ioc, [true, true]);
+    assert_eq!(regs.read32(INTCTL), INTCTL_GIE | 1 << 4);
+    assert_eq!(regs.read8(sd(4, SD_CTL0)), SD_RUN | SD_IOCE);
+    hda.stop();
+    assert_eq!(regs.read32(INTCTL), 0);
+
+    // Polled, the default: no IOC, no interrupt enables.
+    let regs = FakeRegs::new(qemu_duplex());
+    Controller::new(FakeHost::default(), &regs)
+        .play_tone()
+        .unwrap();
+    assert_eq!(regs.state().ioc, [false, false]);
+    assert_eq!(regs.read32(INTCTL), 0);
+    assert_eq!(regs.read8(sd(4, SD_CTL0)), SD_RUN);
 }

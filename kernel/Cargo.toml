@@ -20,6 +20,7 @@ captable = { path = "../captable" }
 cpufeat = { path = "../cpufeat" }
 csprng = { path = "../csprng" }
 devkit = { path = "../devkit" }
+hda = { path = "../hda" }
 devmatch = { path = "../devmatch" }
 deskgeom = { path = "../deskgeom" }
 diskmap = { path = "../diskmap" }
