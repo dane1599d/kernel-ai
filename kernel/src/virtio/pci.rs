@@ -368,11 +368,17 @@ fn enable_msix(
     let entry = pci::bar_range(base, size, u64::from(msix.table_offset), ENTRY_BYTES)
         .ok_or("its MSI-X table lies outside its BAR")?;
     let table = memory::map_physical(entry, ENTRY_BYTES, DEVICE)?;
-    let vector = crate::irq::allocate(handler).ok_or("no free interrupt vector")?;
     let boot_apic = crate::percpu::get(0)
         .lapic_id
         .load(core::sync::atomic::Ordering::Relaxed);
-    let (message, data) = msix::message(boot_apic as u8, vector);
+    // The message's destination is 8 bits (no interrupt remapping), and 255 is
+    // broadcast, as for the I/O APIC (#1637's review).
+    let boot_apic = u8::try_from(boot_apic)
+        .ok()
+        .filter(|&id| id != 0xff)
+        .ok_or("its MSI-X message cannot reach a boot APIC ID above 254")?;
+    let vector = crate::irq::allocate(handler).ok_or("no free interrupt vector")?;
+    let (message, data) = msix::message(boot_apic, vector);
     let words = [message as u32, (message >> 32) as u32, data, 0];
     for (i, word) in words.into_iter().enumerate() {
         // SAFETY: `table` maps the first entry of the table uncached; the last

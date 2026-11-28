@@ -56,6 +56,13 @@ pub(in crate::cases) const CASES: &[TestCase] = &[
         expect: &["apic: x2APIC (apic=x2apic)", "smp: 12 CPU(s) online"],
         ..case("tlb-x2apic", "test=tlb apic=x2apic")
     },
+    // And in xAPIC, the default: 9 to 16 CPUs came up as 8 before G48 (#1637's
+    // review).
+    TestCase {
+        cpus: Some(12),
+        expect: &["apic: xAPIC", "smp: 12 CPU(s) online"],
+        ..case("smp-xapic-12", "test=smp")
+    },
     case("storm", "test=storm"),
     case("fpu", "test=fpu"),
     case("probe", "test=probe"),

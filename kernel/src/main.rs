@@ -229,7 +229,7 @@ static HHDM: HhdmRequest = HhdmRequest::new();
 #[unsafe(link_section = ".requests")]
 static RSDP: RsdpRequest = RsdpRequest::new();
 
-/// Application processors, in xAPIC mode (flag 0: no x2APIC).
+/// Application processors (flag 0: Limine leaves the mode; `apic` picks it).
 #[used]
 #[unsafe(link_section = ".requests")]
 static MP: MpRequest = MpRequest::new(0);
