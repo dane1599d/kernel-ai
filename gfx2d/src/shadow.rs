@@ -77,19 +77,29 @@ impl Shadow {
         });
     }
 
-    /// What [`Shadow::draw`] leaves of the light at each px, for a shadow of
-    /// black: `shade`, `width` px a row, holds 255 where nothing was drawn, and
-    /// each draw takes its coverage off (`v * (255 - a) / 255`, as `tint` does
-    /// for black). A client's own px, which the frame holds only as a key
-    /// colour, are darkened by it afterwards. It assumes a black shadow
-    /// (`color` 0), as every shadow of the desk is: another colour does more
-    /// than take light away.
-    pub fn shade(&self, shade: &mut [u8], width: usize, r: Rect, clip: Rect) {
-        debug_assert!(self.color << 8 == 0, "Shadow::shade needs a black shadow");
-        let height = shade.len().checked_div(width).unwrap_or(0) as i32;
-        let bounds = Rect::new(0, 0, width as i32, height);
+    /// [`Shadow::draw`], and in the same pass what it leaves of the light at
+    /// each px, for a shadow of black: `shade`, `c.width` px a row, holds 255
+    /// where nothing was drawn, and each draw takes its coverage off
+    /// (`v * (255 - a) / 255`, as `tint` does for black). A client's own px,
+    /// which the frame holds only as a key colour, are darkened by it
+    /// afterwards. It assumes a black shadow (`color` 0), as every shadow of
+    /// the desk is: another colour does more than take light away. One pass,
+    /// not a draw and a second walk over the same px: the second cost the
+    /// full composite with Start and the pane open about a third (2026-11-28).
+    pub fn draw_shaded(&self, c: &mut Canvas<'_>, shade: &mut [u8], r: Rect, clip: Rect) {
+        debug_assert!(
+            self.color << 8 == 0,
+            "Shadow::draw_shaded needs a black shadow"
+        );
+        let stride = c.stride_px as usize;
+        let width = c.width as usize;
+        let bounds = c.bounds();
         self.each(r, clip.intersect(&bounds), |x, y, a| {
-            if let Some(v) = shade.get_mut(y as usize * width + x as usize) {
+            let p = &mut c.pixels[y as usize * stride + x as usize];
+            *p = tint(self.color, a, *p);
+            if let Some(v) = shade.get_mut(y as usize * width + x as usize)
+                && a != 0
+            {
                 *v = (u32::from(*v) * (255 - a) / 255) as u8;
             }
         });
@@ -127,15 +137,14 @@ mod tests {
     use crate::canvas::Image;
 
     #[test]
-    fn shade_is_the_light_draw_leaves_of_white() {
+    fn shade_is_the_light_draw_shaded_leaves_of_white() {
         let shadow = Shadow::new(16, 120, 0);
         let mut img = Image::new(120, 120);
         let bounds = img.bounds();
         img.canvas().fill(bounds, 0xFFFF_FFFF);
         let mut shade = alloc::vec![255u8; 120 * 120];
         let window = Rect::new(40, 40, 40, 40);
-        shadow.draw(&mut img.canvas(), window, bounds);
-        shadow.shade(&mut shade, 120, window, bounds);
+        shadow.draw_shaded(&mut img.canvas(), &mut shade, window, bounds);
         assert!(shade.iter().any(|&v| v < 255));
         for (px, &v) in img.px.iter().zip(&shade) {
             assert_eq!(*px & 0xFF, u32::from(v));

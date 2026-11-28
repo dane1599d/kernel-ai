@@ -138,6 +138,10 @@ pub(super) fn draw(state: &mut State, screen: &Screen) {
     let scale = state.scale;
     let (width, height, desk) = (state.width, state.height, &state.desk);
     let mask = &mut state.mask;
+    // Only a client drawn at the screen's scale reads the shadows' light.
+    state.painter.track_shade(
+        scale != deskcore::scale::ONE && shown.iter().any(|(_, _, _, at)| *at == scale),
+    );
     for &clip in &damage {
         // What the painter writes of a window's content in this clip, the mask
         // says whose it is: a hole for a client drawn at the screen's scale (its
