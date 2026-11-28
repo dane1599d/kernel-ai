@@ -375,9 +375,10 @@ pub fn release_cmdline_ok(cmdline: &str) -> bool {
 /// partition: the partitions never grow on an install (ADR 0008 S08-2).
 pub const FILL_WARN_PERCENT: u64 = 80;
 
-/// One line for slot `name` whose volume takes `used` bytes of a `mib` MiB
-/// partition: its size in MiB, the share of the partition to a tenth of a
-/// percent, and a warning past [`FILL_WARN_PERCENT`] (exactly that is none).
+/// One line for slot `name` whose FAT volume (the files plus the filesystem's
+/// own overhead) takes `used` bytes of a `mib` MiB partition: its size in MiB,
+/// the share of the partition to a tenth of a percent, and a warning past
+/// [`FILL_WARN_PERCENT`] (exactly that is none).
 /// The line starts `xtask: slot `, which the release workflow's summary reads.
 pub fn fill_line(name: &str, used: u64, mib: u64) -> String {
     let capacity = mib * MIB;

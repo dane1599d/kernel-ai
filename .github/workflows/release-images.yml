@@ -47,12 +47,14 @@ jobs:
       - run: rustup show active-toolchain || rustup toolchain install
       - run: rustup target add wasm32-unknown-unknown
       - run: cargo xtask release-image --out "$OUT/kernel-ai.img" | tee "$OUT/build.log"
-      # How full each slot is, per PR that touches the image: one runner, since
-      # both build the same bytes. A slot past 80% also gets a warning.
+      # How full each slot is: one runner, since both build the same bytes. A
+      # slot past 80% also gets a warning. This workflow runs on a pull request
+      # only through release.yml, so the summary appears on a PR that touches
+      # release.yml's path filter (the image's own sources), not on every one.
       - name: Slot fill in the summary
         if: matrix.runner == 'a'
         run: |
-          { echo "### Slot fill"; echo; echo '```'; grep '^xtask: slot ' "$OUT/build.log"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          { echo "### Slot fill"; echo; echo '```'; grep '^xtask: slot ' "$OUT/build.log" || echo "(no slot lines in the build log)"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           grep '^xtask: slot .* WARNING' "$OUT/build.log" | while read -r line; do echo "::warning::${line#xtask: }"; done || true
       # The image is gigabytes, most of them kai-data's free space: it travels
       # compressed, and the same zstd on the same bytes writes the same file.
