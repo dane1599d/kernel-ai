@@ -2,14 +2,22 @@
 //!
 //! The drivers hand `share` buffers from the kernel heap, from thread stacks, and
 //! from boxed descriptor lists. None of those is in the direct map or physically
-//! contiguous, so they are copied through ("bounced") freshly allocated contiguous
-//! frames that the device can address directly. A buffer that lies wholly in the
-//! direct map, such as the block driver's staging buffer, is already physically
-//! contiguous, and the device reads or writes it in place.
+//! contiguous, so they are copied through ("bounced") a slot of the bounce pool
+//! ([`mm::bounce`], P6 G66) that the device can address directly. A buffer that
+//! lies wholly in the direct map, such as the block driver's staging buffer, is
+//! already physically contiguous, and the device reads or writes it in place.
+//!
+//! `share` cannot fail: the queue notifies the device right after it. So it never
+//! allocates. Each virtio wrapper calls [`add_slots`] at init for as many buffers
+//! as its queues can hold shared at once ([`mm::bounce::queue_slots`]), and fails
+//! its init if it cannot get them; and each bounces only buffers of at most
+//! [`SLOT_BYTES`], which its own constants assert at compile time.
 
-use crate::memory;
+use crate::{log, memory, threads};
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
+use mm::bounce::{BouncePool, SLOT_BYTES};
+use spin::Mutex;
 use virtio_drivers::{BufferDirection, Hal, PAGE_SIZE, PhysAddr};
 use x86_64::structures::paging::PageTableFlags;
 
@@ -28,6 +36,49 @@ static IN_PLACE: AtomicU64 = AtomicU64::new(0);
 /// How many buffers went to a device in place since boot.
 pub fn in_place_shares() -> u64 {
     IN_PLACE.load(Ordering::Relaxed)
+}
+
+/// The bounce slots every wrapper added, shared by all of them: `share` does not
+/// know which device it shares for.
+static POOL: Mutex<BouncePool> = Mutex::new(BouncePool::new());
+
+/// Slots per run of contiguous frames that [`add_slots`] asks for: 16 pages, so
+/// a fragmented memory map still has room for them.
+const RUN_SLOTS: u64 = 32;
+
+/// Sets aside `slots` more bounce slots for good, for a wrapper's queues; an
+/// error (with what was already added kept) when the frames or the pool's lists
+/// cannot be had.
+pub fn add_slots(slots: u64) -> Result<(), &'static str> {
+    let per_page = mm::PAGE_SIZE / SLOT_BYTES;
+    let mut left = slots;
+    while left > 0 {
+        let run = left.min(RUN_SLOTS);
+        let pages = run.div_ceil(per_page);
+        let phys = allocate(pages as usize).ok_or("virtio: out of frames for bounce slots")?;
+        let added = with_pool(|pool| pool.add(phys, pages * per_page));
+        if added.is_err() {
+            // The frames were not handed out; give them back.
+            let _ = release(phys, pages as usize);
+            return Err("virtio: the bounce pool cannot track more slots");
+        }
+        left -= run;
+    }
+    Ok(())
+}
+
+/// The bounce slots, and how many are free now.
+pub fn bounce_slots() -> (usize, usize) {
+    with_pool(|pool| (pool.slots(), pool.free()))
+}
+
+fn with_pool<R>(f: impl FnOnce(&mut BouncePool) -> R) -> R {
+    // Never preempted holding the lock, so another thread on this CPU cannot
+    // spin on it.
+    threads::preempt_disable();
+    let result = f(&mut POOL.lock());
+    threads::preempt_enable();
+    result
 }
 
 fn allocate(pages: usize) -> Option<u64> {
@@ -92,11 +143,18 @@ unsafe impl Hal for KernelHal {
             return phys;
         }
         let len = buffer.len();
-        let phys =
-            allocate(len.div_ceil(PAGE_SIZE)).expect("virtio: out of frames for a bounce buffer");
+        // Neither can happen while every wrapper keeps to its slots and refuses
+        // larger buffers first (see the module's docs); the queue would notify the
+        // device of whatever came back, so there is nothing safe to return.
+        if len as u64 > SLOT_BYTES {
+            panic!("virtio: a {len}-byte buffer to bounce, over the {SLOT_BYTES}-byte slots");
+        }
+        let Some(phys) = with_pool(BouncePool::take) else {
+            panic!("virtio: every bounce slot is taken; a queue holds more than it added");
+        };
         if direction != BufferDirection::DeviceToDriver {
             // SAFETY: the driver guarantees the buffer is valid for `len` bytes; the
-            // bounce frames are ours and at least that large.
+            // slot is ours until `unshare` and at least that large.
             unsafe {
                 core::ptr::copy_nonoverlapping(buffer.cast::<u8>().as_ptr(), direct_map(phys), len)
             };
@@ -112,11 +170,14 @@ unsafe impl Hal for KernelHal {
         }
         let len = buffer.len();
         if direction != BufferDirection::DriverToDevice {
-            // SAFETY: `phys` came from `share` for this same buffer length.
+            // SAFETY: `phys` came from `share` for this same buffer length, a slot
+            // of at least that many bytes.
             unsafe {
                 core::ptr::copy_nonoverlapping(direct_map(phys), buffer.cast::<u8>().as_ptr(), len)
             };
         }
-        release(phys, len.div_ceil(PAGE_SIZE)).expect("virtio: bounce buffer was not allocated");
+        if let Err(error) = with_pool(|pool| pool.give(phys)) {
+            log!("virtio: an unshare of {phys:#x} that is no taken bounce slot ({error:?})");
+        }
     }
 }

@@ -46,6 +46,7 @@ const FIRST_EPHEMERAL_PORT: u16 = netcore::ephemeral::FIRST;
 const QUEUE_SIZE: usize = 256;
 /// Per-packet buffer: at least 1526 bytes and a multiple of 8.
 const BUFFER_LEN: usize = 2048;
+const _: () = assert!(BUFFER_LEN as u64 <= mm::bounce::SLOT_BYTES);
 
 type Nic = virtio_net::VirtioNet<KernelHal, SplitTransport, QUEUE_SIZE>;
 
@@ -84,6 +85,10 @@ fn now() -> Instant {
 /// Brings up the network card the PCI probe found, polled, and starts setting up
 /// its address the way the command line said (see [`setup::configure`]).
 pub fn init(transport: SplitTransport) -> Result<(), &'static str> {
+    // Every receive buffer and every frame in flight is bounced, one buffer to a
+    // request: a slot for each descriptor of both queues (P6 G66).
+    crate::virtio::hal::add_slots(2 * mm::bounce::queue_slots(QUEUE_SIZE as u64, 1, false))
+        .map_err(|_| "net: no bounce slots for the card's queues")?;
     let mut nic = Nic::new(transport).map_err(|_| "net: virtio-net setup failed")?;
     let interrupts = nic.transport().routed();
     if interrupts {

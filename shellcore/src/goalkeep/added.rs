@@ -15,7 +15,24 @@
 //!   touched", "notes/q3 isn't to be touched", "notes/q3 stays untouched",
 //!   "notes/q3 is off limits". Every negation counts, a negation of worry
 //!   ("don't bother with notes/q3") and one that describes files ("the files
-//!   that are not pdfs into notes/other") too.
+//!   that are not pdfs into notes/other") too. But one of the negations this
+//!   pass adds that only says how a folder is keeps nothing off: "isn't",
+//!   "aren't" or "wasn't", or "neither ... is", then a state word
+//!   ([`STATES`]): "notes/q3 isn't sorted yet, sort it", "neither notes/q3
+//!   nor notes/q4 is sorted yet" (#1650's review). Main keeps those goals too.
+//!   It is decided for the whole line first ([`freed`]): the state word ends
+//!   its clause ("isn't ready to be touched" refuses), nothing but what it is
+//!   said of comes before the negation, and every other clause is filler or
+//!   a plain order on the described folders themselves ("sort it by topic",
+//!   "so sort both"): it points back to them or names them all, names no
+//!   other path, and selects nothing by difference ("the rest", "everything
+//!   else", "the others", "sort notes/q4"). Any
+//!   other line ("..., hands off", "..., nobody touches it", "..., sort it
+//!   later", "my finals aren't done, notes/q3 included, so leave them") is
+//!   read exactly as without the release, naming the folder it named, and
+//!   its describing clause's folder is refused even where that reading found
+//!   nothing ("nobody touches notes/q3 as it isn't sorted") (#1684's
+//!   review).
 //! - **An exclusion** ([`EXCLUSIONS`], "apart from", "other than", "everything
 //!   but", "keep out of", "leave out" ...) keeps off the paths after it up to a
 //!   destination ("into", "to", "onto"): "trash notes/ except notes/q3" keeps
@@ -29,17 +46,27 @@
 //! - **A child folder by its bare name** after a negation or an exclusion, or
 //!   in "leave ... alone" ("except the q3 folder", "leave my q3 folder
 //!   alone"), refuses too, naming "q3": a goal cannot leave a folder out of
-//!   one it holds, so the person names its path or rewords. ("don't touch the
-//!   q3 folder" is refused before this check: "folder" is a row's cue, and
-//!   the goal's rows refuse a negated cue.)
+//!   one it holds, so the person names its path or rewords. So does one that
+//!   is a negation's subject: "the q3 folder isn't to be touched". ("don't
+//!   touch the q3 folder" is refused before this check: "folder" is a row's
+//!   cue, and the goal's rows refuse a negated cue.)
 //!
 //! A negation reaches past a comma only into a list of paths ("don't touch the
 //! finals, notes/q3 or notes/q4", "don't touch the finals, the drafts or
-//! notes/q3": a list word right before a path, with no row's cue ahead of it)
+//! notes/q3": a list word right before a path, unless the item opens with a
+//! row's cue, an order: "the new drafts or notes/q3" is still the list,
+//! "trash notes/old" is not), item by item past an Oxford comma ("the
+//! finals, the drafts, or notes/q3")
 //! or when nothing but filler follows it ("don't, under any circumstances,
 //! touch notes/q3"). A negated clause that points back ("it", "them", "there")
 //! keeps off the path of a clause before it that held only that path:
 //! "notes/q3: don't touch it".
+//!
+//! Main's false refusals stay ("notes/q3: don't worry about it, just sort it",
+//! "don't worry, notes/q3 is backed up, sort it", "move the files that are not
+//! pdfs into notes/other", "leave a note in notes/q3 to be read later"): its
+//! reader refuses them, and this pass can only add to what it refuses. A
+//! reworded line costs less than a kept-off folder in the goal.
 //!
 //! Apostrophe look-alikes (`’` `‘` `ʼ` `` ` `` `´` `′` `＇` `ʹ` `՚`) read as
 //! `'`, the same marks agentabi's consent words fold.
@@ -96,6 +123,103 @@ const NEGATIONS: &[&str] = &[
     "avoid",
     "avoiding",
 ];
+
+/// The negations #1650 added that only say how a folder is when a state word
+/// follows: "notes/q3 isn't sorted yet". Main's own ("not") are left as main
+/// reads them.
+const COPULAR_NEGATIONS: &[&str] = &["isnt", "isn't", "arent", "aren't", "wasnt", "wasn't"];
+
+/// Words that say how a folder is, not what is done to it: after one of
+/// [`COPULAR_NEGATIONS`], or after "neither ... is", the negation keeps
+/// nothing off. A word that could name the goal's own change ("touched",
+/// "moved", "renamed", "archived") is not one.
+const STATES: &[&str] = &[
+    "sorted",
+    "done",
+    "finished",
+    "ready",
+    "complete",
+    "completed",
+    "empty",
+    "tidy",
+    "tidied",
+    "organized",
+    "organised",
+    "clean",
+    "full",
+    "backed",
+    "synced",
+    "tagged",
+    "labelled",
+    "labeled",
+];
+
+/// Words that may stand between such a negation and its state word:
+/// "isn't yet sorted".
+const STATE_FILLER: &[&str] = &["yet", "quite", "fully", "all", "really", "properly"];
+
+/// Verbs that open an order a [`freed`] line may go on with: "...,
+/// sort it by topic". A clause that opens any other way may keep the folder
+/// off, so the line is refused.
+const ORDER_VERBS: &[&str] = &[
+    "sort", "trash", "move", "rename", "tidy", "organize", "organise", "file", "tag", "group",
+    "list", "read", "copy", "clean", "archive", "label", "merge",
+];
+
+/// Words that, in an order after a [`freed`] clause, may hold something
+/// back ("..., copy nothing", "..., sort it later"), or select by difference
+/// and so leave the described folder out ("..., sort the rest of notes/",
+/// "everything else", "the others", "what's left", "minus it", "instead",
+/// #1684's review).
+const HOLDS_BACK: &[&str] = &[
+    "nothing",
+    "no",
+    "none",
+    "nobody",
+    "noone",
+    "alone",
+    "off",
+    "out",
+    "away",
+    "limits",
+    "without",
+    "later",
+    "wait",
+    "only",
+    "untouched",
+    "unchanged",
+    "as",
+    "rest",
+    "remaining",
+    "remainder",
+    "remains",
+    "else",
+    "others",
+    "other",
+    "left",
+    "leftover",
+    "leftovers",
+    "minus",
+    "bar",
+    "sans",
+    "instead",
+    "less",
+    "besides",
+    "outside",
+    "beyond",
+    "siblings",
+    "sibling",
+    "around",
+    "neighbours",
+    "neighbors",
+    "next",
+    "near",
+    "beside",
+];
+
+/// Words that may lead a list item before a row's cue that ends the list:
+/// "don't touch the finals, just trash notes/old".
+const ORDER_LEADS: &[&str] = &["also", "now", "so", "and", "then"];
 
 /// Words that leave out what follows them, up to a destination.
 const EXCLUSIONS: &[&str] = &[
@@ -229,6 +353,9 @@ enum Carry {
 /// scope reads it).
 pub(super) fn kept_off(line: &str, starts_order: impl Fn(&str) -> bool) -> Option<String> {
     let clauses = clauses(line, &starts_order);
+    // Decided for the whole line first: a line [`freed`] does not let
+    // through reads exactly as without the release, naming what it named.
+    let freed = freed(&clauses, &starts_order);
     let mut carry = Carry::No;
     let mut topic: Option<&str> = None;
     for clause in &clauses {
@@ -248,9 +375,11 @@ pub(super) fn kept_off(line: &str, starts_order: impl Fn(&str) -> bool) -> Optio
             Carry::List if listed(words, &starts_order) => return first_path,
             _ => {}
         }
-        if let Some(path) = in_clause(words) {
+        if let Some(path) = in_clause(words, freed) {
             return Some(path);
         }
+        // A negation that only says how a folder is still carries a list on
+        // ("my finals aren't done, notes/q3 included"), as #1650 read it.
         let keeps_off = |w: &Word| is_negation(&w.text) || EXCLUSIONS.contains(&w.text.as_str());
         // A pointer after the first word that keeps off points back; whether
         // only filler follows is read after the last, so a negation main did
@@ -267,8 +396,12 @@ pub(super) fn kept_off(line: &str, starts_order: impl Fn(&str) -> bool) -> Optio
                 _ if words[last + 1..].iter().all(filler) => carry = Carry::Open,
                 _ => carry = Carry::List,
             }
-        } else if carried == Carry::Open {
-            // The order a negation before it negates: a list may go on.
+        } else if carried == Carry::Open
+            || (carried == Carry::List && list_item(words, &starts_order))
+        {
+            // The order a negation before it negates, or an item of its list
+            // with no path ("the drafts," before "or notes/q3", an Oxford
+            // comma): the list may go on.
             carry = Carry::List;
         }
         topic = match words.iter().filter(|w| w.path).count() {
@@ -281,20 +414,27 @@ pub(super) fn kept_off(line: &str, starts_order: impl Fn(&str) -> bool) -> Optio
             _ => None,
         };
     }
-    None
+    // A line the release does not let through keeps the folder of its
+    // describing clause off too, even where #1650 read nothing ("nobody
+    // touches notes/q3 as it isn't sorted"): only adds a refusal.
+    match freed {
+        true => None,
+        false => described(&clauses),
+    }
 }
 
 /// Whether `words`, after a comma, go on a list of paths: "notes/q3 or
 /// notes/q4", "or notes/q4", "the drafts or notes/q4" (a list word right
-/// before a path, with no row's cue ahead of it).
+/// before a path, with no row's cue ahead of it that leads its item: "trash
+/// notes/old" is an order, "the new drafts or notes/q3" is still the list).
 fn listed(words: &[Word], starts_order: impl Fn(&str) -> bool) -> bool {
     if words.first().is_some_and(|w| w.path) {
         return true;
     }
+    if ordered(words, &starts_order) {
+        return false;
+    }
     for pair in words.windows(2) {
-        if starts_order(&pair[0].text) {
-            return false;
-        }
         if LIST_WORDS.contains(&pair[0].text.as_str()) && pair[1].path {
             return true;
         }
@@ -302,8 +442,148 @@ fn listed(words: &[Word], starts_order: impl Fn(&str) -> bool) -> bool {
     false
 }
 
+/// Whether `words` open with an order: a row's cue with only filler before
+/// it ("trash notes/old", "just trash notes/old").
+fn ordered(words: &[Word], starts_order: impl Fn(&str) -> bool) -> bool {
+    words
+        .iter()
+        .find(|w| {
+            !CARRY_FILLER.contains(&w.text.as_str()) && !ORDER_LEADS.contains(&w.text.as_str())
+        })
+        .is_some_and(|w| starts_order(&w.text))
+}
+
+/// Whether `words`, after a comma in a list, are one more item of it with
+/// no path: no order, no path, no word that keeps off ("the drafts").
+fn list_item(words: &[Word], starts_order: impl Fn(&str) -> bool) -> bool {
+    !words.is_empty()
+        && !ordered(words, &starts_order)
+        && words
+            .iter()
+            .all(|w| !w.path && !is_negation(&w.text) && !EXCLUSIONS.contains(&w.text.as_str()))
+}
+
+/// Whether the negation at `at` only says how a folder is: one of
+/// [`COPULAR_NEGATIONS`], or "neither" and its "is", "are" or "was", then a
+/// [`STATES`] word ("notes/q3 isn't sorted yet", "neither notes/q3 nor
+/// notes/q4 is sorted").
+fn describes(words: &[Word], at: usize) -> bool {
+    let word = words[at].text.as_str();
+    let from = match word {
+        _ if COPULAR_NEGATIONS.contains(&word) => at + 1,
+        "neither" => match words[at + 1..]
+            .iter()
+            .position(|w| matches!(w.text.as_str(), "is" | "are" | "was"))
+        {
+            Some(copula) => at + 2 + copula,
+            None => return false,
+        },
+        _ => return false,
+    };
+    // The state word ends the clause, but for filler: "isn't ready to be
+    // touched" is no state (#1683's review).
+    let mut rest = words[from.min(words.len())..]
+        .iter()
+        .filter(|w| !STATE_FILLER.contains(&w.text.as_str()));
+    rest.next()
+        .is_some_and(|w| STATES.contains(&w.text.as_str()))
+        && rest.all(|w| w.text == "up")
+}
+
+/// Whether `clauses` are a line the release lets through: a clause whose
+/// negation only says how a folder is ([`describes`]) holds nothing before
+/// that negation but what it is said of, and every other clause is filler or
+/// a plain order on the described folders (it opens with a row's cue or one
+/// of [`ORDER_VERBS`], points back to them or names them all, names no other
+/// path, and has no negation, exclusion or [`HOLDS_BACK`] word): "notes/q3
+/// isn't sorted yet, sort it by topic". Any other line ("..., hands off", "..., nobody
+/// touches it", "..., so wait", "nobody touches notes/q3 as it isn't
+/// sorted") is read as #1650 read it, and refused as it refused it, naming
+/// the same folder (#1684's review).
+fn freed(clauses: &[Clause], starts_order: impl Fn(&str) -> bool) -> bool {
+    let Some(at) = clauses.iter().position(|c| {
+        (0..c.words.len()).any(|i| is_negation(&c.words[i].text) && describes(&c.words, i))
+    }) else {
+        return false;
+    };
+    let words = &clauses[at].words;
+    let Some(i) = (0..words.len()).find(|&i| is_negation(&words[i].text) && describes(words, i))
+    else {
+        return false;
+    };
+    // Before the negation, only what it is said of: "notes/q3 and notes/q4",
+    // "neither notes/q3 nor notes/q4 is".
+    let only_its_subject = words[..i].iter().all(|w| {
+        w.path
+            || LIST_WORDS.contains(&w.text.as_str())
+            || COPULAS.contains(&w.text.as_str())
+            || TOPIC_FILLER.contains(&w.text.as_str())
+    });
+    // Every other clause is filler, or an order on the described folders
+    // themselves: it points back to them ("sort it", "sort both") or names
+    // them, names no other path ("sort notes/q4" would leave notes/q3 a
+    // folder the goal was only told about), and has no word that may hold
+    // something back or select by difference ("copy nothing", "sort it
+    // later", "sort the rest of notes/", #1684's review).
+    let described: Vec<&str> = words
+        .iter()
+        .filter(|w| w.path)
+        .map(|w| w.text.as_str())
+        .collect();
+    let order = |c: &Clause| {
+        // To every described folder: with two or more, a plural pointer or
+        // each by name ("sort notes/q4" or "sort it" after "notes/q3 and
+        // notes/q4 aren't sorted" picks one, by difference).
+        let plural = c
+            .words
+            .iter()
+            .any(|w| matches!(w.text.as_str(), "them" | "both" | "these" | "those" | "all"));
+        let singular = c
+            .words
+            .iter()
+            .any(|w| matches!(w.text.as_str(), "it" | "this" | "that" | "there"));
+        let all_named = described
+            .iter()
+            .all(|d| c.words.iter().any(|w| w.text == *d));
+        let refers_back = all_named || plural || (singular && described.len() == 1);
+        let no_other_path = c
+            .words
+            .iter()
+            .all(|w| !w.path || described.contains(&w.text.as_str()));
+        ordered(&c.words, |w: &str| {
+            starts_order(w) || ORDER_VERBS.contains(&w)
+        }) && refers_back
+            && no_other_path
+            && !c
+                .words
+                .iter()
+                .any(|w| HOLDS_BACK.contains(&w.text.as_str()) || keeps_off_word(&w.text))
+    };
+    only_its_subject
+        && clauses
+            .iter()
+            .enumerate()
+            .all(|(j, c)| j == at || c.words.iter().all(filler) || order(c))
+}
+
+/// The folder of the first clause whose negation only says how a folder is
+/// ([`describes`]): the first path after the negation, else its subject,
+/// the last path before it, else a child folder by its bare name.
+fn described(clauses: &[Clause]) -> Option<String> {
+    clauses.iter().find_map(|c| {
+        let words = &c.words;
+        let i = (0..words.len()).find(|&i| is_negation(&words[i].text) && describes(words, i))?;
+        words[i + 1..]
+            .iter()
+            .find(|w| w.path)
+            .or_else(|| words[..i].iter().rev().find(|w| w.path))
+            .map(|w| w.text.clone())
+            .or_else(|| folder_subject(&words[..i]))
+    })
+}
+
 /// The first path one clause keeps off on its own.
-fn in_clause(words: &[Word]) -> Option<String> {
+fn in_clause(words: &[Word], freed: bool) -> Option<String> {
     let text = |i: usize| words.get(i).map_or("", |w| w.text.as_str());
     let to_destination = |from: usize| {
         words
@@ -312,13 +592,19 @@ fn in_clause(words: &[Word]) -> Option<String> {
             .take_while(|w| !DESTINATIONS.contains(&w.text.as_str()))
     };
     for (i, word) in words.iter().enumerate() {
-        if is_negation(&word.text) {
+        // In a line the release lets through, a negation that only says how
+        // a folder is keeps nothing off.
+        if is_negation(&word.text) && !(freed && describes(words, i)) {
             if let Some(path) = words[i + 1..].iter().find(|w| w.path) {
                 return Some(path.text.clone());
             }
             // Its subject: a path before it with only copulas between.
             if let Some(path) = subject(&words[..i]) {
                 return Some(path);
+            }
+            // "the q3 folder isn't to be touched".
+            if let Some(name) = folder_subject(&words[..i]) {
+                return Some(name);
             }
             if let Some(name) = folder_name(words[i + 1..].iter()) {
                 return Some(name);
@@ -385,6 +671,28 @@ fn subject(before: &[Word]) -> Option<String> {
         .iter()
         .all(|w| COPULAS.contains(&w.text.as_str()))
         .then(|| before[at].text.clone())
+}
+
+/// The bare name of a child folder that ends `before`, the words ahead of a
+/// negation, with only copulas after it: "the q3 folder is not".
+fn folder_subject(before: &[Word]) -> Option<String> {
+    let at = before
+        .iter()
+        .rposition(|w| matches!(w.text.as_str(), "folder" | "folders"))?;
+    let named = before[at + 1..]
+        .iter()
+        .all(|w| COPULAS.contains(&w.text.as_str()));
+    named.then(|| folder_name(before[at.saturating_sub(2)..=at].iter()))?
+}
+
+/// Whether `word` is a negation, an exclusion or a word of one of
+/// [`EXCLUSION_PAIRS`].
+fn keeps_off_word(word: &str) -> bool {
+    is_negation(word)
+        || EXCLUSIONS.contains(&word)
+        || EXCLUSION_PAIRS
+            .iter()
+            .any(|(a, b)| word == *a || word == *b)
 }
 
 fn is_negation(word: &str) -> bool {
