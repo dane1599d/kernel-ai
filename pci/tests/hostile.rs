@@ -56,14 +56,55 @@ fn xhci() -> Vec<u8> {
     s
 }
 
+/// Round 114's first layout: a 64-bit MSI at 0xF4 whose tail is at 0x100 and
+/// 0x102, in a 4096-byte space (AER header at 0x100 in the second form).
+fn msi_past_0xff(aer: bool) -> Vec<u8> {
+    let mut s = vec![0u8; 4096];
+    s[6] = 0x10;
+    s[0x34] = 0xF4;
+    put(&mut s, 0xF4, &[0x05, 0x00, 0x80, 0x00]);
+    if aer {
+        put(&mut s, 0x100, &(0x0001u32 | 2 << 16).to_le_bytes());
+    }
+    s
+}
+
+/// Round 114's second layout: SR-IOV at 0x100 whose next is 0x104.
+fn sriov_with_a_capability_inside() -> Vec<u8> {
+    let mut s = vec![0u8; 4096];
+    put(&mut s, 0x100, &0x1041_0010u32.to_le_bytes());
+    put(&mut s, 0x104, &1u32.to_le_bytes());
+    s
+}
+
 fn spaces() -> Vec<Vec<u8>> {
     vec![
         virtio_net(),
         xhci(),
+        msi_past_0xff(false),
+        msi_past_0xff(true),
+        sriov_with_a_capability_inside(),
         vec![0; 256],
         vec![0xFF; 256],
         vec![0xFF; 4096],
     ]
+}
+
+#[test]
+fn the_two_layouts_that_got_through_are_refused() {
+    use pci::cfg::Refused;
+    for aer in [false, true] {
+        let s = msi_past_0xff(aer);
+        for offset in [0x100, 0x102, 0x104] {
+            assert_eq!(allow_write(&s, offset, 2, 0x4041), Err(Refused::BadList));
+        }
+    }
+    let s = sriov_with_a_capability_inside();
+    assert_eq!(
+        allow_write(&s, 0x124, 4, 0xFFFF_FFFF),
+        Err(Refused::BadExtended)
+    );
+    assert_eq!(allow_write(&s, 0x108, 2, 0x0009), Err(Refused::BadExtended));
 }
 
 #[test]
@@ -190,6 +231,36 @@ fn write_fuzz_seeds() {
     let folder = std::path::Path::new(&dir).join("dev_cfg");
     std::fs::create_dir_all(&folder).unwrap();
     let mut n = 0;
+    let aer = msi_past_0xff(true);
+    let sriov = sriov_with_a_capability_inside();
+    for (name, space, writes) in [
+        (
+            "msi-past-0xff",
+            &aer,
+            [
+                (0x100u16, 2u8, 0x4041u32),
+                (0x104, 2, 0),
+                (0x40, 4, 0),
+                (0xF4, 2, 0),
+            ],
+        ),
+        (
+            "sriov-inside",
+            &sriov,
+            [
+                (0x124, 4, 0xFFFF_FFFF),
+                (0x108, 2, 0x0009),
+                (0x104, 4, 0),
+                (0x100, 4, 0),
+            ],
+        ),
+    ] {
+        for (offset, width, value) in writes {
+            let input = harness::input(space, width, offset, value);
+            std::fs::write(folder.join(format!("{name}-{n}")), input).unwrap();
+            n += 1;
+        }
+    }
     for (name, space, writes) in [
         (
             "virtio-net",

@@ -141,7 +141,7 @@ fn msix_is_refused_whole_and_its_neighbours_are_not() {
 
 #[test]
 fn msi_is_sized_by_its_message_control() {
-    for (control, bytes) in [(0x0000u16, 10), (0x0080, 14), (0x0100, 20), (0x0180, 24)] {
+    for (control, bytes) in [(0x0000u16, 12), (0x0080, 16), (0x0100, 20), (0x0180, 24)] {
         let mut s = space(256);
         s[0x34] = 0x50;
         put(&mut s, 0x50, &[0x05, 0x00]);
@@ -229,30 +229,148 @@ fn nvme_has_its_msi_msix_and_extended_capabilities_refused() {
     refused(&s, 0x100, 4, 0, Refused::Capability); // AER header
     ok(&s, 0x104, 4, 0); // AER body (status registers)
     refused(&s, 0x150, 4, 0, Refused::Capability); // SR-IOV header
-    for offset in (0x154..0x1000).step_by(4) {
+    for offset in (0x154..0x190).step_by(4) {
         refused(&s, offset, 4, 0, Refused::Capability);
+    }
+    ok(&s, 0x190, 4, 0); // past SR-IOV's 0x40 bytes
+}
+
+#[test]
+fn bar_movers_are_refused_for_their_spec_length_whatever_follows() {
+    // SR-IOV is 0x40 bytes, Resizable BAR and VF Resizable BAR 0x34.
+    for (id, bytes) in [(0x0010u32, 0x40usize), (0x0015, 0x34), (0x0024, 0x34)] {
+        let mut s = space(4096);
+        put(&mut s, 0x100, &(id | 1 << 16 | 0x200 << 20).to_le_bytes());
+        put(&mut s, 0x200, &(0x0001u32 | 1 << 16).to_le_bytes());
+        for offset in (0x100..0x100 + bytes as u16).step_by(4) {
+            refused(&s, offset, 4, 0, Refused::Capability);
+        }
+        ok(&s, 0x100 + bytes as u16, 4, 0);
+        refused(&s, 0x200, 4, 0, Refused::Capability);
+        ok(&s, 0x204, 4, 0);
+    }
+    // At the end of the space the body is clipped there, not past it.
+    let mut s = space(4096);
+    put(&mut s, 0x100, &(0x0001u32 | 0xFE0 << 20).to_le_bytes());
+    put(&mut s, 0xFE0, &(0x0010u32 | 1 << 16).to_le_bytes());
+    refused(&s, 0xFFC, 4, 0, Refused::Capability);
+    ok(&s, 0xFDC, 4, 0);
+}
+
+#[test]
+fn a_capability_that_starts_inside_a_bar_movers_body_is_a_malformed_list() {
+    // The review's layout: SR-IOV at 0x100 whose next is 0x104.
+    for (id, inside) in [
+        (0x0010u32, 0x104usize),
+        (0x0010, 0x13C),
+        (0x0015, 0x104),
+        (0x0024, 0x130),
+    ] {
+        let mut s = space(4096);
+        put(
+            &mut s,
+            0x100,
+            &(id | 1 << 16 | (inside as u32) << 20).to_le_bytes(),
+        );
+        put(&mut s, inside, &1u32.to_le_bytes());
+        for offset in [0x108, 0x124, 0x104, 0x100, 0x200] {
+            refused(&s, offset, 4, 0xFFFF_FFFF, Refused::BadExtended);
+        }
+        refused(&s, 0x108, 2, 0x0009, Refused::BadExtended);
+        ok(&s, 0x44, 4, 0); // the standard space is unaffected
+    }
+    // Just past the body is fine.
+    let mut s = space(4096);
+    put(
+        &mut s,
+        0x100,
+        &(0x0010u32 | 1 << 16 | 0x140 << 20).to_le_bytes(),
+    );
+    put(&mut s, 0x140, &1u32.to_le_bytes());
+    refused(&s, 0x124, 4, 0, Refused::Capability);
+    refused(&s, 0x140, 4, 0, Refused::Capability);
+}
+
+#[test]
+fn a_multicast_capability_refuses_every_extended_write() {
+    let mut s = space(4096);
+    put(&mut s, 0x100, &(0x0001u32 | 0x140 << 20).to_le_bytes());
+    put(&mut s, 0x140, &(0x0012u32 | 1 << 16).to_le_bytes());
+    refused(&s, 0x200, 4, 0, Refused::BadExtended);
+    ok(&s, 0x44, 4, 0);
+}
+
+#[test]
+fn an_msi_or_msix_body_past_0xff_is_a_malformed_standard_list() {
+    // The review's layouts: MSI at 0xF0 (24 bytes), 0xF4 and 0xF8 (64-bit),
+    // MSI-X at 0xF8 and 0xFC; with a zero and with an AER dword at 0x100.
+    let msi = |control: u16| [0x05, 0x00, control as u8, (control >> 8) as u8];
+    let cases: [(usize, [u8; 4]); 7] = [
+        (0xF0, msi(0x0180)),
+        (0xF4, msi(0x0080)),
+        (0xF8, msi(0x0080)),
+        (0xF8, msi(0x0000)),
+        (0xFC, msi(0x0000)),
+        (0xF8, [0x11, 0, 0, 0]),
+        (0xFC, [0x11, 0, 0, 0]),
+    ];
+    for (at, cap) in cases {
+        for dword in [0u32, 0x0001 | 2 << 16] {
+            let mut s = space(4096);
+            s[0x34] = at as u8;
+            put(&mut s, at, &cap);
+            put(&mut s, 0x100, &dword.to_le_bytes());
+            for offset in [0x100, 0x102, 0x104, 0x40, 0xF0, 0xFC, 0x800] {
+                refused(&s, offset, 2, 0, Refused::BadList);
+            }
+            ok(&s, COMMAND_OFF, 2, 0x0006);
+        }
+    }
+    // A body that ends exactly at 0x100 is fine: MSI 64-bit at 0xF0 is 16 bytes.
+    let mut s = space(4096);
+    s[0x34] = 0xF0;
+    put(&mut s, 0xF0, &msi(0x0080));
+    refused(&s, 0xFE, 2, 0, Refused::Capability);
+    ok(&s, 0x100, 4, 0);
+}
+
+#[test]
+fn enhanced_allocation_and_hypertransport_refuse_everything_from_0x40() {
+    for id in [0x14u8, 0x08] {
+        let mut s = space(256);
+        s[0x34] = 0x60;
+        put(&mut s, 0x60, &[id, 0x00]);
+        refused(&s, 0x44, 4, 0, Refused::BadList);
+        refused(&s, 0xFC, 4, 0, Refused::BadList);
     }
 }
 
 #[test]
-fn resizable_bars_stop_at_the_next_capability() {
-    for id in [0x0015u32, 0x0024] {
-        let mut s = space(4096);
-        put(&mut s, 0x100, &(id | 1 << 16 | 0x180 << 20).to_le_bytes());
-        put(&mut s, 0x180, &(0x0001u32 | 1 << 16).to_le_bytes());
-        refused(&s, 0x100, 4, 0, Refused::Capability);
-        refused(&s, 0x104, 4, 0, Refused::Capability);
-        refused(&s, 0x17C, 4, 0, Refused::Capability);
-        refused(&s, 0x180, 4, 0, Refused::Capability);
-        ok(&s, 0x184, 4, 0);
+fn a_header_type_other_than_0_or_1_refuses_everything_but_the_command_register() {
+    for kind in [2u8, 3, 0x7F, 0x82] {
+        let mut s = virtio_net();
+        s[0x0E] = kind;
+        refused(&s, 0x44, 4, 0, Refused::HeaderType);
+        refused(&s, 0xFC, 4, 0, Refused::HeaderType);
+        ok(&s, COMMAND_OFF, 2, 0x0007);
     }
-    // A next pointer that goes back to an earlier capability does not
-    // shorten the body below the next one that starts after it.
-    let mut s = space(4096);
-    put(&mut s, 0x100, &(0x0001u32 | 0x200 << 20).to_le_bytes());
-    put(&mut s, 0x200, &(0x0015u32 | 0x180 << 20).to_le_bytes());
-    put(&mut s, 0x180, &(0x0001u32).to_le_bytes());
-    refused(&s, 0x204, 4, 0, Refused::Capability);
+    // The multifunction bit (0x80) is not a type.
+    for kind in [0x80u8, 0x81] {
+        let mut s = virtio_net();
+        s[0x0E] = kind;
+        ok(&s, 0x44, 4, 0);
+    }
+}
+
+#[test]
+fn value_bits_above_the_width_are_refused() {
+    let s = virtio_net();
+    refused(&s, 0x44, 1, 0x100, Refused::Value);
+    refused(&s, 0x44, 2, 0x1_0000, Refused::Value);
+    refused(&s, COMMAND_OFF, 1, 0xFFFF_FF06, Refused::Value);
+    ok(&s, 0x44, 1, 0xFF);
+    ok(&s, 0x44, 2, 0xFFFF);
+    ok(&s, 0x44, 4, 0xFFFF_FFFF);
 }
 
 #[test]
