@@ -6,11 +6,13 @@
 //! panic, no read outside a report, at most `MAX_HID` interfaces, and an
 //! allocation bounded by the input.
 
+#[path = "hostile/harness.rs"]
+mod harness;
 #[path = "../../testkit/hostile.rs"]
 mod hostile;
 
-use xhci::descriptor::{Configuration, Device, MAX_HID, configuration_length};
-use xhci::hid::{Field, Keyboard, pointer_layout};
+use xhci::descriptor::{Configuration, Device, HubDescriptor, PortStatus};
+use xhci::hid::{Field, pointer_layout};
 
 const MUTATIONS: usize = 4_000;
 const ALLOC_PER_BYTE: usize = 16;
@@ -41,6 +43,12 @@ fn many_interfaces() -> Vec<u8> {
     bytes[2..4].copy_from_slice(&len.to_le_bytes());
     bytes
 }
+
+/// QEMU's usb-hub descriptor: 8 ports, 2 ms to power good.
+const QEMU_HUB: [u8; 10] = [10, 0x29, 8, 0x0A, 0x00, 1, 0, 0x00, 0xFF, 0xFF];
+
+/// A port with a high-speed device connected, enabled, and its reset done.
+const PORT_STATUS: [u8; 4] = [0x03, 0x05, 0x10, 0x00];
 
 /// QEMU's usb-mouse report descriptor.
 #[rustfmt::skip]
@@ -84,17 +92,6 @@ const COMBO: &[u8] = &[
     0xC0, 0xC0,
 ];
 
-/// Reports of every length a device could send a pointer: none, short, the
-/// usual, and long, each with every byte set.
-const REPORTS: [&[u8]; 6] = [
-    &[],
-    &[0xFF],
-    &[0x02, 0xFF, 0xFF],
-    &[0xFF; 6],
-    &[0x01; 8],
-    &[0xFF; 64],
-];
-
 fn bounded<R>(input: usize, f: impl FnOnce() -> R) -> R {
     let (out, peak) = hostile::peak_alloc(f);
     let bound = input * ALLOC_PER_BYTE + ALLOC_FLOOR;
@@ -102,60 +99,32 @@ fn bounded<R>(input: usize, f: impl FnOnce() -> R) -> R {
     out
 }
 
-/// A field never reads past the data it is given: `read` gives None instead.
 fn check_field(field: Option<Field>, data: &[u8]) {
-    let Some(field) = field else {
-        return;
-    };
-    if field.read(data).is_some() {
-        let end = u64::from(field.offset) + u64::from(field.size);
-        assert!(
-            end <= 8 * data.len() as u64,
-            "{field:?} read past {} bytes",
-            data.len()
-        );
-    }
+    harness::field(field, data);
 }
 
 fn check_report_descriptor(descriptor: &[u8]) {
-    let layout = bounded(descriptor.len(), || pointer_layout(descriptor));
-    let Some(layout) = layout else {
-        return;
-    };
-    for report in REPORTS {
-        let _ = layout.read(report);
-        let data = match layout.report_id {
-            Some(id) => report.strip_prefix(&[id]).unwrap_or(&[]),
-            None => report,
-        };
-        for field in [layout.x, layout.y, layout.wheel] {
-            check_field(field, data);
-        }
-    }
+    bounded(descriptor.len(), || harness::report_descriptor(descriptor));
 }
 
 fn check_configuration(bytes: &[u8]) {
-    let _ = configuration_length(bytes);
-    if let Ok(config) = bounded(bytes.len(), || Configuration::parse(bytes)) {
-        assert!(config.interfaces().count() <= MAX_HID);
-    }
+    bounded(bytes.len(), || harness::configuration(bytes));
 }
 
 fn check_device(bytes: &[u8]) {
-    let _ = Device::max_packet0(bytes);
-    let _ = bounded(bytes.len(), || Device::parse(bytes));
+    bounded(bytes.len(), || harness::device(bytes));
 }
 
 fn check_keyboard(report: &[u8]) {
-    let mut keyboard = Keyboard::new();
-    let mut keys = 0;
-    bounded(report.len(), || {
-        keyboard.report(&[0; 8], |_, _| keys += 1);
-        keyboard.report(report, |_, _| keys += 1);
-        keyboard.report(&[0; 8], |_, _| keys += 1);
-    });
-    // 8 modifiers and 6 keys pressed, then released, at the most.
-    assert!(keys <= 2 * (8 + 6), "{keys} key changes from one report");
+    bounded(report.len(), || harness::keyboard(report));
+}
+
+fn check_hub(bytes: &[u8]) {
+    bounded(bytes.len(), || harness::hub(bytes));
+}
+
+fn check_port_status(bytes: &[u8]) {
+    bounded(bytes.len(), || harness::port_status(bytes));
 }
 
 #[test]
@@ -226,7 +195,7 @@ fn fields_at_any_offset_and_size_read_only_inside_the_report() {
                 max: 1,
                 relative: true,
             };
-            for report in REPORTS {
+            for report in harness::REPORTS {
                 check_field(Some(field), report);
             }
         }
@@ -271,4 +240,70 @@ fn report_offsets_that_would_pass_u32_are_refused() {
     let layout = pointer_layout(&huge_fields(0x0100_0000, 4)).expect("a layout");
     assert_eq!(layout.x.map(|x| x.offset), Some(0x0400_0000));
     check_report_descriptor(&huge_fields(0x0100_0000, 4));
+}
+
+#[test]
+fn hub_descriptors_and_port_statuses_are_values_or_errors() {
+    assert_eq!(HubDescriptor::parse(&QEMU_HUB).map(|h| h.ports), Ok(8));
+    assert_eq!(
+        PortStatus::parse(&PORT_STATUS).map(|p| p.speed()),
+        Ok(xhci::regs::speed::HIGH)
+    );
+    hostile::truncations(&QEMU_HUB, |_, bytes| check_hub(bytes));
+    hostile::truncations(&PORT_STATUS, |_, bytes| check_port_status(bytes));
+    hostile::sweep_fields(&QEMU_HUB, 0..QEMU_HUB.len(), |_, b| check_hub(b));
+    hostile::sweep_fields(&PORT_STATUS, 0..PORT_STATUS.len(), |_, b| {
+        check_port_status(b)
+    });
+    hostile::fuzz(&QEMU_HUB, 0x0B10, MUTATIONS, check_hub);
+    hostile::fuzz(&PORT_STATUS, 0x0B11, MUTATIONS, check_port_status);
+}
+
+/// The target's inputs: each sample behind its parser's selector byte.
+fn fuzz_inputs() -> Vec<(&'static str, Vec<u8>)> {
+    let with = |kind: u8, bytes: &[u8]| [&[kind][..], bytes].concat();
+    vec![
+        ("device", with(harness::DEVICE, &KEYBOARD_DEVICE)),
+        ("config", with(harness::CONFIGURATION, &KEYBOARD_CONFIG)),
+        (
+            "config-many",
+            with(harness::CONFIGURATION, &many_interfaces()),
+        ),
+        ("report-mouse", with(harness::REPORT_DESCRIPTOR, QEMU_MOUSE)),
+        (
+            "report-tablet",
+            with(harness::REPORT_DESCRIPTOR, QEMU_TABLET),
+        ),
+        ("report-combo", with(harness::REPORT_DESCRIPTOR, COMBO)),
+        (
+            "keyboard",
+            with(harness::KEYBOARD, &[0x02, 0, 0x04, 0x05, 0, 0, 0, 0]),
+        ),
+        ("hub", with(harness::HUB, &QEMU_HUB)),
+        ("port-status", with(harness::PORT_STATUS, &PORT_STATUS)),
+    ]
+}
+
+/// Writes the `xhci_descriptors` target's seeds, one file each, to
+/// `$FUZZ_SEED_DIR/xhci_descriptors/`.
+#[test]
+#[ignore = "writes the fuzz corpus; run by the fuzz workflow"]
+fn write_fuzz_seeds() {
+    let dir = std::env::var("FUZZ_SEED_DIR").expect("FUZZ_SEED_DIR names the corpus folder");
+    let folder = std::path::Path::new(&dir).join("xhci_descriptors");
+    std::fs::create_dir_all(&folder).unwrap();
+    for (name, bytes) in fuzz_inputs() {
+        std::fs::write(folder.join(name), bytes).unwrap();
+    }
+}
+
+#[test]
+fn the_fuzz_body_reads_each_seed_and_every_selector() {
+    for (_, input) in fuzz_inputs() {
+        harness::xhci_descriptors(&input);
+        hostile::truncations(&input, |_, bytes| harness::xhci_descriptors(bytes));
+    }
+    for kind in 0..=255u8 {
+        harness::xhci_descriptors(&[kind, 9, 0x29, 3]);
+    }
 }

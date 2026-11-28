@@ -505,6 +505,10 @@ name = "deskgeom"
 version = "0.1.0-dev"
 
 [[package]]
+name = "devkit"
+version = "0.1.0-dev"
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -999,11 +1003,13 @@ dependencies = [
  "libfuzzer-sys",
  "look",
  "netdest",
+ "nvme",
  "rustls",
  "serde_json",
  "shellcore",
  "surfabi",
  "uelf",
+ "xhci",
 ]
 
 [[package]]
@@ -1239,6 +1245,10 @@ dependencies = [
  "autocfg",
  "libm",
 ]
+
+[[package]]
+name = "nvme"
+version = "0.1.0-dev"
 
 [[package]]
 name = "once_cell"
@@ -2218,6 +2228,13 @@ dependencies = [
  "curve25519-dalek",
  "rand_core 0.10.1",
  "zeroize",
+]
+
+[[package]]
+name = "xhci"
+version = "0.1.0-dev"
+dependencies = [
+ "devkit",
 ]
 
 [[package]]

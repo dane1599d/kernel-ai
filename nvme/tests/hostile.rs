@@ -5,6 +5,8 @@
 //! active-namespace list: a value or an error, never a panic, values that stay
 //! in their ranges, and an allocation bounded by the page.
 
+#[path = "hostile/harness.rs"]
+mod harness;
 #[path = "../../testkit/hostile.rs"]
 mod hostile;
 
@@ -14,8 +16,6 @@ use nvme::{Controller, Namespace};
 const MUTATIONS: usize = 4_000;
 /// Nothing here should allocate at all; a page's worth is the bound.
 const ALLOC_BOUND: usize = IDENTIFY_BYTES;
-/// The largest transfer cap the kernel passes.
-const CAP: u64 = 1 << 20;
 
 /// QEMU's controller page, as far as it is read.
 fn controller_page() -> Vec<u8> {
@@ -50,31 +50,18 @@ fn list_page() -> Vec<u8> {
 }
 
 fn check_controller(page: &[u8]) {
-    let (result, peak) = hostile::peak_alloc(|| Controller::parse(page));
+    let ((), peak) = hostile::peak_alloc(|| harness::controller(page));
     assert!(peak <= ALLOC_BOUND, "{peak} bytes for a controller page");
-    if let Ok(controller) = result {
-        assert!(controller.serial().len() <= 20);
-        assert!(controller.model().len() <= 40);
-        assert!(controller.atomic_blocks >= 1);
-        for page_shift in [12, 16, 27] {
-            assert!(controller.max_transfer(page_shift, CAP) <= CAP);
-        }
-    }
 }
 
 fn check_namespace(page: &[u8]) {
-    let (result, peak) = hostile::peak_alloc(|| Namespace::parse(page));
+    let ((), peak) = hostile::peak_alloc(|| harness::namespace(page));
     assert!(peak <= ALLOC_BOUND, "{peak} bytes for a namespace page");
-    if let Ok(namespace) = result {
-        assert!(namespace.block_bytes.is_power_of_two());
-        assert!((512..=65536).contains(&namespace.block_bytes));
-    }
 }
 
 fn check_list(page: &[u8]) {
-    let (count, peak) = hostile::peak_alloc(|| active_namespaces(page).count());
+    let ((), peak) = hostile::peak_alloc(|| harness::list(page));
     assert!(peak <= ALLOC_BOUND, "{peak} bytes for a namespace list");
-    assert!(count <= IDENTIFY_BYTES / 4);
 }
 
 #[test]
@@ -128,5 +115,29 @@ fn every_format_index_and_size_byte() {
             page[26] = flbas;
             check_namespace(&page);
         }
+    }
+}
+
+/// Writes the `nvme_identify` target's seeds, one file each, to
+/// `$FUZZ_SEED_DIR/nvme_identify/`: the three sample pages.
+#[test]
+#[ignore = "writes the fuzz corpus; run by the fuzz workflow"]
+fn write_fuzz_seeds() {
+    let dir = std::env::var("FUZZ_SEED_DIR").expect("FUZZ_SEED_DIR names the corpus folder");
+    let folder = std::path::Path::new(&dir).join("nvme_identify");
+    std::fs::create_dir_all(&folder).unwrap();
+    for (name, page) in [
+        ("controller", controller_page()),
+        ("namespace", namespace_page()),
+        ("list", list_page()),
+    ] {
+        std::fs::write(folder.join(name), page).unwrap();
+    }
+}
+
+#[test]
+fn the_fuzz_body_reads_each_sample_as_all_three_pages() {
+    for page in [controller_page(), namespace_page(), list_page()] {
+        harness::nvme_identify(&page);
     }
 }
