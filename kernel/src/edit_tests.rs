@@ -23,7 +23,7 @@ const NAME: &str = "notes";
 const START_TIMEOUT_MS: u64 = 60_000;
 /// How long git may take to acknowledge the outbox.
 const SYNC_TIMEOUT_MS: u64 = 60_000;
-/// How long the edit service holds its next reply when a check asks it to.
+/// How long a service holds its next reply when a check asks it to.
 const HOLD_MS: u64 = 500;
 /// The pid whose next `svc_reply` waits [`HOLD_MS`] first; 0: none.
 static HOLD: AtomicU64 = AtomicU64::new(0);
@@ -35,23 +35,45 @@ static WAITER: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 /// `svc_reply`: the process [`HOLD`] names waits before it answers, once, so
 /// a check can act while the service holds a call. One load when unset.
-pub fn hold_reply(slot: usize) {
+/// Returns whether the process was killed while it held the reply: that reply
+/// is never given (`local-ask` kills llm so).
+pub fn hold_reply(slot: usize) -> bool {
     let pid = HOLD.load(Ordering::SeqCst);
     if pid == 0 || process::identity(slot).pid != pid {
-        return;
+        return false;
     }
     if HOLD
         .compare_exchange(pid, 0, Ordering::SeqCst, Ordering::SeqCst)
-        .is_ok()
+        .is_err()
     {
-        HELD.store(true, Ordering::SeqCst);
-        let waiter = WAITER.swap(usize::MAX, Ordering::SeqCst);
-        if waiter != usize::MAX {
-            x86_64::instructions::interrupts::without_interrupts(|| threads::wake(waiter));
-        }
-        threads::sleep_ms(HOLD_MS);
-        HELD.store(false, Ordering::SeqCst);
+        return false;
     }
+    HELD.store(true, Ordering::SeqCst);
+    let waiter = WAITER.swap(usize::MAX, Ordering::SeqCst);
+    if waiter != usize::MAX {
+        x86_64::instructions::interrupts::without_interrupts(|| threads::wake(waiter));
+    }
+    threads::sleep_ms(HOLD_MS);
+    HELD.store(false, Ordering::SeqCst);
+    process::killed(slot)
+}
+
+/// Makes process `pid`'s next `svc_reply` wait [`HOLD_MS`], and wakes the
+/// calling thread once it does.
+pub fn hold_next_reply(pid: u64) {
+    WAITER.store(threads::current_tid(), Ordering::SeqCst);
+    HOLD.store(pid, Ordering::SeqCst);
+}
+
+/// Whether a reply [`hold_next_reply`] asked for is being held now.
+pub fn reply_held() -> bool {
+    HELD.load(Ordering::SeqCst)
+}
+
+/// Undoes [`hold_next_reply`] if no reply was held.
+pub fn stop_holding() {
+    HOLD.store(0, Ordering::SeqCst);
+    WAITER.store(usize::MAX, Ordering::SeqCst);
 }
 
 struct Kernel {
@@ -283,14 +305,12 @@ fn killed_after_the_take(kernel: &mut Kernel) -> Result<(), String> {
     }
     let cmd = |line: &str| edit_session::call(&encode_ipc(&Ipc::Cmd(line)));
     let server = ipc::server_of("edit").ok_or("edit: no edit service is running")?;
-    WAITER.store(threads::current_tid(), Ordering::SeqCst);
-    HOLD.store(server, Ordering::SeqCst);
+    hold_next_reply(server);
     let insert = format!("i 1 {MARKER}");
     // The app is killed once the service has taken the message.
-    let killed = || HELD.load(Ordering::SeqCst);
+    let killed = reply_held;
     let reply = edit_session::call_for_app(&encode_ipc(&Ipc::Cmd(&insert)), &killed, &|| false);
-    HOLD.store(0, Ordering::SeqCst);
-    WAITER.store(usize::MAX, Ordering::SeqCst);
+    stop_holding();
     let shown = cmd("p 1");
     if !shown.contains(MARKER) {
         return Err(format!(

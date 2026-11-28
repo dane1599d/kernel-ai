@@ -13,7 +13,7 @@
 //!
 //! `test=local-script`, L5's exit test, is [`check_script`].
 
-use crate::{hpet, ipc, llm, log, model, process, terminal, threads};
+use crate::{edit_tests, hpet, ipc, llm, log, model, process, terminal, threads};
 use kabi::ExitReason;
 use kabi::model::fnv1a;
 
@@ -96,17 +96,28 @@ fn asked(who: &'static str) -> Result<alloc::string::String, &'static str> {
 
 /// Kills llm while it answers, and checks the restarted process maps the model
 /// again and answers the same.
+///
+/// llm's reply is held ([`edit_tests::hold_next_reply`]) and llm killed while
+/// it holds it, so the kill always lands between the take and the answer. A
+/// 1 ms poll for the take raced the answer, which the test model gives in about
+/// a millisecond with the TSC as the clock (#1628): "llm answered before it
+/// could be killed".
 fn kill_mid_answer(golden: u64) -> Result<(), &'static str> {
     let (loads, maps) = (model::loads(), model::maps());
     let pid = ipc::server_of("llm").ok_or("local-ask: llm is not serving")?;
     let deadline = hpet::nanos() + WAIT_MS * 1_000_000;
     let request = alloc::format!("ask {QUESTION}");
-    let pending = ipc::submit("llm", request.as_bytes(), 0, deadline)
-        .map_err(|_| "local-ask: cannot send llm a question")?;
-    wait_for(|| ipc::serving_deadline(pid).is_some() || pending.done())
-        .map_err(|_| "local-ask: llm never took the question")?;
-    if pending.done() {
-        return Err("local-ask: llm answered before it could be killed");
+    edit_tests::hold_next_reply(pid);
+    let pending = ipc::submit("llm", request.as_bytes(), 0, deadline).map_err(|_| {
+        edit_tests::stop_holding();
+        "local-ask: cannot send llm a question"
+    })?;
+    let held = wait_for(|| edit_tests::reply_held() || pending.done());
+    edit_tests::stop_holding();
+    held.map_err(|_| "local-ask: llm never answered the question")?;
+    // The held reply is this call's: taken, not answered.
+    if pending.done() || ipc::slot_queued(pending.index()) {
+        return Err("local-ask: llm held a reply, but not to this question");
     }
     process::kill(pid, ExitReason::Killed).map_err(|_| "local-ask: cannot kill llm")?;
     wait_for(|| pending.done()).map_err(|_| "local-ask: the killed call never ended")?;
