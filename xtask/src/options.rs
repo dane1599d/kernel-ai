@@ -43,6 +43,9 @@ pub struct Options {
     pub edit: bool,
     /// `run --gpu`: a virtio-gpu in place of the VGA card, the display P3 builds on.
     pub gpu: bool,
+    /// `run --headless`: no display window, the serial log on stdout only (the
+    /// Windows Try-it job, try-it-windows.yml).
+    pub headless: bool,
     /// `run --model-disk PATH`: a raw file attached read-only as the `kai-model` disk.
     pub model_disk: Option<PathBuf>,
     /// `run --local ID`: the catalog model `ID`, from the model store, attached the
@@ -145,6 +148,7 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
         model: None,
         edit: false,
         gpu: false,
+        headless: false,
         model_disk: None,
         local: None,
         store: None,
@@ -213,6 +217,7 @@ pub fn parse_args(args: &[String]) -> Result<Options, String> {
                 options.data_disk = Some(PathBuf::from(path));
             }
             "--gpu" if task == Task::Run => options.gpu = true,
+            "--headless" if task == Task::Run => options.headless = true,
             "--model-disk" if task == Task::Run => {
                 let path = rest
                     .next()
@@ -480,6 +485,9 @@ mod tests {
     fn edit_is_for_run_only() {
         assert!(parse_args(&args(&["run", "--edit"])).unwrap().edit);
         assert!(parse_args(&args(&["test", "--edit"])).is_err());
+        assert!(parse_args(&args(&["run", "--headless"])).unwrap().headless);
+        assert!(!parse_args(&args(&["run"])).unwrap().headless);
+        assert!(parse_args(&args(&["test", "--headless"])).is_err());
     }
 
     #[test]
