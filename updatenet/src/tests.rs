@@ -289,11 +289,15 @@ fn an_image_longer_than_the_slot_or_already_staged_is_refused() {
     );
     // The last write is padded to a whole 4 KiB block, which must fit too.
     m.room = bytes.len() as u64;
-    assert!(matches!(
-        plan::plan(&target, &list, &m, &hosts()),
-        Err(Refused::Room { .. })
-    ));
-    m.room = crate::blocks::padded(bytes.len() as u64);
+    let refused = plan::plan(&target, &list, &m, &hosts()).unwrap_err();
+    assert!(matches!(refused, Refused::Room { .. }));
+    // Refused by its pad alone: the words say so.
+    assert!(
+        refused.why().contains("in whole 4 KiB blocks"),
+        "{}",
+        refused.why()
+    );
+    m.room = crate::blocks::padded(bytes.len() as u64).unwrap();
     assert!(plan::plan(&target, &list, &m, &hosts()).is_ok());
     // The idle slot holds release 7 as a trial: staged already.
     let mut staged = record;
