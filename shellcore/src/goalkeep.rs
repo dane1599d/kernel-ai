@@ -16,10 +16,14 @@
 //!   notes/q4". So does one whose path is its subject: "notes/q3 is not to be
 //!   touched", "notes/q3 isn't to be touched", "notes/q3 stays untouched",
 //!   "notes/q3 is off limits". A negation of worry ([`REASSURANCES`]: "don't
-//!   worry about it", "never mind") keeps nothing off. A "not" after "is",
-//!   "are", "was" or "were" with no path its subject, and "isn't", "aren't"
-//!   or "wasn't", describe files ("the files that are not pdfs"), so they read
-//!   only up to a destination.
+//!   worry", "never mind") keeps nothing off when no path, bare folder or
+//!   pointer follows it in its clause; "don't bother with notes/q3" keeps it
+//!   off, and so does "notes/q3: don't worry about it" unless a later clause
+//!   gives an order about the same pointer ("..., just sort it"). In a
+//!   relative clause, a "not" after "is", "are", "was" or "were", or an
+//!   "isn't", "aren't" or "wasn't", describes files ("the files that are not
+//!   pdfs"), so it reads only up to a destination; never before "to" ("you
+//!   are not to touch notes/q3", "the files that are not to be touched").
 //! - **An exclusion** ([`EXCLUSIONS`], "apart from", "other than", "everything
 //!   but", "keep out of", "leave out" ...) keeps off the paths after it up to a
 //!   destination ("into", "to", "onto"): "trash notes/ except notes/q3" keeps
@@ -27,9 +31,10 @@
 //!   nothing off. So does "without" and a word ending in "ing": "sort notes/
 //!   without touching notes/q3".
 //! - **"leave ... alone"** (or "untouched", "unchanged") keeps off the paths
-//!   between. "be", "as" and "out" end it only right after a path: "leave
-//!   notes/q3 be", "leave notes/q3 out", but not "leave a note in notes/q3 to
-//!   be read later".
+//!   between. "be", "as" and "out" end it only after a path, and "be" not
+//!   right after "to": "leave notes/q3 be", "leave notes/q3 just as it is",
+//!   "leave notes/q3 out", but not "leave a note in notes/q3 to be read
+//!   later".
 //! - **A child folder by its bare name** after a negation or an exclusion, or
 //!   in "leave ... alone" ("except the q3 folder", "leave my q3 folder
 //!   alone"), refuses too, naming "q3": a goal cannot leave a folder out of
@@ -134,6 +139,10 @@ const REASSURANCES: &[&str] = &["worry", "mind", "bother", "hesitate", "forget",
 /// "the files that are not pdfs".
 const DESCRIBING: &[&str] = &["is", "are", "was", "were"];
 
+/// Words that open the relative clause a describing "not" stands in: "the
+/// files that are not pdfs".
+const RELATIVES: &[&str] = &["that", "which", "who"];
+
 /// Negations that are a copula and "not" in one: "the files that aren't pdfs".
 const DESCRIBING_NOTS: &[&str] = &["isnt", "isn't", "arent", "aren't", "wasnt", "wasn't"];
 
@@ -167,8 +176,9 @@ const KEPT_AS_IS: &[&str] = &["alone", "untouched", "unchanged", "off-limits"];
 /// Words that end "leave ...": "leave notes/q3 alone".
 const LEAVE_ENDS: &[&str] = &["alone", "untouched", "unchanged"];
 
-/// Words that end "leave ..." only right after a path: "leave notes/q3 be",
-/// "leave notes/q3 out", but not "leave a note in notes/q3 to be read".
+/// Words that end "leave ..." only after a path, and "be" not right after
+/// "to": "leave notes/q3 be", "leave notes/q3 just as it is", "leave
+/// notes/q3 out", but not "leave a note in notes/q3 to be read".
 const LEAVE_ENDS_AFTER_PATH: &[&str] = &["be", "as", "out"];
 
 /// Words after a negation that carry it past a comma: "don't, under any
@@ -246,7 +256,7 @@ pub(crate) fn kept_off(line: &str, starts_order: impl Fn(&str) -> bool) -> Optio
     let clauses = clauses(line, &starts_order);
     let mut carry = Carry::No;
     let mut topic: Option<&str> = None;
-    for clause in &clauses {
+    for (index, clause) in clauses.iter().enumerate() {
         let words = &clause.words;
         let carried = match clause.after_comma {
             true => carry,
@@ -268,7 +278,28 @@ pub(crate) fn kept_off(line: &str, starts_order: impl Fn(&str) -> bool) -> Optio
         }
         let keeps_off =
             |i: usize| negates(words, i) || EXCLUSIONS.contains(&words[i].text.as_str());
-        if let Some(at) = (0..words.len()).find(|&i| keeps_off(i)) {
+        // "notes/q3: don't worry about it, just sort it": a negation of worry
+        // whose pointer a later clause gives an order about keeps nothing off.
+        // That clause names the pointer and nothing that keeps off: no
+        // negation, exclusion, "leave" or "alone" ("..., leave it" keeps off).
+        let later = &clauses[index + 1..];
+        let ordered_later = later.iter().any(|c| {
+            c.words.iter().any(|w| POINTERS.contains(&w.text.as_str()))
+                && !c.words.iter().any(|w| {
+                    let text = w.text.as_str();
+                    is_negation(text)
+                        || EXCLUSIONS.contains(&text)
+                        || KEPT_AS_IS.contains(&text)
+                        || text == "leave"
+                })
+        });
+        let excused = |i: usize| {
+            reassures(words, i)
+                && ordered_later
+                && !words[i + 1..].iter().any(|w| w.path)
+                && folder_name(words[i + 1..].iter()).is_none()
+        };
+        if let Some(at) = (0..words.len()).find(|&i| keeps_off(i) && !excused(i)) {
             let rest = &words[at + 1..];
             let points_back = rest.iter().any(|w| POINTERS.contains(&w.text.as_str()));
             match (topic, points_back) {
@@ -365,8 +396,8 @@ fn in_clause(words: &[Word]) -> Option<String> {
             let end = words[i + 1..].iter().enumerate().position(|(j, w)| {
                 LEAVE_ENDS.contains(&w.text.as_str())
                     || (LEAVE_ENDS_AFTER_PATH.contains(&w.text.as_str())
-                        && j > 0
-                        && words[i + j].path)
+                        && words[i + 1..i + 1 + j].iter().any(|w| w.path)
+                        && !(w.text == "be" && words[i + j].text == "to"))
             });
             if let Some(end) = end {
                 let between = &words[i + 1..i + 1 + end];
@@ -401,21 +432,43 @@ fn is_negation(word: &str) -> bool {
     NEGATIONS.contains(&word)
 }
 
-/// Whether `words[at]` is a negation that keeps something off: not "don't
-/// worry".
-fn negates(words: &[Word], at: usize) -> bool {
+/// Whether `words[at]` negates a word of worry: "don't worry", "never mind".
+fn reassures(words: &[Word], at: usize) -> bool {
     is_negation(&words[at].text)
         && words
             .get(at + 1)
-            .is_none_or(|next| !REASSURANCES.contains(&next.text.as_str()))
+            .is_some_and(|next| REASSURANCES.contains(&next.text.as_str()))
 }
 
-/// Whether the negation at `words[at]` describes files ("that are not pdfs",
-/// "that aren't pdfs") instead of keeping them off.
+/// Whether `words[at]` is a negation that keeps something off: a negation
+/// of worry only when a path, a folder's bare name or a pointer follows it
+/// in its clause ("don't bother with notes/q3", "don't worry about it"),
+/// never a bare "don't worry".
+fn negates(words: &[Word], at: usize) -> bool {
+    if !is_negation(&words[at].text) {
+        return false;
+    }
+    let rest = &words[at + 1..];
+    !reassures(words, at)
+        || rest
+            .iter()
+            .any(|w| w.path || POINTERS.contains(&w.text.as_str()))
+        || folder_name(rest.iter()).is_some()
+}
+
+/// Whether the negation at `words[at]` describes files in a relative clause
+/// ("the files that are not pdfs", "which aren't pdfs") instead of keeping
+/// them off. Never before "to": "you are not to touch", "the files that are
+/// not to be touched".
 fn describes(words: &[Word], at: usize) -> bool {
-    let word = words[at].text.as_str();
-    DESCRIBING_NOTS.contains(&word)
-        || (word == "not" && at > 0 && DESCRIBING.contains(&words[at - 1].text.as_str()))
+    let text = |i: usize| words.get(i).map_or("", |w| w.text.as_str());
+    let word = text(at);
+    let relative = |i: Option<usize>| i.is_some_and(|i| RELATIVES.contains(&text(i)));
+    let described = match word {
+        "not" => DESCRIBING.contains(&text(at.wrapping_sub(1))) && relative(at.checked_sub(2)),
+        _ => DESCRIBING_NOTS.contains(&word) && relative(at.checked_sub(1)),
+    };
+    described && text(at + 1) != "to"
 }
 
 /// The name in "the q3 folder", a child folder kept off by its bare name, which

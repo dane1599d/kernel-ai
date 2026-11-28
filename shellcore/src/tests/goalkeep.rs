@@ -154,6 +154,44 @@ fn a_list_a_missed_phrasing_and_a_bare_child_folder_are_kept_off() {
             "trash the drafts in notes/ but leave the q3 folder alone",
             "q3",
         ),
+        // #1650's review: what main refused stays refused. A negation of
+        // worry with a path, a pointer or a bare folder after it.
+        ("don't bother with notes/q3", "notes/q3"),
+        ("never mind notes/q3", "notes/q3"),
+        ("don't worry about notes/q3", "notes/q3"),
+        ("don't bother touching notes/q3", "notes/q3"),
+        ("notes/q3: don't worry about it", "notes/q3"),
+        ("notes/q3: don't worry about it, leave it", "notes/q3"),
+        // A "not" before "to", or outside a relative clause.
+        (
+            "trash the drafts in notes/old; you are not to touch notes/q3",
+            "notes/q3",
+        ),
+        (
+            "trash the drafts in notes/old; it is not ok to touch notes/q3",
+            "notes/q3",
+        ),
+        (
+            "trash the drafts in notes/old; kai is not allowed into notes/q3",
+            "notes/q3",
+        ),
+        (
+            "trash the drafts in notes/old; the files that are not to be touched are in notes/q3",
+            "notes/q3",
+        ),
+        // "be" or "as" anywhere after the path.
+        (
+            "trash the drafts in notes/old but leave notes/q3 just as it is",
+            "notes/q3",
+        ),
+        (
+            "trash the drafts in notes/old but leave notes/q3 exactly as it is",
+            "notes/q3",
+        ),
+        (
+            "trash the drafts in notes/old but leave notes/q3 and its files as they are",
+            "notes/q3",
+        ),
         // The marks consent folds as an apostrophe.
         (
             "trash the drafts in notes/old, but don\u{ff07}t touch notes/q3",
