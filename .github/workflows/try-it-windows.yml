@@ -12,6 +12,18 @@
 #   `--accel tcg` and slow. `--headless` keeps QEMU's window shut, as a
 #   runner has no one to look at it.
 #
+# Time: the job gets 120 minutes, the boot up to 90 of them. The first run
+# that got past the checkout (46118435544) spent 7 minutes in doctor, 12.5 in
+# the build, and 39 booting under TCG without the first screen when the old
+# 60-minute job ran out; a PC with WHPX boots in a fraction of that. The boot
+# step prints a progress line every 5 minutes (minutes, serial lines, the
+# latest one), and when it fails or runs out of time the next step prints the
+# last 100 serial lines, so the job log shows where the boot got to without
+# fetching the artifact. The VM keeps `run`'s default vCPUs, as a person's
+# boot does; if the progress lines show TCG crawling, not a hang, -smp 1
+# (`--cpus 1`) is the next thing to try, since QEMU's TCG may run every vCPU
+# on one host thread here.
+#
 # QEMU for Windows is Stefan Weil's build (the one qemu.org's download page
 # links for Windows), installed to C:\Program Files\qemu, where xtask looks
 # (`find_qemu`), with its own edk2 firmware. The installer is pinned by its
@@ -52,7 +64,7 @@ jobs:
   try-it:
     name: Try it (windows-2025, QEMU under TCG, no model)
     runs-on: windows-2025
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: QEMU for Windows, pinned by SHA-512
@@ -74,26 +86,36 @@ jobs:
       - name: Build
         run: cargo xtask build
       - name: Boot under TCG with no model disk, until the first screen is up
+        id: boot
+        timeout-minutes: 95
         run: |
           echo "WHPX is not on hosted runners (nor KVM in WSL2): booting with --accel tcg"
           log="$RUNNER_TEMP/run.log"
           cargo xtask run --accel tcg --headless > "$log" 2>&1 &
           pid=$!
           found=
-          # 40 minutes in steps of 10 s: TCG on a hosted runner boots slowly.
-          for _ in $(seq 1 240); do
+          # 90 minutes in steps of 10 s: TCG on a hosted runner boots slowly.
+          # Every 30th step (5 minutes) says how far the serial log has got.
+          for i in $(seq 1 540); do
             if grep -qF "$FIRST_SCREEN" "$log"; then found=1; break; fi
-            kill -0 "$pid" 2>/dev/null || break
+            kill -0 "$pid" 2>/dev/null || { echo "xtask run exited before the first screen"; break; }
+            if [ $((i % 30)) -eq 0 ]; then
+              echo "$((i / 6)) min: $(wc -l < "$log") serial lines; latest: $(tail -n 1 "$log" | cut -c1-200)"
+            fi
             sleep 10
           done
           taskkill //F //IM qemu-system-x86_64.exe > /dev/null 2>&1 || true
           wait "$pid" 2>/dev/null || true
-          cat "$log"
           if [ -z "$found" ]; then
             echo "the first screen's line never came: $FIRST_SCREEN"
             exit 1
           fi
-          echo "the first screen is up: $(grep -F "$FIRST_SCREEN" "$log" | head -1)"
+          echo "the first screen is up after about $((i / 6)) min: $(grep -F "$FIRST_SCREEN" "$log" | head -1)"
+      - name: The last 100 serial lines, when the boot failed or ran out of time
+        if: always() && steps.boot.outcome != 'success' && steps.boot.outcome != 'skipped'
+        run: |
+          taskkill //F //IM qemu-system-x86_64.exe > /dev/null 2>&1 || true
+          tail -n 100 "$RUNNER_TEMP/run.log" || echo "no serial log at $RUNNER_TEMP/run.log"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
