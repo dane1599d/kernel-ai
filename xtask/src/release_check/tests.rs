@@ -171,7 +171,7 @@ fn ready() -> Branch {
         "ci.yml",
         vec![run(40, "rc2", "success"), run(41, "rc2", "success")],
     );
-    // A pull request's run boots KVM only; the batch's boots both.
+    // Run 40 booted KVM only (a run with the TCG shards skipped); 41 boots both.
     b.jobs.insert(40, boots(&[("kvm", 3, "success")]));
     b.jobs
         .insert(41, boots(&[("kvm", 3, "success"), ("tcg", 4, "success")]));
@@ -428,11 +428,13 @@ fn no_tag_a_failed_git_tag_and_an_odd_seq() {
 /// then digits only, so `+2` or ` 2` is not a number there or here.
 #[test]
 fn a_seq_is_digits_only() {
-    assert_eq!(seq_number("2\n"), Some(2));
-    assert_eq!(seq_number("2"), Some(2));
-    assert_eq!(seq_number("2\n\n"), Some(2));
+    assert_eq!(seq_number("2\n"), Ok(2));
+    assert_eq!(seq_number("2"), Ok(2));
+    assert_eq!(seq_number("2\n\n"), Ok(2));
+    assert_eq!(seq_number("4294967295"), Ok(u32::MAX));
+    assert_eq!(seq_number("4294967296\n"), Err(SEQ_TOO_LARGE));
     for odd in ["+2", " 2", "2 ", "2\r\n", "", "\n", "-1", "2\n3"] {
-        assert_eq!(seq_number(odd), None, "{odd:?}");
+        assert_eq!(seq_number(odd), Err("not a number"), "{odd:?}");
     }
     let mut b = ready();
     b.seq.insert("rc2".into(), "+2\n".into());
@@ -449,6 +451,27 @@ fn a_seq_is_digits_only() {
         (
             State::Missing,
             "2, but v0.1.0-rc.1's release/seq cannot be read"
+        )
+    );
+}
+
+/// A seq past u32 says so, for REV's and for the tag's.
+#[test]
+fn a_seq_past_u32_is_too_large() {
+    let mut b = ready();
+    b.seq.insert("rc2".into(), "4294967296\n".into());
+    assert_eq!(
+        check(&b, "rc2").unwrap()[0].detail,
+        "release/seq holds `4294967296`, too large for a u32 seq"
+    );
+    b.seq.insert("rc2".into(), "2\n".into());
+    b.seq.insert("v0.1.0-rc.1".into(), "99999999999".into());
+    let line = &check(&b, "rc2").unwrap()[0];
+    assert_eq!(
+        (line.state, line.detail.as_str()),
+        (
+            State::Missing,
+            "2, but v0.1.0-rc.1's release/seq is too large for a u32 seq"
         )
     );
 }
@@ -481,27 +504,117 @@ fn an_older_ci_run_and_exactly_47() {
 }
 
 /// A `pull_request` run tested REV merged into its base: it counts, but a run
-/// from another event is taken first, and the line says which it was.
+/// A `pull_request` run built a merge ref, which may sit on a stale main: a
+/// run from another event is taken first, and for the Release and CI lines,
+/// which build REV itself, a pull_request run alone is missing.
 #[test]
-fn a_pull_request_run_is_named_and_taken_last() {
+fn a_pull_request_run_is_taken_last_and_alone_is_missing() {
     let mut b = ready();
     b.runs.insert(
         "release.yml",
         vec![pr_run(13, "rc2", "success"), run(10, "rc2", "success")],
     );
     let lines = check(&b, "rc2").unwrap();
+    assert_eq!(lines[1].state, State::Met, "{lines:#?}");
     assert!(
         lines[1].detail.starts_with("Release run 10 (push) at rc2"),
         "{lines:#?}"
     );
-    b.runs
-        .insert("release.yml", vec![pr_run(13, "rc2", "success")]);
+    b.runs.insert(
+        "release.yml",
+        vec![pr_run(13, "rc2", "success"), run(10, "rc2", "failure")],
+    );
     let lines = check(&b, "rc2").unwrap();
-    assert_eq!(lines[1].state, State::Met);
+    assert_eq!(lines[1].state, State::Missing);
     assert_eq!(
         lines[1].detail,
-        "Release run 13 (pull_request: REV merged into its base) at rc2 passed (assemble cmps it)"
+        "only a pull_request run (merge ref): Release run 13 at rc2: re-run on push or workflow_dispatch"
     );
+
+    // CI: a full pull_request run listed first loses to the push run.
+    let mut b = ready();
+    b.runs.insert(
+        "ci.yml",
+        vec![pr_run(43, "rc2", "success"), run(41, "rc2", "success")],
+    );
+    b.jobs
+        .insert(43, boots(&[("kvm", 3, "success"), ("tcg", 4, "success")]));
+    let lines = check(&b, "rc2").unwrap();
+    assert_eq!(lines[4].state, State::Met, "{lines:#?}");
+    assert!(
+        lines[4].detail.starts_with("CI run 41 (push) at rc2"),
+        "{lines:#?}"
+    );
+    // ...and alone, beside a KVM-only push run, is missing.
+    b.runs.insert(
+        "ci.yml",
+        vec![pr_run(43, "rc2", "success"), run(40, "rc2", "success")],
+    );
+    let lines = check(&b, "rc2").unwrap();
+    assert_eq!(lines[4].state, State::Missing);
+    assert_eq!(
+        lines[4].detail,
+        "only a pull_request run (merge ref): CI run 43 at rc2: re-run on push or workflow_dispatch"
+    );
+
+    // Fluency reads the model input, not REV's tree: a pull_request run is
+    // taken after a push one, and named, but still counts.
+    let mut b = ready();
+    b.runs.insert(
+        "fluency-model.yml",
+        vec![pr_run(25, "docs", "success"), run(20, "docs", "success")],
+    );
+    b.logs.insert(25, fluency_log("", "", 50, 50));
+    let lines = check(&b, "rc2").unwrap();
+    assert!(
+        lines[2].detail.starts_with("run 20 (push) at docs: 48/50"),
+        "{lines:#?}"
+    );
+    b.runs
+        .insert("fluency-model.yml", vec![pr_run(25, "docs", "success")]);
+    let lines = check(&b, "rc2").unwrap();
+    assert_eq!(lines[2].state, State::Met);
+    assert!(
+        lines[2]
+            .detail
+            .starts_with("run 25 (pull_request: REV merged into its base) at docs: 50/50"),
+        "{lines:#?}"
+    );
+}
+
+/// A green Release run at another commit never meets the NOTICES line.
+#[test]
+fn a_release_run_at_another_commit_does_not_count() {
+    let mut b = ready();
+    b.runs.insert(
+        "release.yml",
+        vec![run(14, "docs", "success"), run(15, "rc2", "failure")],
+    );
+    let line = &check(&b, "rc2").unwrap()[1];
+    assert_eq!(
+        (line.state, line.detail.as_str()),
+        (
+            State::Missing,
+            "no green Release run at rc2: 15 (push) failure"
+        )
+    );
+}
+
+/// gh's run list as JSON: an unfinished run, or one with no event, is skipped.
+#[test]
+fn runs_without_an_event_are_skipped() {
+    let value = serde_json::json!([
+        {"databaseId": 1, "headSha": "a", "event": "push", "conclusion": "success", "status": "completed"},
+        {"databaseId": 2, "headSha": "a", "event": "", "conclusion": "success", "status": "completed"},
+        {"databaseId": 3, "headSha": "a", "conclusion": "success", "status": "completed"},
+        {"databaseId": 4, "headSha": "a", "event": "pull_request", "conclusion": "", "status": "in_progress"},
+        {"databaseId": 5, "headSha": "a", "event": "pull_request", "conclusion": "failure", "status": "completed"},
+    ]);
+    let got: Vec<(u64, String)> = runs_from(&value)
+        .into_iter()
+        .map(|r| (r.id, r.event))
+        .collect();
+    assert_eq!(got, [(1, "push".into()), (5, "pull_request".into())]);
 }
 
 /// The model pin and the gates' own tasks and bars are model input too;

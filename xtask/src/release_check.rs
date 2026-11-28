@@ -27,7 +27,10 @@
 //!
 //! Each line names its run's event. A `pull_request` run tested REV merged
 //! into its base, not REV's tree alone, so a run from any other event is
-//! taken first, and a `pull_request` one says so.
+//! taken first, and a `pull_request` one says so. For the Release and CI
+//! lines, which build REV itself, a green `pull_request` run alone is missing:
+//! its merge ref may sit on a stale main. A run gh lists with no event is
+//! skipped.
 //!
 //! It reads git and, through `gh`, the repository's Actions runs; it starts,
 //! dispatches and signs nothing. Exit 1 when a line a machine checks is missing.
@@ -191,15 +194,15 @@ fn seq_line(facts: &dyn Facts, sha: &str) -> Line {
     let Some(seq) = facts.seq(sha) else {
         return Line::new(WHAT, State::Missing, "no release/seq".into());
     };
-    let Some(n) = seq_number(&seq) else {
-        return Line::new(
-            WHAT,
-            State::Missing,
-            format!(
-                "release/seq holds `{}`, not a number",
-                seq.trim_end_matches('\n')
-            ),
-        );
+    let n = match seq_number(&seq) {
+        Ok(n) => n,
+        Err(why) => {
+            return Line::new(
+                WHAT,
+                State::Missing,
+                format!("release/seq holds `{}`, {why}", seq.trim_end_matches('\n')),
+            );
+        }
     };
     // Never met by default: no tag, a failed `git tag`, or a tag whose seq
     // cannot be read leaves nothing to be above.
@@ -220,12 +223,22 @@ fn seq_line(facts: &dyn Facts, sha: &str) -> Line {
             );
         }
     };
-    let Some(last) = facts.seq(&tag).as_deref().and_then(seq_number) else {
-        return Line::new(
-            WHAT,
-            State::Missing,
-            format!("{n}, but {tag}'s release/seq cannot be read"),
-        );
+    let last = match facts.seq(&tag).as_deref().map(seq_number) {
+        Some(Ok(last)) => last,
+        Some(Err(SEQ_TOO_LARGE)) => {
+            return Line::new(
+                WHAT,
+                State::Missing,
+                format!("{n}, but {tag}'s release/seq is {SEQ_TOO_LARGE}"),
+            );
+        }
+        _ => {
+            return Line::new(
+                WHAT,
+                State::Missing,
+                format!("{n}, but {tag}'s release/seq cannot be read"),
+            );
+        }
     };
     match n > last {
         true => Line::new(WHAT, State::Met, format!("{n}, above {tag}'s {last}")),
@@ -237,15 +250,28 @@ fn seq_line(facts: &dyn Facts, sha: &str) -> Line {
     }
 }
 
+/// Why [`seq_number`] refuses digits: the seq is a `u32` (ADR 0008 §2's
+/// `release_seq`), and release.yml's shell compare would take more.
+pub const SEQ_TOO_LARGE: &str = "too large for a u32 seq";
+
 /// A `release/seq` file's number as release.yml's `seq` job reads it: `$(cat
 /// release/seq)` drops the trailing newlines, then digits only (no sign, no
-/// spaces).
-pub fn seq_number(text: &str) -> Option<u32> {
+/// spaces), up to `u32::MAX`.
+pub fn seq_number(text: &str) -> Result<u32, &'static str> {
     let s = text.trim_end_matches('\n');
     match !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) {
-        true => s.parse().ok(),
-        false => None,
+        true => s.parse().map_err(|_| SEQ_TOO_LARGE),
+        false => Err("not a number"),
     }
+}
+
+/// What a Release or CI line says when its only full run is a `pull_request`
+/// one, which built a merge ref, not REV.
+fn merge_ref_only(what: &str, run: &Run, short: &str) -> String {
+    format!(
+        "only a pull_request run (merge ref): {what} run {} at {short}: re-run on push or workflow_dispatch",
+        run.id
+    )
 }
 
 fn notices_line(facts: &dyn Facts, sha: &str, short: &str) -> Result<Line, String> {
@@ -258,6 +284,9 @@ fn notices_line(facts: &dyn Facts, sha: &str, short: &str) -> Result<Line, Strin
             .collect(),
     );
     Ok(match at.iter().find(|r| r.conclusion == "success") {
+        Some(run) if run.event == "pull_request" => {
+            Line::new(WHAT, State::Missing, merge_ref_only("Release", run, short))
+        }
         Some(run) => Line::new(
             WHAT,
             State::Met,
@@ -439,6 +468,7 @@ fn boot_line(facts: &dyn Facts, sha: &str, short: &str) -> Result<Line, String> 
             .collect(),
     );
     let mut partial = Vec::new();
+    let mut merge_ref = None;
     for run in &at {
         let jobs = facts.jobs(run.id)?;
         let shards = |accel: &str| {
@@ -452,7 +482,10 @@ fn boot_line(facts: &dyn Facts, sha: &str, short: &str) -> Result<Line, String> 
             )
         };
         let (kvm, tcg) = (shards("kvm"), shards("tcg"));
-        if kvm.0 > 0 && kvm.0 == kvm.1 && tcg.0 > 0 && tcg.0 == tcg.1 {
+        let full = kvm.0 > 0 && kvm.0 == kvm.1 && tcg.0 > 0 && tcg.0 == tcg.1;
+        if full && run.event == "pull_request" {
+            merge_ref.get_or_insert(run);
+        } else if full {
             return Ok(Line::new(
                 WHAT,
                 State::Met,
@@ -471,6 +504,13 @@ fn boot_line(facts: &dyn Facts, sha: &str, short: &str) -> Result<Line, String> 
             kvm.0,
             tcg.1,
             tcg.0
+        ));
+    }
+    if let Some(run) = merge_ref {
+        return Ok(Line::new(
+            WHAT,
+            State::Missing,
+            merge_ref_only("CI", run, short),
         ));
     }
     let detail = match partial.is_empty() {
@@ -532,6 +572,25 @@ pub fn model_paths_in(config: &str) -> Option<String> {
     Some(rest.strip_suffix("'}")?.to_string())
 }
 
+/// `gh run list --json`'s completed runs. A run with no event is skipped: an
+/// empty one would rank with the push runs, and what it built is unknown.
+pub fn runs_from(value: &serde_json::Value) -> Vec<Run> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|r| r["status"] == "completed")
+        .filter_map(|r| {
+            Some(Run {
+                id: r["databaseId"].as_u64()?,
+                sha: r["headSha"].as_str()?.to_string(),
+                event: r["event"].as_str().filter(|e| !e.is_empty())?.to_string(),
+                conclusion: r["conclusion"].as_str().unwrap_or("").to_string(),
+            })
+        })
+        .collect()
+}
+
 /// Whether a changed file is one of [`GATE_PATHS`].
 pub fn is_gate_path(name: &str) -> bool {
     GATE_PATHS.iter().any(|p| match p.ends_with('/') {
@@ -575,7 +634,18 @@ impl Facts for Live {
         }
         // Without rename detection a file moved out of a model path is listed
         // under its old name too.
-        let names = git(&["diff", "--no-renames", "--name-only", a, b]).ok()?;
+        // quotePath off: a name with a non-ASCII byte is listed as itself, not
+        // quoted and escaped, so `is_gate_path` and grep see the real path.
+        let names = git(&[
+            "-c",
+            "core.quotePath=false",
+            "diff",
+            "--no-renames",
+            "--name-only",
+            a,
+            b,
+        ])
+        .ok()?;
         if names.lines().any(is_gate_path) {
             return Some(false);
         }
@@ -601,20 +671,7 @@ impl Facts for Live {
         let json = output(Command::new("gh").args(args))?;
         let value: serde_json::Value =
             serde_json::from_str(&json).map_err(|e| format!("gh run list {workflow}: {e}"))?;
-        Ok(value
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|r| r["status"] == "completed")
-            .filter_map(|r| {
-                Some(Run {
-                    id: r["databaseId"].as_u64()?,
-                    sha: r["headSha"].as_str()?.to_string(),
-                    event: r["event"].as_str().unwrap_or("").to_string(),
-                    conclusion: r["conclusion"].as_str().unwrap_or("").to_string(),
-                })
-            })
-            .collect())
+        Ok(runs_from(&value))
     }
 
     fn jobs(&self, id: u64) -> Result<Vec<Job>, String> {
