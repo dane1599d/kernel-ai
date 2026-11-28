@@ -61,20 +61,33 @@ pub fn extend32(low: u32, last: u64) -> u64 {
     last.wrapping_add_signed(i64::from(step))
 }
 
-/// How far a CPU's clock read from the boot CPU's TSC zero point may be ahead of
-/// its own HPET read, taken just before, for the CPU to share that zero point:
-/// an HPET read exits to the host for a few microseconds under KVM, while a
-/// vCPU whose TSC started apart (VirtualBox starts each when the vCPU first
-/// runs) is off by far more.
+/// How far a CPU's clock read from the boot CPU's TSC zero point may be from
+/// its own HPET read for the CPU to share that zero point. Each zero point pairs
+/// an HPET read with the TSC at about the moment the HPET was sampled, off by
+/// part of a read's few microseconds under KVM, so the difference is that of two
+/// such errors and either sign; a vCPU whose TSC started apart (VirtualBox
+/// starts each when the vCPU first runs) is off by far more.
 pub const SHARED_ZERO_NS: u64 = 50_000;
 
 /// Whether a CPU shares the boot CPU's TSC zero point: `from_boot_zero`, its
-/// clock read against that zero point, lies within [`SHARED_ZERO_NS`] after
-/// `hpet`, an HPET read taken just before. With one zero point every CPU reads
-/// the same time, so no CPU's clock sits still behind another's; a CPU with its
-/// own zero point (a fresh HPET read) is off by that read's microseconds.
+/// clock read against that zero point at the TSC of its own zero pair, lies
+/// within [`SHARED_ZERO_NS`] of `hpet`, that pair's HPET read, either side.
+/// With one zero point every CPU reads the same time, so no CPU's clock sits
+/// still behind another's.
 pub fn shares_zero(from_boot_zero: u64, hpet: u64) -> bool {
-    from_boot_zero >= hpet && from_boot_zero - hpet <= SHARED_ZERO_NS
+    from_boot_zero.abs_diff(hpet) <= SHARED_ZERO_NS
+}
+
+/// The zero pair from samples of (TSC before, HPET, TSC after) one HPET read:
+/// the sample whose read took the fewest TSC ticks, as (the TSC midway through
+/// that read, the HPET value). An HPET read the host was slow to serve, or that
+/// was preempted, would put a zero point microseconds off; the quickest of a few
+/// is off by at most half of its own read. `None` with no samples.
+pub fn best_pair(samples: impl IntoIterator<Item = (u64, u64, u64)>) -> Option<(u64, u64)> {
+    samples
+        .into_iter()
+        .min_by_key(|&(before, _, after)| after.wrapping_sub(before))
+        .map(|(before, hpet, after)| (before + after.wrapping_sub(before) / 2, hpet))
 }
 
 #[cfg(test)]
@@ -201,14 +214,32 @@ mod tests {
     #[test]
     fn a_cpu_shares_the_boot_zero_only_when_its_tsc_agrees() {
         let hpet = 5_000_000_000;
-        // Synced TSCs: the TSC read comes a few microseconds after the HPET's.
+        // Synced TSCs: two zero pairs' errors, either side (-22 ns to -16 us
+        // in 49 of #1663's 51 own-zero KVM boots).
         assert!(shares_zero(hpet + 4_000, hpet));
         assert!(shares_zero(hpet, hpet));
+        assert!(shares_zero(hpet - 1, hpet));
+        assert!(shares_zero(hpet - 16_000, hpet));
         assert!(shares_zero(hpet + SHARED_ZERO_NS, hpet));
+        assert!(shares_zero(hpet - SHARED_ZERO_NS, hpet));
         // A TSC that started later or earlier than the boot CPU's.
         assert!(!shares_zero(hpet + SHARED_ZERO_NS + 1, hpet));
-        assert!(!shares_zero(hpet - 1, hpet));
+        assert!(!shares_zero(hpet - SHARED_ZERO_NS - 1, hpet));
         assert!(!shares_zero(hpet - 3_000_000, hpet));
+        assert!(!shares_zero(u64::MAX, hpet));
+    }
+
+    #[test]
+    fn the_zero_pair_is_the_quickest_read_at_its_middle() {
+        let samples = [
+            (1_000, 70, 9_000),
+            (20_000, 75, 21_000),
+            (30_000, 80, 90_000),
+        ];
+        assert_eq!(best_pair(samples), Some((20_500, 75)));
+        assert_eq!(best_pair([]), None);
+        // The first of equally quick reads.
+        assert_eq!(best_pair([(0, 1, 10), (100, 2, 110)]), Some((5, 1)));
     }
 
     #[test]

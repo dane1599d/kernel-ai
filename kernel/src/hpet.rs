@@ -279,9 +279,25 @@ fn try_tsc(why: &str) {
     );
 }
 
+/// HPET reads per zero pair: the quickest is kept ([`zero_pair`]).
+const ZERO_SAMPLES: usize = 8;
+
+/// A TSC value and the HPET's nanoseconds at about that moment: of
+/// [`ZERO_SAMPLES`] HPET reads, each between two TSC reads, the quickest
+/// ([`acpitables::hpet_counter::best_pair`]), so one slow read neither puts a
+/// zero point microseconds off nor makes a CPU keep a zero point of its own.
+fn zero_pair() -> (u64, u64) {
+    let samples = (0..ZERO_SAMPLES).map(|_| {
+        let before = tsc();
+        let nanos = hpet_nanos();
+        (before, nanos, tsc())
+    });
+    acpitables::hpet_counter::best_pair(samples).unwrap_or_else(|| (tsc(), hpet_nanos()))
+}
+
 fn set_zero(cpu: usize) {
-    let nanos = hpet_nanos();
-    TSC_ZERO[cpu].store(tsc(), Ordering::Relaxed);
+    let (ticks, nanos) = zero_pair();
+    TSC_ZERO[cpu].store(ticks, Ordering::Relaxed);
     NANOS_ZERO[cpu].store(nanos, Ordering::Relaxed);
 }
 
@@ -300,8 +316,7 @@ pub fn start_cpu(cpu: usize) {
     if mult == 0 || cpu >= MAX_CPUS || cpu == 0 {
         return;
     }
-    let hpet = hpet_nanos();
-    let now = tsc();
+    let (now, hpet) = zero_pair();
     let ticks = now.wrapping_sub(TSC_ZERO[0].load(Ordering::Relaxed));
     // A TSC behind the boot CPU's zero wraps to a huge count and fails the check.
     let from_boot = NANOS_ZERO[0]
