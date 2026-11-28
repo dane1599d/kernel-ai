@@ -431,6 +431,18 @@ pub trait Host {
     fn rules_set_aside(&self, _text: &str) -> Result<String, String> {
         Err(String::from("this host keeps no refused file"))
     }
+    /// The refused rules file kept as `name` ([`refused_rules_file`]): its text
+    /// and when it was last written, in nanoseconds since 1970; `None` with
+    /// no such file. Only the person's `rules refused` reads it.
+    fn refused_rules_read(&self, _name: &str) -> Result<Option<(String, u64)>, String> {
+        Ok(None)
+    }
+    /// Moves the refused rules file kept as `name` to the trash, as an action
+    /// of its own. Only the person's `rules refused remove <n>`, after their
+    /// yes, calls it.
+    fn refused_rules_trash(&self, _name: &str) -> Result<(), String> {
+        Err(String::from("this host keeps no refused file"))
+    }
     /// The keep-running list as `/system/state/keep` holds it, and why not
     /// when it could not be read.
     fn keep_read(&self) -> Result<Option<String>, String> {
@@ -538,6 +550,24 @@ pub trait Host {
 /// to `rules.refused.9`.
 pub const MAX_REFUSED_RULES: usize = 9;
 
+/// The name the `n`th refused rules file is kept under, 1 to
+/// [`MAX_REFUSED_RULES`]: `rules.refused`, then `rules.refused.2` ...
+pub fn refused_rules_file(n: usize) -> String {
+    match n {
+        1 => String::from("rules.refused"),
+        n => format!("rules.refused.{n}"),
+    }
+}
+
+/// Why a refused rules file could not be kept: every name holds another. It
+/// names the person's line that frees one.
+pub fn refused_rules_full() -> String {
+    format!(
+        "{MAX_REFUSED_RULES} refused rules files are kept already; remove one with \
+         rules refused remove <n> (rules refused lists them)"
+    )
+}
+
 /// Where a rules file refused at start goes ([`refused_rules_name`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SetAside {
@@ -562,10 +592,7 @@ pub fn refused_rules_name(
 ) -> Option<SetAside> {
     let mut free = None;
     for n in 1..=MAX_REFUSED_RULES {
-        let name = match n {
-            1 => String::from("rules.refused"),
-            n => format!("rules.refused.{n}"),
-        };
+        let name = refused_rules_file(n);
         match held(&name) {
             Ok(Some(kept)) if kept == text => return Some(SetAside::Kept(name)),
             Ok(None) if free.is_none() => free = Some(name),

@@ -54,8 +54,10 @@ static TSC_MULT: AtomicU64 = AtomicU64::new(0);
 /// vCPU's TSC when the vCPU first runs, so every CPU's TSC has its own zero.
 static TSC_ZERO: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
 static NANOS_ZERO: [AtomicU64; MAX_CPUS] = [const { AtomicU64::new(0) }; MAX_CPUS];
-/// The latest time any CPU returned: an HPET read takes microseconds, so two CPUs'
-/// zero points can disagree by that much, and no caller may see time go back.
+/// The latest time any CPU returned. CPUs whose TSC started apart keep zero
+/// points of their own ([`start_cpu`]), each from an HPET read that takes
+/// microseconds, so their clocks can disagree by that much, and no caller may
+/// see time go back.
 static LATEST: AtomicU64 = AtomicU64::new(0);
 /// One window of measuring the TSC against the HPET, and at most how many.
 const WINDOW_NS: u64 = 25_000_000;
@@ -355,17 +357,59 @@ fn try_tsc(why: &str) {
     );
 }
 
+/// HPET reads per zero pair: the quickest is kept ([`zero_pair`]).
+const ZERO_SAMPLES: usize = 8;
+
+/// A TSC value and the HPET's nanoseconds at about that moment: of
+/// [`ZERO_SAMPLES`] HPET reads, each between two TSC reads, the quickest
+/// ([`acpitables::hpet_counter::best_pair`]), so one slow read neither puts a
+/// zero point microseconds off nor makes a CPU keep a zero point of its own.
+fn zero_pair() -> (u64, u64) {
+    let samples = (0..ZERO_SAMPLES).map(|_| {
+        let before = tsc();
+        let nanos = hpet_nanos();
+        (before, nanos, tsc())
+    });
+    acpitables::hpet_counter::best_pair(samples).unwrap_or_else(|| (tsc(), hpet_nanos()))
+}
+
 fn set_zero(cpu: usize) {
-    let nanos = hpet_nanos();
-    TSC_ZERO[cpu].store(tsc(), Ordering::Relaxed);
+    let (ticks, nanos) = zero_pair();
+    TSC_ZERO[cpu].store(ticks, Ordering::Relaxed);
     NANOS_ZERO[cpu].store(nanos, Ordering::Relaxed);
 }
 
 /// Gives CPU `cpu` its TSC zero point, if the TSC is the clock. Each CPU runs it
 /// once as it starts, before it reads the clock.
+///
+/// The boot CPU's zero point when this CPU's TSC agrees with it
+/// ([`acpitables::hpet_counter::shares_zero`]), as KVM's do: one offset per VM.
+/// A zero point of its own, from a fresh HPET read, put each CPU's clock a few
+/// microseconds from the others', and [`LATEST`] then held a CPU behind at the
+/// leader's time: `time_ns` returned the same value across a 2-4 us run, and a
+/// work process calibrated 200,000,000 iterations per ms (the tune flakes after
+/// #1628). A TSC that started apart, as VirtualBox's do, still gets its own.
 pub fn start_cpu(cpu: usize) {
-    if TSC_MULT.load(Ordering::Acquire) != 0 && cpu < MAX_CPUS {
-        set_zero(cpu);
+    let mult = TSC_MULT.load(Ordering::Acquire);
+    if mult == 0 || cpu >= MAX_CPUS || cpu == 0 {
+        return;
+    }
+    let (now, hpet) = zero_pair();
+    let ticks = now.wrapping_sub(TSC_ZERO[0].load(Ordering::Relaxed));
+    // A TSC behind the boot CPU's zero wraps to a huge count and fails the check.
+    let from_boot = NANOS_ZERO[0]
+        .load(Ordering::Relaxed)
+        .saturating_add(((u128::from(ticks) * u128::from(mult)) >> 32) as u64);
+    if acpitables::hpet_counter::shares_zero(from_boot, hpet) {
+        TSC_ZERO[cpu].store(TSC_ZERO[0].load(Ordering::Relaxed), Ordering::Relaxed);
+        NANOS_ZERO[cpu].store(NANOS_ZERO[0].load(Ordering::Relaxed), Ordering::Relaxed);
+    } else {
+        TSC_ZERO[cpu].store(now, Ordering::Relaxed);
+        NANOS_ZERO[cpu].store(hpet, Ordering::Relaxed);
+        log!(
+            "clock: cpu {cpu}'s TSC is {} ns from the boot CPU's against the HPET; it keeps a zero point of its own",
+            from_boot.wrapping_sub(hpet) as i64
+        );
     }
 }
 

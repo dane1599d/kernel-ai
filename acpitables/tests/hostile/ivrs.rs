@@ -50,7 +50,25 @@ pub fn ivrs_table(data: &[u8]) -> Option<Ivrs> {
         }
     }
     assert!(ivrs.iommus().len() <= ivrs.blocks.len());
+    // Each thing dropped took at least 4 bytes of the table.
+    assert!(
+        ivrs.dropped <= len / 4,
+        "{} dropped in {len} bytes",
+        ivrs.dropped
+    );
     Some(ivrs)
+}
+
+/// Parses `data` as it is, and again with the signature, length and checksum
+/// set, so random bytes reach the blocks, not only the header's checks.
+pub fn ivrs_tables(data: &[u8]) {
+    ivrs_table(data);
+    if data.len() >= 48 {
+        let mut sealed = data.to_vec();
+        sealed[..4].copy_from_slice(b"IVRS");
+        reseal(&mut sealed);
+        ivrs_table(&sealed);
+    }
 }
 
 /// Sets `table`'s length field to its own length and its checksum, so a

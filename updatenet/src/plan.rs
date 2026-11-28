@@ -67,7 +67,8 @@ impl Refused {
                 format!("release {seq} is not newer than {newest} (anti-rollback)")
             }
             Self::Room { need, room } => {
-                format!("the image is {need} bytes and the slot holds {room}")
+                let need = crate::blocks::shown(*need);
+                format!("the image is {need} and the slot holds {room}")
             }
             Self::Staged(seq) => format!("release {seq} is staged already"),
         }
@@ -222,7 +223,7 @@ pub fn plan(
             newest,
         });
     }
-    if release.length == 0 || crate::blocks::padded(release.length) > machine.room {
+    if !crate::blocks::fits(release.length, machine.room) {
         return Err(Refused::Room {
             need: release.length,
             room: machine.room,

@@ -20,7 +20,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 #[path = "answers.rs"]
-mod answers;
+pub(crate) mod answers;
 
 /// How long a question waits for its answer.
 pub(crate) const CONFIRM_EXPIRY_NS: u64 = 120_000_000_000;

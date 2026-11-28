@@ -3,7 +3,9 @@
 
 use sha2::{Digest, Sha256};
 
-use crate::apply::{Disk, ReadOnly};
+use alloc::vec;
+
+use crate::apply::{Disk, PIECE, ReadOnly};
 
 const S: usize = crate::SECTOR as usize;
 
@@ -97,18 +99,28 @@ pub fn current(disk: &mut dyn Disk) -> Current {
     let mut zero = true;
     let mut looked = [[0u8; S]; LOOKED_AT.len()];
     let mut last = [0u8; S];
-    let mut sector = [0u8; S];
-    for lba in (0..head).chain(tail..sectors) {
-        if disk.read(lba, &mut sector).is_err() {
-            return Current::ReadFails;
-        }
-        hash.update(sector);
-        zero &= sector == [0; S];
-        if let Some(n) = LOOKED_AT.iter().position(|&at| at == lba) {
-            looked[n] = sector;
-        }
-        if lba + 1 == sectors {
-            last = sector;
+    // In pieces of PIECE sectors, as apply copies: a read per sector would be
+    // thousands of commands over USB.
+    let mut piece = vec![0u8; PIECE as usize * S];
+    for (start, end) in [(0, head), (tail, sectors)] {
+        let mut lba = start;
+        while lba < end {
+            let n = (end - lba).min(PIECE);
+            let bytes = &mut piece[..n as usize * S];
+            if disk.read(lba, bytes).is_err() {
+                return Current::ReadFails;
+            }
+            for (at, sector) in (lba..).zip(bytes.as_chunks::<S>().0) {
+                hash.update(sector);
+                zero &= *sector == [0; S];
+                if let Some(k) = LOOKED_AT.iter().position(|&x| x == at) {
+                    looked[k] = *sector;
+                }
+                if at + 1 == sectors {
+                    last = *sector;
+                }
+            }
+            lba += n;
         }
     }
     if zero {
