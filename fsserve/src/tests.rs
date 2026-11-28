@@ -1030,6 +1030,36 @@ fn a_file_named_info_cbor_goes_to_the_trash_and_back() {
     assert!(c.trash_paths(HOME_USER).is_empty());
 }
 
+/// A restore from the trash refused inside an action leaves the action open:
+/// the caller's next Begin is Busy until it sends Abort, as the shell's
+/// `undo` of `rules refused remove` does on every failure (#1673's review).
+#[test]
+fn a_trash_restore_refused_in_an_action_holds_it_until_abort() {
+    let mut disk = MemDisk::new(BLOCKS);
+    let (mut c, _) = Client::start(&mut disk);
+    let file = c.open("rules.refused", How::CreateFile).unwrap();
+    c.write(&file, 0, b"kai-grants 1");
+    c.trash(HOME_USER, "rules.refused");
+    c.open("rules.refused", How::CreateFile).unwrap();
+    for (path, refused) in [
+        ("rules.refused", Error::Exists),
+        ("rules.refused.2", Error::NotFound),
+    ] {
+        assert_eq!(c.home(Request::Begin { action: 7 }).0, Reply::Done);
+        let back = c.home(Request::TrashRestore { path: path.into() }).0;
+        assert_eq!(back, Reply::Failed(refused), "{path}");
+        assert_eq!(
+            c.home(Request::Begin { action: 8 }).0,
+            Reply::Failed(Error::Busy),
+            "{path}"
+        );
+        assert_eq!(c.home(Request::Abort).0, Reply::Done, "{path}");
+    }
+    assert_eq!(c.home(Request::Begin { action: 9 }).0, Reply::Done);
+    assert_eq!(c.home(Request::Abort).0, Reply::Done);
+    assert_eq!(c.trash_paths(HOME_USER), ["rules.refused"]);
+}
+
 #[test]
 fn a_restore_from_the_trash_is_undone_like_any_action() {
     let mut disk = MemDisk::new(BLOCKS);

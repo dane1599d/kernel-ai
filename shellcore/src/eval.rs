@@ -14,8 +14,8 @@ impl Shell {
         // `rules refused remove`'s question takes only the very next line, a
         // typed y or n: any other line leaves it, `:c` and an open entry's
         // too, so no later `y` answers it (#1655's review).
-        if let Some(n) = self.refused_asking.take()
-            && let Some(reply) = self.refused_answer(n, input.trim())
+        if let Some(asked) = self.refused_asking.take()
+            && let Some(reply) = self.refused_answer(asked, input.trim())
         {
             return reply;
         }

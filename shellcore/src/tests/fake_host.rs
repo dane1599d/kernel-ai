@@ -334,20 +334,29 @@ impl Host for FakeHost {
         Ok(40 + trash.len() as u64)
     }
 
-    /// The newest trashed copy of `name` back, unless the name is taken.
+    /// The newest trashed copy of `name` back, unless the name is taken:
+    /// [`crate::untrash_on`] over a `/system/state` held in memory.
     fn refused_rules_untrash(&self, name: &str) -> Result<(), crate::FsRefused> {
-        let mut aside = self.rules_aside.borrow_mut();
-        if aside.iter().any(|(n, _)| n == name) {
-            return Err(crate::FsRefused::Kept(format!("{name} exists again")));
-        }
-        let mut trash = self.rules_trash.borrow_mut();
-        let at = trash
-            .iter()
-            .rposition(|(n, _)| n == name)
-            .ok_or_else(|| crate::FsRefused::Kept(format!("no {name} in the trash")))?;
-        aside.push(trash.remove(at));
-        aside.sort();
-        Ok(())
+        use fsproto::{Error, Reply, Request};
+        crate::untrash_on(name, 1, |request| {
+            Ok(match request {
+                Request::TrashRestore { path } => {
+                    let mut aside = self.rules_aside.borrow_mut();
+                    let mut trash = self.rules_trash.borrow_mut();
+                    if aside.iter().any(|(n, _)| *n == path) {
+                        Reply::Failed(Error::Exists)
+                    } else if let Some(at) = trash.iter().rposition(|(n, _)| *n == path) {
+                        aside.push(trash.remove(at));
+                        aside.sort();
+                        Reply::Done
+                    } else {
+                        Reply::Failed(Error::NotFound)
+                    }
+                }
+                Request::Commit => Reply::Committed { generation: 50 },
+                _ => Reply::Done,
+            })
+        })
     }
 
     fn net_grants_read(&self) -> Result<Option<String>, String> {
