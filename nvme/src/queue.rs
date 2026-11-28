@@ -48,7 +48,11 @@ impl SubmissionQueue {
         if head >= self.entries {
             return false;
         }
-        let ahead = |to: u16| (to + self.entries - self.head) % self.entries;
+        // In u32: the sum overflows u16 for a queue of more than 32768 entries.
+        let ahead = |to: u16| {
+            (u32::from(to) + u32::from(self.entries) - u32::from(self.head))
+                % u32::from(self.entries)
+        };
         let inside = ahead(head) <= ahead(self.tail);
         if inside {
             self.head = head;
@@ -194,5 +198,17 @@ mod tests {
             cq.pop();
         }
         assert!(cq.is_new(true));
+    }
+
+    /// A queue of more than 32768 entries: the distance sums stay in range.
+    #[test]
+    fn a_huge_queue_takes_a_head_near_its_end() {
+        let mut sq = SubmissionQueue::new(65535);
+        sq.head = 65000;
+        sq.tail = 100;
+        assert!(sq.advance_head(65500));
+        assert!(sq.advance_head(50));
+        assert!(!sq.advance_head(101));
+        assert!(!sq.advance_head(65400));
     }
 }
