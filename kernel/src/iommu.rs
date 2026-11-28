@@ -1,8 +1,15 @@
-//! AMD-Vi bring-up (ADR 0007 section 5), v0.3's first step: each IOMMU the
-//! IVRS lists gets a device table of pass-through entries and a command
-//! buffer, and one COMPLETION_WAIT proves the IOMMU reads its commands.
-//! Nothing is translated yet: every device keeps reaching memory as before,
-//! and confining DMA waits on spike S07-2. `iommu=off` skips all of it.
+//! AMD-Vi bring-up (ADR 0007 section 5), v0.3's first step. By default the
+//! kernel only reads the IVRS and says how many IOMMUs it lists, and touches
+//! no IOMMU register: until spike S07-2, and a check of `amdvi`'s layouts
+//! against the specification, a wrong device table bit with IommuEn on could
+//! block a real machine's disk, network or interrupts (the decisions row of
+//! 2026-11-28, "amdvi-clean-room").
+//!
+//! With `iommu=on`, each IOMMU gets a device table of pass-through entries
+//! (IV clear, so interrupts pass as sent), a command buffer and an event
+//! log, and one COMPLETION_WAIT proves the IOMMU reads its commands; a unit
+//! that fails is turned off again. Nothing is translated: every device keeps
+//! reaching memory as before. `iommu=off` says so and does nothing.
 //!
 //! The formats are `amdvi`'s; this module only maps the registers, gives the
 //! IOMMU its memory and writes the registers in order. `iommu=check` (the
@@ -44,8 +51,13 @@ pub fn init(platform: &acpitables::Platform, cmdline: &str) {
         units.len(),
         ivrs.dropped
     );
-    if cmdline.split_whitespace().any(|word| word == "iommu=off") {
+    let said = |word: &str| cmdline.split_whitespace().any(|w| w == word);
+    if said("iommu=off") {
         log!("iommu: off on the command line; DMA is not confined");
+        return;
+    }
+    if !said("iommu=on") {
+        log!("iommu: left off until iommu=on (spike S07-2); DMA is not confined");
         return;
     }
     for unit in units {
@@ -58,7 +70,7 @@ pub fn init(platform: &acpitables::Platform, cmdline: &str) {
                     unit.base,
                     ns / 1000
                 );
-                if cmdline.split_whitespace().any(|word| word == "iommu=check") {
+                if said("iommu=check") {
                     check(&mut on, id);
                 }
             }
