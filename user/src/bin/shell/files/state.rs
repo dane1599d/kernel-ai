@@ -109,12 +109,9 @@ impl State {
         let dir = self
             .dir
             .ok_or_else(|| String::from("no /system/state here"))?;
-        expect_done(dir, Request::Begin { action })?;
+        begin(dir, action)?;
         match expect_done(dir, Request::Trash { name: name.into() }) {
-            Ok(()) => match ask(dir, Request::Commit)?.0 {
-                Reply::Committed { generation } => Ok(generation),
-                other => Err(unexpected(&other)),
-            },
+            Ok(()) => commit(dir),
             Err(why) => {
                 let _ = ask(dir, Request::Abort);
                 Err(why)
@@ -155,16 +152,40 @@ impl State {
         let dir = self
             .dir
             .ok_or_else(|| String::from("no /system/state here"))?;
-        expect_done(dir, Request::Begin { action })?;
+        begin(dir, action)?;
         match self.write_in(name, text) {
-            Ok(()) => match ask(dir, Request::Commit)?.0 {
-                Reply::Committed { .. } => Ok(()),
-                other => Err(unexpected(&other)),
-            },
+            Ok(()) => commit(dir).map(|_| ()),
             Err(why) => {
                 let _ = ask(dir, Request::Abort);
                 Err(why)
             }
         }
     }
+}
+
+/// Begins an action of its own on `dir`. A Begin whose call got no answer
+/// may still have reached `fs` and opened the action, which would answer
+/// every later Begin of the shell's with Busy, so it is aborted; a refused
+/// Begin opened none (#1673's review).
+fn begin(dir: Handle, action: u64) -> Result<(), String> {
+    match ask(dir, Request::Begin { action }) {
+        Ok((Reply::Done, _)) => Ok(()),
+        Ok((other, _)) => Err(unexpected(&other)),
+        Err(why) => {
+            let _ = ask(dir, Request::Abort);
+            Err(why)
+        }
+    }
+}
+
+/// Commits the action open on `dir`: its generation. One that failed, or
+/// whose call got no answer, is aborted, so it never stays open.
+fn commit(dir: Handle) -> Result<u64, String> {
+    let why = match ask(dir, Request::Commit) {
+        Ok((Reply::Committed { generation }, _)) => return Ok(generation),
+        Ok((other, _)) => unexpected(&other),
+        Err(why) => why,
+    };
+    let _ = ask(dir, Request::Abort);
+    Err(why)
 }
