@@ -456,11 +456,14 @@ jobs:
         with:
           shared-key: qemu-release
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # On the HPET, named: with no clock= word KVM boots try the TSC (#1628),
+      # and this is the baseline where every HPET read exits to the host.
       - name: Boot the release kernel and log the perf marks
         env:
           XTASK_CASE: shm
+          XTASK_CMDLINE: clock=hpet
         run: cargo xtask test --release --accel kvm --timeout 300
-      # The same with the TSC as the clock: every HPET read exits to the host.
+      # The same with the TSC as the clock, which reads no HPET.
       - name: The perf marks again with clock=tsc
         env:
           XTASK_CASE: shm
