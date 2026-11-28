@@ -33,7 +33,9 @@ publish = false
 # And the readers of other bytes that have a hostile test of their own (plan P8
 # row 1; P6 G29 to G33): uelf's ELF loader, kaibundle's boot bundle, bootslot's
 # slot record, diskmap's GPT, gguf's file reader and kaifs's image, each target
-# including the body in that crate's tests by #[path]. All are workspace
+# including the body in that crate's tests by #[path]; and the device-facing
+# readers (ADR 0007 section 12): nvme's Identify pages and xhci's USB
+# descriptors, hub descriptor and hub port status. All are workspace
 # crates (MPL-2.0 or the workspace's own), with no new external dependency.
 #
 # Being outside the workspace, this crate is outside `cargo deny`'s graph, so
@@ -71,6 +73,8 @@ bootslot = { path = "../bootslot" }
 diskmap = { path = "../diskmap" }
 gguf = { path = "../gguf" }
 kaifs = { path = "../kaifs" }
+nvme = { path = "../nvme" }
+xhci = { path = "../xhci" }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
 kaimedia = { path = "../kaimedia" }
 rustls = { version = "=0.23.46", default-features = false }
@@ -292,6 +296,20 @@ bench = false
 [[bin]]
 name = "kaifs_image"
 path = "fuzz_targets/kaifs_image.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nvme_identify"
+path = "fuzz_targets/nvme_identify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "xhci_descriptors"
+path = "fuzz_targets/xhci_descriptors.rs"
 test = false
 doc = false
 bench = false
