@@ -158,6 +158,13 @@ pub fn report(outcomes: &[Outcome], renderer: &str, filters: &[String]) -> Strin
         all.fail,
         all.error
     );
+    let noted = outcomes.iter().filter(|o| o.note.is_some()).count();
+    if noted > 0 {
+        let _ = writeln!(
+            out,
+            "{noted} ran with a note (an unread `viewport_size`, say): see results.json.\n"
+        );
+    }
     let _ = writeln!(
         out,
         "| Directory | Pass | Fail | Error | Pass rate |\n|---|---|---|---|---|"
@@ -187,6 +194,9 @@ pub fn results_json(outcomes: &[Outcome], renderer: &str) -> String {
             });
             if let Status::Error(why) = &o.status {
                 v["message"] = serde_json::Value::from(why.as_str());
+            }
+            if let Some(note) = &o.note {
+                v["note"] = serde_json::Value::from(note.as_str());
             }
             if let Some((reference, relation, diff)) = &o.last {
                 v["last"] = serde_json::json!({

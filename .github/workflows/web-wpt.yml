@@ -37,6 +37,9 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # No later step pushes or reads the repository with the token.
+          persist-credentials: false
       - name: Install pinned toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
@@ -65,7 +68,9 @@ jobs:
           RENDERER: ${{ inputs.renderer }}
         run: |
           args=(--wpt "$RUNNER_TEMP/wpt" --renderer "$RENDERER" --out wpt-out)
-          for f in $FILTER; do args+=(--filter "$f"); done
+          # Split on spaces only, never globbed: a `*` in a filter stays a `*`.
+          read -ra filters <<< "$FILTER"
+          for f in "${filters[@]}"; do args+=(--filter "$f"); done
           if [ "${LIMIT:-0}" != 0 ]; then args+=(--limit "$LIMIT"); fi
           cargo xtask wpt run "${args[@]}"
       - name: Report to the job summary
