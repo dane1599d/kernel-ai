@@ -159,6 +159,36 @@ fn lint(file: &str, text: &str) -> (Vec<String>, usize) {
 /// The workflows that may ask for a `write` permission.
 const MAY_WRITE: &[&str] = &["release.yml"];
 
+fn hex(s: &str, len: usize) -> bool {
+    s.len() == len && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// A value after `scope:` that grants write: `write`, `write-all`, either
+/// quoted, a `# comment` after it, or a flow mapping naming a `write` scope.
+fn grants_write(value: &str) -> bool {
+    let value = value.split(" #").next().unwrap_or(value).trim();
+    let value = value.trim_matches(|c| c == '"' || c == '\'');
+    if let Some(flow) = value.strip_prefix('{') {
+        return flow
+            .trim_end_matches('}')
+            .split(',')
+            .any(|pair| pair.split_once(':').is_some_and(|(_, v)| grants_write(v)));
+    }
+    matches!(value, "write" | "write-all")
+}
+
+/// A `permissions:` key at column 0 whose value is empty, a flow mapping, or
+/// `read-all` / `write-all` (what a top-level block can be), not another key
+/// that starts with the word or a line of a scalar.
+fn top_permissions(line: &str) -> bool {
+    let Some(value) = line.strip_prefix("permissions:") else {
+        return false;
+    };
+    let value = value.split(" #").next().unwrap_or(value).trim();
+    matches!(value, "" | "read-all" | "write-all")
+        || (value.starts_with('{') && value.ends_with('}'))
+}
+
 /// What the policy rules find wrong in one file: `workflow` is true for a file
 /// under `.github/workflows` (a local action has no `permissions:`).
 fn policy(file: &str, text: &str, workflow: bool) -> Vec<String> {
@@ -167,7 +197,7 @@ fn policy(file: &str, text: &str, workflow: bool) -> Vec<String> {
         .and_then(|n| n.to_str())
         .unwrap_or(file);
     let mut errors = Vec::new();
-    if workflow && !text.lines().any(|l| l.starts_with("permissions:")) {
+    if workflow && !text.lines().any(top_permissions) {
         errors.push(format!(
             "{file}:1: no top-level `permissions:` block: add `permissions: {{}}` or the scopes it needs"
         ));
@@ -176,11 +206,15 @@ fn policy(file: &str, text: &str, workflow: bool) -> Vec<String> {
         let at = format!("{file}:{}", i + 1);
         let body = line.trim_start();
         let body = body.strip_prefix("- ").unwrap_or(body).trim_start();
-        if let Some((scope, "write")) = body.split_once(": ")
+        if let Some((scope, value)) = body.split_once(':')
             && !scope.contains(' ')
+            && grants_write(value)
             && !MAY_WRITE.contains(&name)
         {
-            errors.push(format!("{at}: `{scope}: write` outside {MAY_WRITE:?}"));
+            errors.push(format!(
+                "{at}: `{scope}: {}` outside {MAY_WRITE:?}",
+                value.trim()
+            ));
         }
         let Some(uses) = body.strip_prefix("uses:") else {
             continue;
@@ -189,9 +223,13 @@ fn policy(file: &str, text: &str, workflow: bool) -> Vec<String> {
         if uses.starts_with("./") {
             continue;
         }
-        let pinned = uses
-            .rsplit_once('@')
-            .is_some_and(|(_, sha)| sha.len() == 40 && sha.bytes().all(|b| b.is_ascii_hexdigit()));
+        // A container is pinned by its image digest, an action by a commit sha.
+        let pinned = match uses.strip_prefix("docker://") {
+            Some(image) => image
+                .rsplit_once("@sha256:")
+                .is_some_and(|(_, d)| hex(d, 64)),
+            None => uses.rsplit_once('@').is_some_and(|(_, sha)| hex(sha, 40)),
+        };
         if !pinned {
             errors.push(format!(
                 "{at}: `{uses}` is not pinned to a full commit sha: use `@<sha> # <tag>`"
@@ -370,6 +408,56 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 ";
     assert!(policy(".github/workflows/ci.yml", good, true).is_empty());
+
+    // Every spelling of a write is caught: write-all, quotes, a trailing
+    // comment, a flow mapping.
+    for line in [
+        "permissions: write-all",
+        "  contents: \"write\"",
+        "  contents: 'write'",
+        "  contents: write # needed to tag",
+        "  permissions: { contents: write }",
+    ] {
+        let text = format!("permissions: {{}}\njobs:\n{line}\n");
+        let found = policy(".github/workflows/ci.yml", &text, true);
+        assert_eq!(found.len(), 1, "{line}: {found:#?}");
+    }
+    for line in [
+        "  contents: read",
+        "  contents: write-ish-name",
+        "permissions: read-all",
+    ] {
+        let text = format!("permissions: {{}}\njobs:\n{line}\n");
+        assert!(
+            policy(".github/workflows/ci.yml", &text, true).is_empty(),
+            "{line}"
+        );
+    }
+
+    // Only a real top-level block counts: not a longer key or a stray value.
+    for head in [
+        "permissionsx: {}",
+        "permissions:foo",
+        "permissions: contents",
+    ] {
+        let text = format!("{head}\njobs: {{}}\n");
+        assert_eq!(
+            policy(".github/workflows/ci.yml", &text, true).len(),
+            1,
+            "{head}"
+        );
+    }
+    let block = "permissions:\n  contents: read\njobs: {}\n";
+    assert!(policy(".github/workflows/ci.yml", block, true).is_empty());
+
+    // A container image is pinned by its digest.
+    let digest = "a".repeat(64);
+    let image = format!(
+        "permissions: {{}}\njobs:\n  a:\n    steps:\n      - uses: docker://alpine@sha256:{digest}\n"
+    );
+    assert!(policy(".github/workflows/ci.yml", &image, true).is_empty());
+    let tag = "permissions: {}\njobs:\n  a:\n    steps:\n      - uses: docker://alpine:3\n";
+    assert_eq!(policy(".github/workflows/ci.yml", tag, true).len(), 1);
 }
 
 /// A release tag runs every workflow release.yml calls, so each is in

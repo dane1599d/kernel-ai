@@ -100,7 +100,7 @@ jobs:
       - name: Install the WebAssembly target for live components
         if: steps.scope.outputs.code == 'true'
         run: rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - if: steps.scope.outputs.code == 'true'
@@ -326,7 +326,7 @@ jobs:
       - name: Install the WebAssembly target for live components
         run: rustup target add wasm32-unknown-unknown
       # The shards' cache: this job now builds what they used to.
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: qemu
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -387,7 +387,7 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install the WebAssembly target for live components
         run: rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: qemu
           save-if: false
@@ -449,7 +449,7 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install the WebAssembly target for live components
         run: rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: qemu-release
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -488,7 +488,7 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install the WebAssembly target for live components
         run: rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: qemu
           save-if: false
@@ -519,7 +519,7 @@ jobs:
         run: rustup show active-toolchain || rustup toolchain install
       - name: Install the WebAssembly target for live components
         run: rustup target add wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           shared-key: qemu
           save-if: false
