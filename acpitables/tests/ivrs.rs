@@ -147,3 +147,58 @@ fn the_captured_tables_hold_what_qemu_builds() {
     );
     assert_eq!(iommu.device(0x0300), None);
 }
+
+#[test]
+fn a_damaged_table_says_what_it_dropped() {
+    for (name, bytes) in FIXTURES {
+        let whole = ivrs_table(bytes).unwrap();
+        assert_eq!(whole.dropped, 0, "{name}: a table read whole drops nothing");
+        assert_eq!(whole.physical_address_bits(), 40, "{name}");
+        assert_eq!(whole.info, 0x2801, "{name}");
+        assert_eq!(whole.virtual_address_bits(), 0, "{name}");
+        assert_eq!(whole.guest_virtual_size(), 0, "{name}");
+        // A second IVHD whose length runs past the table: the first IOMMU is
+        // read, and the loss is counted, not silent.
+        let mut cut = bytes.to_vec();
+        let last = block_starts(&cut).pop().unwrap();
+        let len = cut.len() - last + 8;
+        cut[last + 2..last + 4].copy_from_slice(&(len as u16).to_le_bytes());
+        body::reseal(&mut cut);
+        let read = ivrs_table(&cut).unwrap();
+        assert!(read.dropped >= 1, "{name}");
+        assert_eq!(read.blocks.len(), whole.blocks.len() - 1, "{name}");
+    }
+}
+
+/// Where each block of `table` starts.
+fn block_starts(table: &[u8]) -> Vec<usize> {
+    let mut at = 48;
+    let mut out = Vec::new();
+    while at + 4 <= table.len() {
+        out.push(at);
+        at += usize::from(u16::from_le_bytes([table[at + 2], table[at + 3]]));
+    }
+    out
+}
+
+/// A table of many blocks with distinct IDs: `iommus` sorts, it does not
+/// compare each pair (a 1 MiB table holds about 43,000 24-byte blocks).
+#[test]
+fn many_blocks_are_not_compared_pairwise() {
+    let mut table = vec![0u8; 48];
+    table[..4].copy_from_slice(b"IVRS");
+    for id in (0..40_000u16).rev() {
+        let mut block = [0u8; 24];
+        block[0] = 0x10;
+        block[2..4].copy_from_slice(&24u16.to_le_bytes());
+        block[4..6].copy_from_slice(&id.to_le_bytes());
+        table.extend_from_slice(&block);
+    }
+    body::reseal(&mut table);
+    let started = std::time::Instant::now();
+    let ivrs = ivrs::parse(&table).unwrap();
+    let iommus = ivrs.iommus();
+    assert_eq!(iommus.len(), 40_000);
+    assert!(iommus.windows(2).all(|w| w[0].device_id < w[1].device_id));
+    assert!(started.elapsed().as_secs() < 5, "{:?}", started.elapsed());
+}
