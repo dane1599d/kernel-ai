@@ -11,7 +11,9 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering
 use x86_64::VirtAddr;
 use x86_64::registers::model_specific::GsBase;
 
-pub const MAX_CPUS: usize = 8;
+/// The most CPUs brought up: 16 since x2APIC (P6 G48), with the watchdog's
+/// tick mask (32 bits) as the next limit.
+pub const MAX_CPUS: usize = 16;
 
 #[repr(C)]
 pub struct PerCpu {

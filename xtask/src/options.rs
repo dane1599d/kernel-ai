@@ -94,13 +94,16 @@ impl Options {
 /// The VM's size when given on the command line; xtask's defaults otherwise.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Sizing {
-    /// vCPUs, 1 to the kernel's MAX_CPUS (8).
+    /// vCPUs, 1 to [`MAX_VM_CPUS`].
     pub cpus: Option<usize>,
     /// Guest memory in MiB; a model disk's need is a floor under it.
     pub mem_mib: Option<u64>,
 }
 
-/// The kernel brings up at most this many CPUs (`kernel/src/percpu.rs` MAX_CPUS).
+/// The most vCPUs `--cpus` and the host-sized runs give a VM, kept at 8 so
+/// model runs size as before. The kernel brings up 16
+/// (`kernel/src/percpu.rs` MAX_CPUS), and a case may ask for more than this
+/// (`TestCase::cpus`).
 pub const MAX_VM_CPUS: usize = 8;
 /// Guest memory bounds for `--mem`, in MiB.
 const MIN_MEM_MIB: u64 = 256;

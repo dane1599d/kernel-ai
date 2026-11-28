@@ -1,8 +1,18 @@
-//! Local APIC (xAPIC, memory-mapped) and I/O APIC.
+//! Local APIC and I/O APIC.
+//!
+//! The local APIC runs in one of two modes, the same on every CPU:
+//! - xAPIC, its registers in a memory-mapped page: the default;
+//! - x2APIC (P6 G48), its registers as MSRs 0x800 + offset / 16, with 32-bit
+//!   IDs and a 64-bit ICR: used when firmware hands over in it (it cannot be
+//!   turned off again without a reset), or when `apic=x2apic` asks and CPUID
+//!   offers it. Each application processor switches to the boot CPU's mode.
+//!
+//! The I/O APIC's destination field stays 8 bits (no interrupt remapping), so
+//! its interrupts go to an APIC ID of at most 254.
 
 use crate::memory;
 use acpitables::Platform;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use x86_64::registers::model_specific::Msr;
 use x86_64::structures::paging::PageTableFlags;
 
@@ -17,6 +27,8 @@ pub const SPURIOUS_VECTOR: u8 = 0xFF;
 const IA32_APIC_BASE: u32 = 0x1B;
 const APIC_GLOBAL_ENABLE: u64 = 1 << 11;
 const X2APIC_ENABLE: u64 = 1 << 10;
+/// x2APIC MSRs start here: register `offset` is MSR `X2APIC_MSRS + offset / 16`.
+const X2APIC_MSRS: u32 = 0x800;
 
 // Local APIC register offsets.
 const ID: u64 = 0x20;
@@ -41,34 +53,75 @@ const DEVICE: PageTableFlags = PageTableFlags::PRESENT
     .union(PageTableFlags::NO_EXECUTE);
 
 static LAPIC: AtomicU64 = AtomicU64::new(0);
+/// Every CPU's local APIC is in x2APIC mode.
+static X2APIC: AtomicBool = AtomicBool::new(false);
+
+fn x2apic() -> bool {
+    X2APIC.load(Ordering::Relaxed)
+}
+
+fn x2apic_msr(offset: u64) -> Msr {
+    Msr::new(X2APIC_MSRS + (offset >> 4) as u32)
+}
 
 fn lapic_read(offset: u64) -> u32 {
+    if x2apic() {
+        // SAFETY: in x2APIC mode every register below is an MSR at its offset / 16.
+        return unsafe { x2apic_msr(offset).read() } as u32;
+    }
     let base = LAPIC.load(Ordering::Relaxed);
     // SAFETY: base maps the local APIC register page uncached; offset is a register.
     unsafe { ((base + offset) as *const u32).read_volatile() }
 }
 
 fn lapic_write(offset: u64, value: u32) {
+    if x2apic() {
+        // SAFETY: as in lapic_read.
+        return unsafe { x2apic_msr(offset).write(u64::from(value)) };
+    }
     let base = LAPIC.load(Ordering::Relaxed);
     // SAFETY: as in lapic_read.
     unsafe { ((base + offset) as *mut u32).write_volatile(value) }
 }
 
-/// Enables this CPU's local APIC in xAPIC mode and returns its APIC ID.
-pub fn init_local(platform: &Platform) -> Result<u8, &'static str> {
+/// This CPU's local APIC ID: 32 bits in x2APIC mode, the top byte of the
+/// register in xAPIC mode.
+fn local_id() -> u32 {
+    match x2apic() {
+        true => lapic_read(ID),
+        false => lapic_read(ID) >> 24,
+    }
+}
+
+/// Enables the boot CPU's local APIC, in the mode [`cpufeat::apic::mode`]
+/// picks, and returns its APIC ID.
+pub fn init_local(platform: &Platform) -> Result<u32, &'static str> {
     let mut msr = Msr::new(IA32_APIC_BASE);
     // SAFETY: IA32_APIC_BASE exists on every x86_64 CPU.
     let value = unsafe { msr.read() };
-    if value & X2APIC_ENABLE != 0 {
-        return Err("APIC: firmware left x2APIC mode on; only xAPIC is supported so far");
+    let asked = crate::cmdline()
+        .split_whitespace()
+        .any(|w| w == "apic=x2apic");
+    let (x2, why) =
+        match cpufeat::apic::mode(value & X2APIC_ENABLE != 0, cpufeat::apic::offered(), asked) {
+            cpufeat::apic::Mode::X2Apic(why) => (true, why),
+            cpufeat::apic::Mode::XApic(why) => (false, why),
+        };
+    if x2 {
+        // SAFETY: from xAPIC (or x2APIC) mode, setting both bits enters (or
+        // keeps) x2APIC mode with the same base.
+        unsafe { msr.write(value | APIC_GLOBAL_ENABLE | X2APIC_ENABLE) };
+        X2APIC.store(true, Ordering::Relaxed);
+    } else {
+        // SAFETY: setting the global enable bit keeps the current base address.
+        unsafe { msr.write(value | APIC_GLOBAL_ENABLE) };
+        let base = memory::map_physical(platform.local_apic, 0x1000, DEVICE)?;
+        LAPIC.store(base, Ordering::Relaxed);
     }
-    // SAFETY: setting the global enable bit keeps the current base address.
-    unsafe { msr.write(value | APIC_GLOBAL_ENABLE) };
-    let base = memory::map_physical(platform.local_apic, 0x1000, DEVICE)?;
-    LAPIC.store(base, Ordering::Relaxed);
     lapic_write(TASK_PRIORITY, 0);
     lapic_write(SPURIOUS, 0x100 | u32::from(SPURIOUS_VECTOR));
-    Ok((lapic_read(ID) >> 24) as u8)
+    crate::log!("apic: {why}");
+    Ok(local_id())
 }
 
 pub fn end_of_interrupt() {
@@ -95,8 +148,12 @@ pub fn route_isa_irq(
     platform: &Platform,
     irq: u8,
     vector: u8,
-    apic_id: u8,
+    apic_id: u32,
 ) -> Result<(), &'static str> {
+    let apic_id = u8::try_from(apic_id)
+        .ok()
+        .filter(|&id| id != 0xff)
+        .ok_or("APIC: the I/O APIC cannot reach an APIC ID above 254")?;
     let route = platform.isa_route(irq);
     let io_apic = platform
         .io_apic_for(route.gsi)
@@ -118,23 +175,38 @@ pub fn route_isa_irq(
     Ok(())
 }
 
-/// Enables an application processor's local APIC. The register page is already
-/// mapped: every CPU sees its own local APIC at the same address.
-pub fn init_ap() -> u8 {
+/// Enables an application processor's local APIC in the boot CPU's mode. In
+/// xAPIC mode the register page is already mapped: every CPU sees its own
+/// local APIC at the same address.
+pub fn init_ap() -> u32 {
     let mut msr = Msr::new(IA32_APIC_BASE);
-    // SAFETY: IA32_APIC_BASE exists on every x86_64 CPU; this sets the enable bit.
+    let mode = match x2apic() {
+        true => APIC_GLOBAL_ENABLE | X2APIC_ENABLE,
+        false => APIC_GLOBAL_ENABLE,
+    };
+    // SAFETY: IA32_APIC_BASE exists on every x86_64 CPU; this sets the enable
+    // bit, and in x2APIC mode the x2APIC bit too (the boot CPU found CPUID
+    // offers it, and every CPU of the machine has the same local APIC).
     unsafe {
         let value = msr.read();
-        msr.write(value | APIC_GLOBAL_ENABLE);
+        msr.write(value | mode);
     }
     lapic_write(TASK_PRIORITY, 0);
     lapic_write(SPURIOUS, 0x100 | u32::from(SPURIOUS_VECTOR));
-    (lapic_read(ID) >> 24) as u8
+    local_id()
 }
 
 /// Sends a fixed interrupt with `vector` to the CPU whose local APIC has `lapic_id`.
 pub fn send_ipi(lapic_id: u32, vector: u8) {
     x86_64::instructions::interrupts::without_interrupts(|| {
+        if x2apic() {
+            // One 64-bit write, the destination in its top half; x2APIC has no
+            // delivery status to wait on.
+            let icr = (u64::from(lapic_id) << 32) | u64::from(u32::from(vector) | ICR_ASSERT);
+            // SAFETY: the ICR's MSR, in x2APIC mode.
+            unsafe { x2apic_msr(ICR_LOW).write(icr) };
+            return;
+        }
         while lapic_read(ICR_LOW) & ICR_PENDING != 0 {
             core::hint::spin_loop();
         }
