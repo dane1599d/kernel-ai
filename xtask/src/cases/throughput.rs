@@ -6,7 +6,12 @@ use super::{TestCase, case};
 use std::time::Duration;
 
 pub const NET_THROUGHPUT: TestCase = TestCase {
-    expect: &["net-throughput: ", " MB/s, first byte "],
+    expect: &[
+        "net-throughput: ",
+        " MB/s, first byte ",
+        // #1623's review: one poll per read, and a kick after the ring ran dry.
+        "net-throughput: each read polled once, and after the card ran dry it was kicked and the download went on",
+    ],
     server: false,
     min_timeout: Some(Duration::from_secs(600)),
     ..case(

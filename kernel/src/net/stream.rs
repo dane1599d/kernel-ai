@@ -295,12 +295,24 @@ pub fn send(owner: u64, id: u64, data: &[u8]) -> Result<usize, Error> {
 /// the peer closed and everything was read; Busy while none has come yet.
 ///
 /// One poll, after the read: it sends the window the read opened and takes in
-/// the frames the next read gets. A poll before it too was a second kick of
-/// the card each call, a VM exit under KVM (G67); the frames it would have
-/// taken in wait for that next read, or wake a NET_POLL.
+/// the frames the next read gets. A poll before it too was a second smoltcp
+/// pass each call, with its clock reads, each a VM exit when the HPET is the
+/// clock (G67); the frames it would have taken in wait for that next read, or
+/// wake a NET_POLL.
 pub fn recv(owner: u64, id: u64, out: &mut [u8]) -> Result<usize, Error> {
+    recv_with(owner, id, false, out)
+}
+
+/// [`recv`], polling before the read as well: for a caller that answers from
+/// this one call, such as an over-budget receive into no room, which must
+/// see a FIN still in the card's ring to answer 0 (#1623's review).
+pub fn recv_polled(owner: u64, id: u64, out: &mut [u8]) -> Result<usize, Error> {
+    recv_with(owner, id, true, out)
+}
+
+fn recv_with(owner: u64, id: u64, before: bool, out: &mut [u8]) -> Result<usize, Error> {
     let cap = out.len().min(MAX_CALL);
-    with_polls(owner, id, false, |socket, connected| {
+    with_polls(owner, id, before, |socket, connected| {
         match socket.recv_slice(&mut out[..cap]) {
             Ok(0) | Err(tcp::RecvError::InvalidState) if *connected && !socket.may_recv() => Ok(0),
             Ok(0) => Err(Error::Busy),

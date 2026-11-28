@@ -2,13 +2,14 @@
 //!
 //! - **Receive:** the card holds [`QUEUE_SIZE`] buffers. One handed back after
 //!   its frame is read waits in a stash, and the stash goes back to the card in
-//!   one batch after each poll ([`NicDevice::refill`]), kicked only when the
-//!   card asked to hear of it. A kick for each buffer cost a VM exit per frame
-//!   under KVM, 50-62 µs of 52-98 (spike P5-S2), and one for each poll still
-//!   92% of a download's time (G67).
-//! - **Send:** a frame is queued without waiting for the card and kicked with
-//!   the rest of its poll's frames; sent buffers are reclaimed before each
-//!   send.
+//!   one batch after each poll ([`NicDevice::refill`]). With EVENT_IDX the
+//!   card is kicked for a batch only when its `avail_event` asks, and without
+//!   it for every batch. A kick for each buffer cost a VM exit per frame under
+//!   KVM, 50-62 µs of 52-98 (spike P5-S2), and one for each poll still 92% of
+//!   a download's time (G67).
+//! - **Send:** a frame is queued without waiting for the card, and its poll's
+//!   frames are checked as one batch the same way; sent buffers are reclaimed
+//!   before each send.
 
 use super::{BUFFER_LEN, Nic, QUEUE_SIZE};
 use crate::log;
@@ -70,7 +71,8 @@ impl Card {
         self.nic.can_send()
     }
 
-    /// Queues `frame` for the card, behind a zero header; the poll's kick sends it.
+    /// Queues `frame` for the card, behind a zero header; the poll's check
+    /// kicks the card for it when the card asked.
     fn transmit(&mut self, frame: &[u8]) {
         self.reclaim();
         let header = super::virtio_net::HEADER;
@@ -108,8 +110,9 @@ impl Card {
         }
     }
 
-    /// Gives the card every stashed receive buffer, then kicks it once for
-    /// them and once for the frames queued to send, each when the card asked.
+    /// Gives the card every stashed receive buffer, then checks the batch of
+    /// them and the frames queued to send: one kick for each when the card
+    /// asked (with EVENT_IDX), or always without it.
     fn refill(&mut self) {
         while let Some(mut buffer) = self.stash.pop() {
             // SAFETY: the buffer is kept in `rx` until the card gives its token back.
@@ -153,7 +156,8 @@ impl NicDevice {
     }
 
     /// Gives the card back the receive buffers read since the last time and
-    /// sends what was queued, with one kick each: after each poll.
+    /// sends what was queued, after each poll, kicking each queue at most once
+    /// ([`Card::refill`]).
     pub fn refill(&mut self) {
         self.card.get_mut().refill();
     }

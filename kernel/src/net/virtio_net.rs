@@ -1,6 +1,8 @@
 //! Our own virtio-net driver (VirtIO 1.2, 5.1), on virtio-drivers' public
 //! [`VirtQueue`]: two queues, with receive buffers added without a kick and
-//! the device kicked once for each batch ([`VirtioNet::kick_receive`]).
+//! each batch checked once ([`VirtioNet::kick_receive`]): with
+//! VIRTIO_F_EVENT_IDX the device is kicked only when its `avail_event` asks,
+//! and without it on every batch.
 //!
 //! virtio-drivers' `VirtIONetRaw` kicks on every receive buffer given back.
 //! With the ring nearly empty, as it is when the host sends faster than the
@@ -54,25 +56,29 @@ pub fn kicks() -> (u64, u64) {
     )
 }
 
-/// A transport that can read the device's `avail_event` for a queue.
-pub trait AvailEvent {
+/// A transport that can read a queue's published available index and the
+/// device's `avail_event` for it.
+pub trait EventIndex {
+    fn avail_idx(&self, queue: u16) -> Option<u16>;
     fn avail_event(&self, queue: u16) -> Option<u16>;
 }
 
-impl AvailEvent for SplitTransport {
+impl EventIndex for SplitTransport {
+    fn avail_idx(&self, queue: u16) -> Option<u16> {
+        SplitTransport::avail_idx(self, queue)
+    }
+
     fn avail_event(&self, queue: u16) -> Option<u16> {
         SplitTransport::avail_event(self, queue)
     }
 }
 
-/// One queue's available index as this driver keeps it, for the kick check.
+/// One queue's kick check.
 #[derive(Default)]
 struct Kick {
     /// Buffers added since the last check.
     added: usize,
-    /// The available index now: one up for each buffer added.
-    avail: u16,
-    /// The available index at the last check.
+    /// The published available index at the last check.
     checked: u16,
 }
 
@@ -93,7 +99,7 @@ impl<H: Hal, T: Transport, const SIZE: usize> fmt::Debug for VirtioNet<H, T, SIZ
     }
 }
 
-impl<H: Hal, T: Transport + AvailEvent, const SIZE: usize> VirtioNet<H, T, SIZE> {
+impl<H: Hal, T: Transport + EventIndex, const SIZE: usize> VirtioNet<H, T, SIZE> {
     /// Negotiates VERSION_1 and MAC, and sets up both queues; Unsupported when
     /// the device lacks either.
     pub fn new(mut transport: T) -> Result<Self, Error> {
@@ -154,7 +160,6 @@ impl<H: Hal, T: Transport + AvailEvent, const SIZE: usize> VirtioNet<H, T, SIZE>
         // SAFETY: the caller keeps `buffer` for the device until it is popped.
         let token = unsafe { self.rx.add(&[], &mut [buffer])? };
         self.rx_kick.added += 1;
-        self.rx_kick.avail = self.rx_kick.avail.wrapping_add(1);
         Ok(token)
     }
 
@@ -163,7 +168,7 @@ impl<H: Hal, T: Transport + AvailEvent, const SIZE: usize> VirtioNet<H, T, SIZE>
     /// ([`notify`]). How many there were.
     pub fn kick_receive(&mut self) -> usize {
         let event_idx = self.event_idx;
-        notify(&mut self.transport, &mut self.rx_kick, RECEIVE, event_idx)
+        notify::<T, SIZE>(&mut self.transport, &mut self.rx_kick, RECEIVE, event_idx)
     }
 
     /// The token of the next filled receive buffer, if any. The fence orders
@@ -211,7 +216,6 @@ impl<H: Hal, T: Transport + AvailEvent, const SIZE: usize> VirtioNet<H, T, SIZE>
         // SAFETY: the caller keeps `buffer` for the device until it is popped.
         let token = unsafe { self.tx.add(&[buffer], &mut [])? };
         self.tx_kick.added += 1;
-        self.tx_kick.avail = self.tx_kick.avail.wrapping_add(1);
         Ok(token)
     }
 
@@ -219,7 +223,7 @@ impl<H: Hal, T: Transport + AvailEvent, const SIZE: usize> VirtioNet<H, T, SIZE>
     /// [`Self::kick_receive`] does.
     pub fn kick_transmit(&mut self) -> usize {
         let event_idx = self.event_idx;
-        notify(&mut self.transport, &mut self.tx_kick, TRANSMIT, event_idx)
+        notify::<T, SIZE>(&mut self.transport, &mut self.tx_kick, TRANSMIT, event_idx)
     }
 
     /// The token of the next sent buffer, if any.
@@ -239,14 +243,20 @@ impl<H: Hal, T: Transport + AvailEvent, const SIZE: usize> VirtioNet<H, T, SIZE>
 }
 
 /// Notifies the device of `queue`'s buffers added since the last check when
-/// it asked to hear of one of them, or always without EVENT_IDX or its
-/// `avail_event`. How many were added.
+/// it asked to hear of one of them, or always without EVENT_IDX, its
+/// `avail_event` or the published index. How many were added.
+///
+/// The range is the published index's, read from the ring, so a buffer added
+/// some other way than `add_receive` or `transmit_begin` is in it too.
+/// [`netcore::kick::need_event`] holds for under 65,536 adds between two
+/// checks; more than a queue's `SIZE` cannot come from one poll's refill, so
+/// that many kick without the check (#1623's review).
 ///
 /// The fence orders `VirtQueue::add`'s store of the available index before
 /// the load of `avail_event`. The device stores `avail_event`, then reads the
 /// available index again before it waits (VirtIO 1.2, 2.7.10), so either it
 /// sees these buffers or this sees its word, never neither.
-fn notify<T: Transport + AvailEvent>(
+fn notify<T: Transport + EventIndex, const SIZE: usize>(
     transport: &mut T,
     kick: &mut Kick,
     queue: u16,
@@ -256,19 +266,29 @@ fn notify<T: Transport + AvailEvent>(
     if added == 0 {
         return 0;
     }
-    let old = core::mem::replace(&mut kick.checked, kick.avail);
+    let Some(new) = transport.avail_idx(queue) else {
+        transport.notify(queue);
+        count(queue);
+        return added;
+    };
+    let old = core::mem::replace(&mut kick.checked, new);
     fence(Ordering::SeqCst);
     let asked = match transport.avail_event(queue) {
-        Some(event) if event_idx => netcore::kick::need_event(event, kick.avail, old),
+        _ if added > SIZE => true,
+        Some(event) if event_idx => netcore::kick::need_event(event, new, old),
         _ => true,
     };
     if asked {
         transport.notify(queue);
-        match queue {
-            RECEIVE => &RX_KICKS,
-            _ => &TX_KICKS,
-        }
-        .fetch_add(1, Ordering::Relaxed);
+        count(queue);
     }
     added
+}
+
+fn count(queue: u16) {
+    match queue {
+        RECEIVE => &RX_KICKS,
+        _ => &TX_KICKS,
+    }
+    .fetch_add(1, Ordering::Relaxed);
 }
