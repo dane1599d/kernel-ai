@@ -16,7 +16,7 @@ use devkit::{Host, Mmio};
 use hda::regs::{SD_STS, SD_STS_CLEAR, sd};
 use hda::verb::{Device, Kind};
 use hda::{Controller, Opened, Tone};
-use spin::Mutex;
+use spin::{Mutex, Once};
 
 /// An HD Audio controller the PCI probe found, BAR0 assigned by firmware.
 pub struct Function {
@@ -38,8 +38,17 @@ type KernelController = Controller<KernelHost, Mmio>;
 /// The controller playing the tone, and its buffer's length.
 static PLAYING: Mutex<Option<(KernelController, Tone)>> = Mutex::new(None);
 /// Where the playing stream's status register is, for the interrupt handler
-/// to acknowledge a buffer completion.
-static STATUS: Mutex<Option<(Mmio, u64)>> = Mutex::new(None);
+/// to acknowledge a buffer completion: set once, before the stream starts,
+/// and read by the handler without a lock.
+static STATUS: Once<Status> = Once::new();
+
+/// The register window and the status register's offset in it.
+struct Status(Mmio, u64);
+
+// SAFETY: the handler only writes one status byte through `&self` (a
+// volatile write to device memory); the window is mapped for good, and
+// nothing else writes that register while the stream runs.
+unsafe impl Sync for Status {}
 /// MSI interrupts taken, for the self-test.
 static INTERRUPTS: AtomicU64 = AtomicU64::new(0);
 
@@ -81,8 +90,15 @@ fn start(function: &Function, tone: bool) -> Result<Option<(KernelController, To
     }
     controller.set_interrupts(function.vector.is_some());
     if function.vector.is_some() {
-        let stream = controller.output_stream()?;
-        *STATUS.lock() = Some((regs, sd(stream, SD_STS)));
+        let stream = match controller.output_stream() {
+            Ok(stream) => stream,
+            Err(why) => {
+                // Opened, so the rings run: stop them before giving up.
+                let _ = controller.stop();
+                return Err(why);
+            }
+        };
+        STATUS.call_once(|| Status(regs, sd(stream, SD_STS)));
     }
     let tone = controller.start_tone(&opened)?;
     log!(
@@ -147,11 +163,9 @@ fn describe(name: &str, vector: Option<u8>, opened: &Opened) {
 /// work never runs here (ADR 0007 section 4).
 pub fn on_interrupt() -> Option<usize> {
     INTERRUPTS.fetch_add(1, Ordering::Relaxed);
-    if let Some(status) = STATUS.try_lock()
-        && let Some((regs, at)) = *status
-    {
+    if let Some(Status(regs, at)) = STATUS.get() {
         // Write 1 to clear: the completion, and any FIFO or descriptor error.
-        regs.write8(at, SD_STS_CLEAR);
+        regs.write8(*at, SD_STS_CLEAR);
     }
     None
 }
@@ -162,7 +176,7 @@ pub fn self_test() -> Result<(), &'static str> {
     const TIMEOUT_NS: u64 = 30_000_000_000;
     let start = hpet::nanos();
     let mut seen: Vec<u32> = Vec::new();
-    let msi = STATUS.lock().is_some();
+    let msi = STATUS.get().is_some();
     let buffer = loop {
         let (position, buffer) = {
             let playing = PLAYING.lock();

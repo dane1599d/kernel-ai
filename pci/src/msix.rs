@@ -20,6 +20,12 @@ const MSIX_ENABLE: u32 = 1 << 31;
 const MSIX_FUNCTION_MASK: u32 = 1 << 30;
 /// Bytes of one MSI-X table entry: address low, address high, data, control.
 pub const ENTRY_BYTES: u64 = 16;
+/// The end of conventional configuration space: a capability found by the
+/// list must lie wholly below it, or reading and writing it would run into
+/// extended space (or past what a CAM window maps).
+pub const CONFIG_END: u16 = 0x100;
+/// Bytes of the MSI-X capability: header, table and PBA.
+const MSIX_BYTES: u16 = 0x0C;
 /// The MSI capability's ID.
 pub const CAP_MSI: u8 = 0x05;
 /// MSI message control (the header's upper half): enable, 64-bit address,
@@ -88,6 +94,9 @@ pub fn msix(access: &impl ConfigRegionAccess, address: PciAddress) -> Option<Msi
     let (_, offset) = capabilities(access, address)
         .into_iter()
         .find(|(id, _)| *id == CAP_MSIX)?;
+    if offset + MSIX_BYTES > CONFIG_END {
+        return None;
+    }
     let control = read(access, address, offset) >> 16;
     let table = read(access, address, offset + 4);
     let pba = read(access, address, offset + 8);
@@ -112,6 +121,16 @@ pub struct Msi {
 }
 
 impl Msi {
+    /// Bytes from the capability's start that `enable` touches: the header and
+    /// address, the upper address, the data, and the mask register.
+    fn bytes(wide: bool, maskable: bool) -> u16 {
+        match (wide, maskable) {
+            (false, false) => 0x0C,
+            (true, false) | (false, true) => 0x10,
+            (true, true) => 0x14,
+        }
+    }
+
     fn data_at(&self) -> u16 {
         self.offset + if self.wide { 0x0C } else { 0x08 }
     }
@@ -161,10 +180,15 @@ pub fn msi(access: &impl ConfigRegionAccess, address: PciAddress) -> Option<Msi>
         .into_iter()
         .find(|(id, _)| *id == CAP_MSI)?;
     let header = read(access, address, offset);
+    let (wide, maskable) = (header & MSI_64 != 0, header & MSI_MASKABLE != 0);
+    // A capability that runs past 0x100 is refused, never written past it.
+    if offset + Msi::bytes(wide, maskable) > CONFIG_END {
+        return None;
+    }
     Some(Msi {
         offset,
-        wide: header & MSI_64 != 0,
-        maskable: header & MSI_MASKABLE != 0,
+        wide,
+        maskable,
     })
 }
 
@@ -322,6 +346,55 @@ mod tests {
         assert!(space.get(0x60) & MSI_ENABLE != 0);
         assert_eq!(msix(&space, AT()), None);
         assert_eq!(msi(&Space::default(), AT()), None);
+    }
+
+    /// A function whose only capability, `id` with message control `control`,
+    /// sits at `at`.
+    fn one_capability(at: u16, id: u8, control: u32) -> Space {
+        let space = Space::default();
+        space.set(0x04, STATUS_CAPABILITIES);
+        space.set(CAPABILITY_POINTER, u32::from(at));
+        space.set(at, u32::from(id) | control);
+        space
+    }
+
+    #[test]
+    fn a_capability_past_0x100_is_refused() {
+        let layouts = [
+            (0, 0x0C),
+            (MSI_64, 0x10),
+            (MSI_MASKABLE, 0x10),
+            (MSI_64 | MSI_MASKABLE, 0x14),
+        ];
+        for at in [0xF0u16, 0xF4, 0xF8, 0xFC] {
+            for (control, bytes) in layouts {
+                let space = one_capability(at, CAP_MSI, control);
+                let fits = at + bytes <= CONFIG_END;
+                assert_eq!(
+                    msi(&space, AT()).is_some(),
+                    fits,
+                    "MSI at {at:#x}, {bytes:#x} bytes"
+                );
+                if let Some(cap) = msi(&space, AT()) {
+                    cap.enable(&space, AT(), message(0, 0x40));
+                }
+                assert!(
+                    space.0.borrow().keys().all(|&o| o < CONFIG_END),
+                    "nothing written at or past 0x100"
+                );
+            }
+            let space = one_capability(at, CAP_MSIX, 0);
+            assert_eq!(
+                msix(&space, AT()).is_some(),
+                at + 0x0C <= CONFIG_END,
+                "MSI-X at {at:#x}"
+            );
+        }
+        // The edges that fit: a 64-bit maskable MSI at 0xEC, a plain one and
+        // MSI-X at 0xF4.
+        assert!(msi(&one_capability(0xEC, CAP_MSI, MSI_64 | MSI_MASKABLE), AT()).is_some());
+        assert!(msi(&one_capability(0xF4, CAP_MSI, 0), AT()).is_some());
+        assert!(msix(&one_capability(0xF4, CAP_MSIX, 0), AT()).is_some());
     }
 
     #[test]
