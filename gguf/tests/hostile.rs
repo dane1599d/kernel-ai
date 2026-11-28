@@ -433,3 +433,14 @@ fn the_duplicate_file_renamed_is_accepted_with_unique_names() {
     hostile::truncations(&bytes, |_, prefix| harness::gguf_file(prefix));
     hostile::fuzz(&bytes, 0x1521, 4000, harness::gguf_file);
 }
+
+/// Writes the `gguf_file` target's seeds, one file each, to
+/// `$FUZZ_SEED_DIR/gguf_file/`: the sample file.
+#[test]
+#[ignore = "writes the fuzz corpus; run by the fuzz workflow"]
+fn write_fuzz_seeds() {
+    let dir = std::env::var("FUZZ_SEED_DIR").expect("FUZZ_SEED_DIR names the corpus folder");
+    let folder = std::path::Path::new(&dir).join("gguf_file");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("sample"), sample()).unwrap();
+}

@@ -550,3 +550,16 @@ fn the_kaifs_image_body_answers_or_refuses_hostile_images_within_their_size() {
     }
     eprintln!("kaifs_image: at most {most} bytes at once");
 }
+
+/// Writes the `kaifs_image` target's seeds, one file each, to
+/// `$FUZZ_SEED_DIR/kaifs_image/`: the sample disk raw, and as edits that change nothing, signed and not.
+#[test]
+#[ignore = "writes the fuzz corpus; run by the fuzz workflow"]
+fn write_fuzz_seeds() {
+    let dir = std::env::var("FUZZ_SEED_DIR").expect("FUZZ_SEED_DIR names the corpus folder");
+    let folder = std::path::Path::new(&dir).join("kaifs_image");
+    std::fs::create_dir_all(&folder).unwrap();
+    for (n, seed) in image::seeds().into_iter().enumerate() {
+        std::fs::write(folder.join(format!("seed-{n}")), seed).unwrap();
+    }
+}

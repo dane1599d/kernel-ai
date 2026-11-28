@@ -528,6 +528,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "diskmap"
+version = "0.1.0-dev"
+
+[[package]]
 name = "ecdsa"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -743,6 +747,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "gguf"
+version = "0.1.0-dev"
+
+[[package]]
 name = "ghash"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -915,6 +923,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "kaibundle"
+version = "0.1.0-dev"
+
+[[package]]
+name = "kaifs"
+version = "0.1.0-dev"
+dependencies = [
+ "seahash",
+ "zerocopy",
+]
+
+[[package]]
 name = "kaigrants"
 version = "0.0.0"
 
@@ -959,12 +979,17 @@ version = "0.0.0"
 dependencies = [
  "acpitables",
  "agentabi",
+ "bootslot",
  "captable",
  "deskcore",
+ "diskmap",
  "fsproto",
  "getrandom 0.3.4",
+ "gguf",
  "kabi",
  "kaiagent",
+ "kaibundle",
+ "kaifs",
  "kaigrants",
  "kaimedia",
  "kainet",
@@ -978,6 +1003,7 @@ dependencies = [
  "serde_json",
  "shellcore",
  "surfabi",
+ "uelf",
 ]
 
 [[package]]
@@ -1600,6 +1626,12 @@ name = "sched"
 version = "0.1.0-dev"
 
 [[package]]
+name = "seahash"
+version = "4.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c107b6f4780854c8b126e228ea8869f4d7b71260f962fefb57b996b8959ba6b"
+
+[[package]]
 name = "sec1"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1963,6 +1995,10 @@ name = "typenum"
 version = "1.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
+
+[[package]]
+name = "uelf"
+version = "0.1.0-dev"
 
 [[package]]
 name = "unicode-ident"

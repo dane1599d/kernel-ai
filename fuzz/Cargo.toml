@@ -30,6 +30,12 @@ publish = false
 # and kaizip's archive reader (plan P6 M-7), in zip_harness.rs, run by
 # kaizip/tests/fuzz_harness.rs too.
 #
+# And the readers of other bytes that have a hostile test of their own (plan P8
+# row 1; P6 G29 to G33): uelf's ELF loader, kaibundle's boot bundle, bootslot's
+# slot record, diskmap's GPT, gguf's file reader and kaifs's image, each target
+# including the body in that crate's tests by #[path]. All are workspace
+# crates (MPL-2.0 or the workspace's own), with no new external dependency.
+#
 # Being outside the workspace, this crate is outside `cargo deny`'s graph, so
 # its one dependency the workspace lacks is listed here (C's review of #677):
 # libfuzzer-sys is "(MIT OR Apache-2.0) AND NCSA", NCSA being libFuzzer's own
@@ -59,6 +65,12 @@ agentabi = { path = "../agentabi" }
 kabi = { path = "../kabi" }
 netdest = { path = "../netdest" }
 acpitables = { path = "../acpitables" }
+uelf = { path = "../uelf" }
+kaibundle = { path = "../kaibundle" }
+bootslot = { path = "../bootslot" }
+diskmap = { path = "../diskmap" }
+gguf = { path = "../gguf" }
+kaifs = { path = "../kaifs" }
 serde_json = { version = "1.0.154", default-features = false, features = ["alloc"] }
 kaimedia = { path = "../kaimedia" }
 rustls = { version = "=0.23.46", default-features = false }
@@ -238,6 +250,48 @@ bench = false
 [[bin]]
 name = "ivrs_tables"
 path = "fuzz_targets/ivrs_tables.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "uelf"
+path = "fuzz_targets/uelf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kai_bundle"
+path = "fuzz_targets/kai_bundle.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "slot_record"
+path = "fuzz_targets/slot_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gpt_read"
+path = "fuzz_targets/gpt_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gguf_file"
+path = "fuzz_targets/gguf_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kaifs_image"
+path = "fuzz_targets/kaifs_image.rs"
 test = false
 doc = false
 bench = false
