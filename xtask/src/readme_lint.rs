@@ -4,9 +4,12 @@
 //! names exists. The front page cannot drift from the tooling between
 //! releases.
 //!
-//! Subcommands and flags are looked up as string literals in `xtask/src`,
-//! which is how both the dispatch in main.rs and every parser spell them, so a
-//! renamed flag is no longer found. The section is read as text, not
+//! A subcommand is a string literal in main.rs's dispatch (or in options.rs,
+//! which parses the build and boot tasks main.rs falls through to), and a
+//! flag typed after it is a string literal in that subcommand's module (the
+//! `mod::main` its dispatch line calls; a module that cannot be found falls
+//! back to all of xtask/src). A flag in prose is checked against all of
+//! xtask/src, except [`FOREIGN`] ones. The section is read as text, not
 //! Markdown: fenced blocks, inline code spans and link targets.
 
 use std::fs;
@@ -44,6 +47,22 @@ fn commands(lines: &[&str]) -> Vec<String> {
     out
 }
 
+/// Extensions that make a plain code span a file name.
+const FILES: &[&str] = &["toml", "json", "md", "yml", "yaml", "rs", "lock", "sh"];
+
+/// Flags the section shows that belong to another tool than xtask.
+const FOREIGN: &[&str] = &[];
+
+/// A link's target: `<a b>` up to the `>`, otherwise up to the first space,
+/// which starts a `"title"`.
+fn link_target(inside: &str) -> &str {
+    let inside = inside.trim();
+    match inside.strip_prefix('<') {
+        Some(rest) => rest.split('>').next().unwrap_or(rest),
+        None => inside.split_whitespace().next().unwrap_or(inside),
+    }
+}
+
 /// The inline code spans of one line.
 fn spans(line: &str) -> impl Iterator<Item = String> + '_ {
     line.split('`')
@@ -69,7 +88,7 @@ fn paths(lines: &[&str]) -> Vec<String> {
         while let Some(at) = rest.find("](") {
             let target = &rest[at + 2..];
             let end = target.find(')').unwrap_or(target.len());
-            let link = &target[..end];
+            let link = link_target(&target[..end]);
             if !link.contains("://") && !link.starts_with('#') && !link.starts_with("mailto:") {
                 out.push(link.split('#').next().unwrap_or(link).to_string());
             }
@@ -79,7 +98,13 @@ fn paths(lines: &[&str]) -> Vec<String> {
             let plain = span
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"_-./".contains(&b));
-            if plain && span.contains('/') && !span.starts_with('/') && !span.ends_with('/') {
+            // A path with a slash, or a plain file of the repo's top level
+            // (rust-toolchain.toml) by its extension.
+            let file = span
+                .rsplit_once('.')
+                .is_some_and(|(_, ext)| FILES.contains(&ext));
+            let slashed = span.contains('/') && !span.starts_with('/') && !span.ends_with('/');
+            if plain && (slashed || file) {
                 out.push(span);
             }
         }
@@ -89,40 +114,112 @@ fn paths(lines: &[&str]) -> Vec<String> {
     out
 }
 
-/// Every `.rs` file's text under `xtask/src`, but this one's.
-fn sources() -> String {
-    fn walk(dir: &Path, out: &mut String) {
-        for entry in fs::read_dir(dir).expect("xtask/src").flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                walk(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs")
-                && path.file_name().is_some_and(|n| n != "readme_lint.rs")
-            {
-                out.push_str(&fs::read_to_string(&path).expect("a source file"));
-            }
+/// xtask's source text: main.rs, options.rs, each module by name, and all.
+struct Source {
+    main: String,
+    options: String,
+    modules: Vec<(String, String)>,
+    all: String,
+}
+
+impl Source {
+    /// The text of module `name` (`name.rs` and `name/**`), or all of it when
+    /// there is no such module.
+    fn module(&self, name: &str) -> &str {
+        self.modules
+            .iter()
+            .find(|(n, _)| n == name)
+            .map_or(&self.all, |(_, text)| text)
+    }
+
+    /// The module the dispatch calls for `sub`, whose `Some("a" | "b") =>
+    /// module::main(..)` line names it; None when main.rs does not dispatch
+    /// it (the parser in options.rs takes it).
+    fn dispatched(&self, sub: &str) -> Option<&str> {
+        let quoted = format!("\"{sub}\"");
+        let line = self
+            .main
+            .lines()
+            .find(|l| l.contains("Some(") && l.contains(&quoted) && l.contains("=>"))?;
+        let call = line.split("=>").nth(1)?.trim();
+        Some(call.split("::").next().unwrap_or(call).trim())
+    }
+}
+
+fn read_rs(dir: &Path, out: &mut String) {
+    for entry in fs::read_dir(dir).expect("xtask/src").flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            read_rs(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs")
+            && path.file_name().is_some_and(|n| n != "readme_lint.rs")
+        {
+            out.push_str(&fs::read_to_string(&path).expect("a source file"));
         }
     }
-    let mut out = String::new();
-    walk(&root().join("xtask/src"), &mut out);
-    out
+}
+
+fn sources() -> Source {
+    let src = root().join("xtask/src");
+    let (mut all, mut modules) = (String::new(), Vec::new());
+    for entry in fs::read_dir(&src).expect("xtask/src").flatten() {
+        let path = entry.path();
+        let name = path.file_stem().map(|n| n.to_string_lossy().to_string());
+        let mut text = String::new();
+        if path.is_dir() {
+            read_rs(&path, &mut text);
+        } else if path.extension().is_some_and(|e| e == "rs")
+            && name.as_deref() != Some("readme_lint")
+        {
+            text = fs::read_to_string(&path).expect("a source file");
+        }
+        if let (Some(name), false) = (name, text.is_empty()) {
+            // A module's file and its directory (`vbox.rs`, `vbox/`) join.
+            match modules
+                .iter_mut()
+                .find(|(n, _): &&mut (String, String)| *n == name)
+            {
+                Some((_, joined)) => joined.push_str(&text),
+                None => modules.push((name, text.clone())),
+            }
+            all.push_str(&text);
+        }
+    }
+    let text = |name: &str| fs::read_to_string(src.join(name)).expect("an xtask source");
+    Source {
+        main: text("main.rs"),
+        options: text("options.rs"),
+        modules,
+        all,
+    }
 }
 
 /// What the README's `lines` get wrong against `source` (xtask's text) and the
 /// repo at `repo`: one line each, and how many commands, flags and paths it
 /// checked.
-fn lint(lines: &[&str], source: &str, repo: &Path) -> (Vec<String>, [usize; 3]) {
+fn lint(lines: &[&str], source: &Source, repo: &Path) -> (Vec<String>, [usize; 3]) {
     let (mut errors, mut seen) = (Vec::new(), [0; 3]);
-    let literal = |word: &str| source.contains(&format!("\"{word}\""));
+    let literal = |text: &str, word: &str| text.contains(&format!("\"{word}\""));
     let mut shown = Vec::new();
     for command in commands(lines) {
         seen[0] += 1;
         let mut words = command.split_whitespace().skip(2);
         let sub = words.next().unwrap_or("");
-        if !literal(sub) {
-            errors.push(format!("`{command}`: xtask has no `{sub}` subcommand"));
+        // The text a flag after `sub` must be a literal in.
+        let scope = match source.dispatched(sub) {
+            Some(module) => source.module(module),
+            None if literal(&source.options, sub) => &source.options,
+            None => {
+                errors.push(format!("`{command}`: xtask has no `{sub}` subcommand"));
+                continue;
+            }
+        };
+        for flag in flags(&command) {
+            seen[1] += 1;
+            if !literal(scope, &flag) {
+                errors.push(format!("`{command}`: `{sub}` does not read `{flag}`"));
+            }
         }
-        shown.extend(flags(&command));
     }
     for line in lines {
         for span in spans(line) {
@@ -134,8 +231,11 @@ fn lint(lines: &[&str], source: &str, repo: &Path) -> (Vec<String>, [usize; 3]) 
     shown.sort();
     shown.dedup();
     for flag in shown {
+        if FOREIGN.contains(&flag.as_str()) {
+            continue;
+        }
         seen[1] += 1;
-        if !literal(&flag) {
+        if !literal(&source.all, &flag) {
             errors.push(format!("`{flag}`: no xtask parser reads this flag"));
         }
     }
@@ -171,25 +271,41 @@ fn the_lint_refuses_a_renamed_flag_a_missing_subcommand_and_a_missing_path() {
 ```bash
 cargo xtask vbox --start    # boots it
 cargo xtask vbox --begin
+cargo xtask doctor --start
 cargo xtask vboxes
 ```
 
 Run `cargo xtask doctor`; `--name NAME` and `--rename NAME` pick a VM. See
-[the models](xtask/models.json) and [gone](xtask/nope.json), or `xtask/src/main.rs`
-and `xtask/src/none.rs`. A [link](https://example.com/x/y) and [here](#anchor) do not count.
+[the models](xtask/models.json), [titled](xtask/models.json \"the pins\"),
+[angled](<xtask/models.json>) and [gone](xtask/nope.json), or `xtask/src/main.rs`
+and `xtask/src/none.rs`; `rust-toolchain.toml` and `missing.toml` are top-level
+files. A [link](https://example.com/x/y) and [here](#anchor) do not count.
 
 ## Next
 `cargo xtask elsewhere --unseen`
 ";
-    let source = "\"vbox\" \"doctor\" \"--start\" \"--name\"";
+    let source = Source {
+        main: "Some(\"vbox\") => vbox::main(&a),\nSome(\"doctor\") => doctor::main(&a),".into(),
+        options: "\"run\"".into(),
+        modules: vec![
+            ("vbox".into(), "\"--start\"".into()),
+            ("doctor".into(), "\"--check\"".into()),
+        ],
+        all: "\"--start\" \"--check\" \"--name\"".into(),
+    };
     let lines = section(readme);
-    let (errors, seen) = lint(&lines, source, &root());
-    assert_eq!(errors.len(), 5, "{errors:#?}");
-    assert!(errors[0].contains("`vboxes`"), "{errors:#?}");
-    assert!(errors.iter().any(|e| e.contains("--begin")));
-    assert!(errors.iter().any(|e| e.contains("--rename")));
-    assert!(errors.iter().any(|e| e.contains("xtask/nope.json")));
-    assert!(errors.iter().any(|e| e.contains("xtask/src/none.rs")));
+    let (errors, seen) = lint(&lines, &source, &root());
+    let has = |what: &str| errors.iter().filter(|e| e.contains(what)).count();
+    assert_eq!(errors.len(), 7, "{errors:#?}");
+    assert_eq!(has("`vboxes`"), 1, "{errors:#?}");
+    // A flag that is another subcommand's is refused, and so is a renamed one.
+    assert_eq!(has("`doctor` does not read `--start`"), 1, "{errors:#?}");
+    assert_eq!(has("`vbox` does not read `--begin`"), 1, "{errors:#?}");
+    assert_eq!(has("--rename"), 1, "{errors:#?}");
+    // A link with a title or in angle brackets is read; so is a top-level file.
+    assert_eq!(has("xtask/nope.json"), 1, "{errors:#?}");
+    assert_eq!(has("xtask/src/none.rs"), 1, "{errors:#?}");
+    assert_eq!(has("`missing.toml`"), 1, "{errors:#?}");
     // The `## Next` section is not read.
-    assert_eq!(seen, [4, 4, 4]);
+    assert_eq!(seen, [5, 5, 6]);
 }
