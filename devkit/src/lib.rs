@@ -67,7 +67,10 @@ impl Dma {
 }
 
 /// A device's register window, mapped uncached; every access is bounds-checked
-/// and 32-bit aligned, so a bad offset reads all ones and writes nothing.
+/// and naturally aligned (a 32-bit register on 4 bytes, a 16-bit one on 2), so
+/// a bad offset reads all ones and writes nothing. The 8- and 16-bit accesses
+/// are for devices whose registers sit at byte offsets and decode only at
+/// their own width (HD Audio's CORB and RIRB controls, a stream's format).
 #[derive(Clone, Copy, Debug)]
 pub struct Mmio {
     base: NonNull<u32>,
@@ -95,11 +98,64 @@ impl Mmio {
     }
 
     fn at(&self, offset: u64) -> Option<*mut u32> {
-        let inside = offset.checked_add(4).is_some_and(|end| end <= self.len);
-        (inside && offset.is_multiple_of(4)).then(|| {
+        self.at_width(offset, 4).map(|p| p.cast::<u32>())
+    }
+
+    /// The byte pointer for a `width`-byte access at `offset`, if it is inside
+    /// the window and aligned to `width`.
+    fn at_width(&self, offset: u64, width: u64) -> Option<*mut u8> {
+        let inside = offset.checked_add(width).is_some_and(|end| end <= self.len);
+        (inside && offset.is_multiple_of(width)).then(|| {
             // In bounds and aligned, checked above.
-            self.base.as_ptr().wrapping_add((offset / 4) as usize)
+            self.base
+                .as_ptr()
+                .cast::<u8>()
+                .wrapping_add(offset as usize)
         })
+    }
+
+    /// The 8-bit register at `offset`, or all ones outside the window.
+    pub fn read8(&self, offset: u64) -> u8 {
+        match self.at_width(offset, 1) {
+            // SAFETY: inside the mapped window (see `new`).
+            Some(register) => unsafe { register.read_volatile() },
+            None => u8::MAX,
+        }
+    }
+
+    /// The 16-bit register at `offset` (2-aligned), or all ones outside.
+    pub fn read16(&self, offset: u64) -> u16 {
+        match self.at_width(offset, 2) {
+            // SAFETY: inside the mapped window and 2-aligned.
+            Some(register) => unsafe { register.cast::<u16>().read_volatile() },
+            None => u16::MAX,
+        }
+    }
+
+    /// Writes the 8-bit register at `offset`; false (and nothing written)
+    /// outside.
+    pub fn write8(&self, offset: u64, value: u8) -> bool {
+        match self.at_width(offset, 1) {
+            Some(register) => {
+                // SAFETY: as in read8.
+                unsafe { register.write_volatile(value) };
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Writes the 16-bit register at `offset` (2-aligned); false (and nothing
+    /// written) outside or unaligned.
+    pub fn write16(&self, offset: u64, value: u16) -> bool {
+        match self.at_width(offset, 2) {
+            Some(register) => {
+                // SAFETY: as in read16.
+                unsafe { register.cast::<u16>().write_volatile(value) };
+                true
+            }
+            None => false,
+        }
     }
 
     /// The register at `offset`, or all ones outside the window.
@@ -201,6 +257,28 @@ mod tests {
         assert!(!mmio.write32(u64::MAX - 1, 1), "an offset that overflows");
         assert_eq!(mmio.read32(16), u32::MAX);
         assert_eq!(registers, [0, 0, 0, 0xABCD]);
+    }
+
+    #[test]
+    fn byte_and_word_accesses_are_bounds_checked_and_naturally_aligned() {
+        let mut registers = vec![0u32; 2];
+        let base = NonNull::new(registers.as_mut_ptr()).unwrap();
+        // SAFETY: `registers` outlives `mmio` and holds 8 bytes.
+        let mmio = unsafe { Mmio::new(base, 8) };
+        assert!(mmio.write8(5, 0x42));
+        assert!(mmio.write16(6, 0xBEEF));
+        assert!(mmio.write16(0, 0x1234));
+        assert_eq!(mmio.read8(5), 0x42);
+        assert_eq!(mmio.read16(6), 0xBEEF);
+        assert_eq!(mmio.read32(4), 0xBEEF_4200, "little-endian bytes");
+        assert!(!mmio.write16(3, 1), "unaligned");
+        assert!(!mmio.write16(7, 1), "unaligned and past the end");
+        assert!(!mmio.write8(8, 1), "past the end");
+        assert!(!mmio.write16(u64::MAX, 1), "an offset that overflows");
+        assert_eq!(mmio.read16(8), u16::MAX);
+        assert_eq!(mmio.read8(8), u8::MAX);
+        assert_eq!(mmio.read16(1), u16::MAX, "unaligned reads all ones");
+        assert_eq!(registers, [0x1234, 0xBEEF_4200]);
     }
 
     #[test]
