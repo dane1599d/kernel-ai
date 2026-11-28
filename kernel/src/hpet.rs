@@ -8,11 +8,14 @@
 //! Which clock (the boot log says which, and why):
 //! - `clock=tsc`: the TSC wherever it calibrates (`cargo xtask vbox` boots so);
 //! - `clock=hpet`: the HPET always;
-//! - neither: the TSC under KVM when it is invariant or the hypervisor reports its
-//!   rate ([`cpufeat::default_clock`]); the HPET everywhere else, TCG included.
+//! - neither: the TSC under KVM ([`cpufeat::default_clock`]), whether or not it
+//!   is invariant or the hypervisor reports its rate (P6 G67); the HPET
+//!   everywhere else, TCG included.
 //!
 //! The TSC is kept only if it calibrates, and then agrees with the HPET within
 //! [`DRIFT_PPM`] over [`DRIFT_WINDOW_NS`]; otherwise the HPET stays the clock.
+//! A TSC that changed rate after that window would go unseen; under KVM it runs
+//! at a fixed rate the host sets, and `clock=hpet` keeps the HPET.
 //!
 //! With `clock=icount`, `nanos` reads the TSC at exactly 1 GHz, unmeasured: under
 //! QEMU's `-icount` the TSC is the virtual clock in nanoseconds, a fixed number per

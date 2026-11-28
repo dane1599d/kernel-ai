@@ -429,9 +429,10 @@ pub fn invariant_tsc() -> bool {
 }
 
 /// What the kernel's clock is when the command line names none: the TSC is
-/// tried only under KVM, whose every HPET read exits to the host, and only when
-/// the TSC can be trusted not to drift; everywhere else the HPET. Each with the
-/// reason, for the boot log.
+/// tried under KVM, whose every HPET read exits to the host, and kept only if
+/// it settles against the HPET and passes the drift check
+/// (`hpet::select_clock`); everywhere else the HPET. Each with the reason, for
+/// the boot log.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DefaultClock {
     /// Try the TSC, calibrated against the HPET.
@@ -457,7 +458,13 @@ pub fn default_clock(
         Some(sig) if &sig == b"KVMKVMKVM\0\0\0" => match (invariant, reported_khz) {
             (true, _) => DefaultClock::Tsc("KVM, invariant TSC"),
             (false, Some(_)) => DefaultClock::Tsc("KVM, the hypervisor reports the TSC's rate"),
-            (false, None) => DefaultClock::Hpet("KVM, but no invariant or reported TSC rate"),
+            // QEMU's CPU models often hide the invariant bit, and KVM reports
+            // no rate (P6 G67: GitHub's Xeon 6975P-C runners). The settle and
+            // drift checks stand in for them: such a TSC took a download from
+            // 24.2 to 65.5 MB/s there.
+            (false, None) => DefaultClock::Tsc(
+                "KVM, with no invariant bit or reported rate: kept only on the drift check",
+            ),
         },
         Some(sig) if &sig == b"TCGTCGTCGTCG" => DefaultClock::Hpet("TCG, which emulates the TSC"),
         Some(_) => DefaultClock::Hpet("a hypervisor other than KVM; clock=tsc tries the TSC"),
@@ -583,7 +590,7 @@ mod tests {
     }
 
     #[test]
-    fn the_tsc_is_the_default_only_under_kvm_with_a_trustworthy_rate() {
+    fn the_tsc_is_the_default_only_under_kvm() {
         let kvm = Some(*b"KVMKVMKVM\0\0\0");
         assert_eq!(
             default_clock(kvm, true, None),
@@ -593,9 +600,10 @@ mod tests {
             default_clock(kvm, false, Some(2_400_000)),
             DefaultClock::Tsc(_)
         ));
+        // Neither bit: still tried, and kept only on the drift check (G67).
         assert!(matches!(
             default_clock(kvm, false, None),
-            DefaultClock::Hpet(_)
+            DefaultClock::Tsc(why) if why.contains("drift check")
         ));
         for other in [
             *b"TCGTCGTCGTCG",
