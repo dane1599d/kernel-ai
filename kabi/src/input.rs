@@ -157,6 +157,9 @@ pub struct Set1 {
     /// Unlike the console's decoder, it is never started afresh when the
     /// keys change hands.
     down: [u64; 4],
+    /// Ctrl+Alt+F12 went down and nothing was decoded since but its repeats
+    /// (typematic repeats only the last key pressed): [`Set1::switch_press`].
+    switch_down: bool,
 }
 
 impl Set1 {
@@ -170,6 +173,7 @@ impl Set1 {
             super_alone: false,
             super_tap: false,
             down: [0; 4],
+            switch_down: false,
         }
     }
 
@@ -195,6 +199,7 @@ impl Set1 {
                 // Pause: a key pressed, though it decodes to none.
                 self.skip = 5;
                 self.super_alone = false;
+                self.switch_down = false;
                 return None;
             }
             _ => {}
@@ -214,6 +219,12 @@ impl Set1 {
                 .map(|(_, u)| u16::from(*u)),
         }
         .unwrap_or(0);
+        // Any key but F12 ends a press of it, and so does its own release: a
+        // lost break is forgiven once the user touches another key (Ctrl or
+        // Alt let go, say) before pressing again.
+        if usage != usage::F12 || !down {
+            self.switch_down = false;
+        }
         if usage == 0 {
             // A key with no usage here (PrintScreen, media keys, a fake
             // shift, `UNMAPPED`): pressed with Super, Super was not tapped.
@@ -265,6 +276,15 @@ impl Set1 {
     /// (the USB poll injects a report's earlier keys before a pointer report).
     pub fn break_tap(&mut self) {
         self.super_alone = false;
+    }
+
+    /// Whether the Ctrl+Alt+F12 make just routed ([`KeyRoute::Screen`]) is a
+    /// new press, not a typematic repeat of one: true once per press. A held
+    /// key repeats its make, and a repeat must not switch the screen again.
+    pub fn switch_press(&mut self, down: bool) -> bool {
+        let first = down && !self.switch_down;
+        self.switch_down |= down;
+        first
     }
 
     /// Whether a Ctrl and an Alt key are both held.
@@ -728,5 +748,72 @@ mod tests {
         set1.feed(0xE0);
         set1.feed(0x1D);
         assert!(set1.ctrl_alt());
+    }
+
+    /// Feeds `bytes` and returns whether the last key was a new Ctrl+Alt+F12
+    /// press, as the kernel decides it.
+    fn pressed(keys: &mut Set1, bytes: &[u8]) -> bool {
+        let mut out = false;
+        for &b in bytes {
+            if let Some((code, down)) = keys.feed(b) {
+                out = keys.route(code, down, false) == KeyRoute::Screen && keys.switch_press(down);
+            }
+        }
+        out
+    }
+
+    const CTRL: u8 = 0x1D;
+    const ALT: u8 = 0x38;
+    const F12: u8 = 0x58;
+
+    /// A held Ctrl+Alt+F12 switches once: its typematic repeats do not, and
+    /// the next press, after the break, does.
+    #[test]
+    fn a_held_switch_chord_switches_once() {
+        let mut keys = Set1::new();
+        assert!(!pressed(&mut keys, &[CTRL, ALT]));
+        assert!(pressed(&mut keys, &[F12]));
+        assert!(!pressed(&mut keys, &[F12]));
+        assert!(!pressed(&mut keys, &[F12]));
+        assert!(!pressed(&mut keys, &[F12 | 0x80]));
+        assert!(pressed(&mut keys, &[F12]));
+    }
+
+    /// Ctrl let go before F12: the break still ends the press.
+    #[test]
+    fn ctrl_let_go_first_does_not_hold_the_press() {
+        let mut keys = Set1::new();
+        pressed(&mut keys, &[CTRL, ALT]);
+        assert!(pressed(&mut keys, &[F12]));
+        pressed(&mut keys, &[CTRL | 0x80]);
+        assert!(!pressed(&mut keys, &[F12 | 0x80]));
+        assert!(!pressed(&mut keys, &[CTRL]));
+        assert!(pressed(&mut keys, &[F12]));
+    }
+
+    /// F12 let go after the switch with the chord still held, then pressed again.
+    #[test]
+    fn f12_let_go_after_the_switch_switches_again() {
+        let mut keys = Set1::new();
+        pressed(&mut keys, &[CTRL, ALT]);
+        assert!(pressed(&mut keys, &[F12]));
+        assert!(!pressed(&mut keys, &[F12 | 0x80]));
+        assert!(pressed(&mut keys, &[F12]));
+    }
+
+    /// A lost F12 break: the next press is taken for a repeat until another
+    /// key is touched, and then it switches. Plain F12 never sets the press.
+    #[test]
+    fn a_lost_break_is_forgiven_by_the_next_other_key() {
+        let mut keys = Set1::new();
+        pressed(&mut keys, &[CTRL, ALT]);
+        assert!(pressed(&mut keys, &[F12]));
+        // The break never arrives; Alt is let go and pressed again.
+        pressed(&mut keys, &[ALT | 0x80, ALT]);
+        assert!(pressed(&mut keys, &[F12]));
+        let mut plain = Set1::new();
+        assert!(!pressed(&mut plain, &[F12]));
+        pressed(&mut plain, &[CTRL, ALT]);
+        assert!(pressed(&mut plain, &[F12]));
     }
 }
