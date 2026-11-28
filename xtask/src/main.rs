@@ -83,6 +83,8 @@ mod pkgrepo;
 mod prebuilt;
 mod qemu;
 mod query_eval;
+#[cfg(test)]
+mod readme_lint;
 mod relay;
 mod release_boot;
 mod release_image;
