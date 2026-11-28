@@ -8,6 +8,7 @@ use super::{Attached, Controller, DeviceKind, PortReport};
 use crate::Error;
 use crate::regs::speed;
 use crate::trb;
+use std::string::ToString;
 use std::vec;
 use std::vec::Vec;
 
@@ -74,6 +75,9 @@ fn a_device_behind_two_hubs_has_both_ports_in_its_route() {
     let fake = Fake::new(vec![None, Some(outer)]);
     let (_controller, reports) = enumerate(&fake);
     assert_eq!(routes(&reports), [(2, 0x12), (2, 0x02), (2, 0)]);
+    // As the kernel logs them: the root port, then each hub's port in turn.
+    let places: Vec<_> = reports.iter().map(|r| r.place().to_string()).collect();
+    assert_eq!(places, ["2.2.1", "2.2", "2"]);
     // The keyboard's route names port 2 of the outer hub, then port 1 of the
     // inner; its translator is the inner hub's (the nearest high-speed hub).
     let keyboard = fake.slot(3);

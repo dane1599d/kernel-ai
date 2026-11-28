@@ -92,6 +92,15 @@ fn start(function: &Function) -> Result<Controller<KernelHal>, &'static str> {
     );
     controller.enumerate(|report| match report.outcome {
         Ok(device) => {
+            if let Some(ports) = device.hub_ports {
+                log!(
+                    "usb: port {}: hub {:04x}:{:04x} of {ports} ports, {}",
+                    report.place(),
+                    device.vendor,
+                    device.product,
+                    xhci::regs::speed::name(device.speed)
+                );
+            }
             for kind in device.kinds.iter().flatten() {
                 let count = match kind {
                     DeviceKind::Keyboard => &KEYBOARDS,
@@ -100,23 +109,23 @@ fn start(function: &Function) -> Result<Controller<KernelHal>, &'static str> {
                 count.fetch_add(1, Ordering::Relaxed);
                 log!(
                     "usb: port {}: {} {:04x}:{:04x}, {}",
-                    report.port,
+                    report.place(),
                     kind.name(),
                     device.vendor,
                     device.product,
                     xhci::regs::speed::name(device.speed)
                 );
             }
-            if device.kinds.iter().all(Option::is_none) {
+            if device.hub_ports.is_none() && device.kinds.iter().all(Option::is_none) {
                 log!(
                     "usb: port {}: {:04x}:{:04x} has no keyboard or pointer",
-                    report.port,
+                    report.place(),
                     device.vendor,
                     device.product
                 );
             }
         }
-        Err(error) => log!("usb: port {}: {}", report.port, error.text()),
+        Err(error) => log!("usb: port {}: {}", report.place(), error.text()),
     });
     Ok(controller)
 }

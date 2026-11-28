@@ -120,8 +120,10 @@ pub struct TestCase {
     pub gpu: bool,
     /// Check the screendump the keys take (`screen.rs`) once the case has passed.
     pub screen: Option<crate::screen::Expect>,
-    /// USB devices (`usb-kbd`, `usb-tablet`, `usb-mouse`) on a `qemu-xhci`
-    /// controller; none and no controller when empty.
+    /// USB devices (`usb-kbd`, `usb-tablet`, `usb-mouse`, `usb-hub`) on a
+    /// `qemu-xhci` controller, each with any options of its own (`port=1.1`
+    /// puts one on port 1 of the hub on root port 1); none and no controller
+    /// when empty.
     pub usb: &'static [&'static str],
     /// Put the network card behind a PCIe root port, on bus 1, so the kernel
     /// reaches it only by walking the bridge.

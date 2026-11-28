@@ -33,7 +33,7 @@ pub mod regs;
 pub mod ring;
 pub mod trb;
 
-pub use driver::{Attached, Controller, DeviceKind, Input, PortReport};
+pub use driver::{Attached, Controller, DeviceKind, Input, Place, PortReport};
 pub use hal::{Dma, Hal};
 
 /// The page size the driver uses for every structure it hands the controller.

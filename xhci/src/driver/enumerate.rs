@@ -57,6 +57,37 @@ pub struct PortReport {
     pub outcome: Result<Attached, Error>,
 }
 
+impl PortReport {
+    /// Where the device is, for a log: its root port, then the port on each
+    /// hub on the way, as `1.3.2`.
+    pub fn place(&self) -> Place {
+        Place {
+            port: self.port,
+            route: self.route,
+        }
+    }
+}
+
+/// A [`PortReport`]'s root port and route string, shown as `1.3.2`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Place {
+    port: u8,
+    route: u32,
+}
+
+impl core::fmt::Display for Place {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.port)?;
+        // A hub's ports count from 1, so the first 0 nibble ends the route.
+        let mut route = self.route;
+        while route & 0xF != 0 {
+            write!(f, ".{}", route & 0xF)?;
+            route >>= 4;
+        }
+        Ok(())
+    }
+}
+
 impl<H: Hal> Controller<H> {
     /// Sets up the device on each connected root port and starts listening to
     /// its HID interfaces. `report` hears about each connected port.
