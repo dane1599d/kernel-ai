@@ -1,0 +1,13 @@
+[package]
+name = "amdvi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+# AMD-Vi's in-memory formats, without MMIO or a kernel, so all of it is tested
+# on the host (ADR 0007 section 5).
+[lib]
+doctest = false
+
+[dependencies]
