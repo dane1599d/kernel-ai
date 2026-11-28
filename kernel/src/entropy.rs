@@ -28,6 +28,8 @@ const RDSEED_TRIES: u32 = 128;
 const RDRAND_TRIES: u32 = 10;
 /// Requests to the device for one seed: it may answer short.
 const DEVICE_TRIES: u32 = 8;
+/// virtio-drivers 0.13's virtio-rng queue depth, which it keeps private.
+const RNG_QUEUE_SIZE: u64 = 8;
 
 struct Device(VirtIORng<KernelHal, PciTransport>);
 
@@ -173,6 +175,12 @@ fn seeded(seeds: &[(Source, [u8; SEED_BYTES])]) -> Option<Csprng> {
 /// The PCI walk found a virtio-rng: it joins the sources, and its first 32
 /// bytes are mixed in now, or seed the generator if nothing else could.
 pub fn attach(transport: PciTransport) {
+    // Its queue's buffers are the seed's, one to a request (P6 G66).
+    const _: () = assert!(SEED_BYTES as u64 <= mm::bounce::SLOT_BYTES);
+    if crate::virtio::hal::add_slots(mm::bounce::queue_slots(RNG_QUEUE_SIZE, 1, true)).is_err() {
+        log!("entropy: no bounce slots for the virtio-rng; it is left out");
+        return;
+    }
     let device = match VirtIORng::<KernelHal, _>::new(transport) {
         Ok(device) => device,
         Err(error) => {

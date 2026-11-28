@@ -42,6 +42,8 @@ pub fn init(platform: &acpitables::Platform, cmdline: &str) {
         crate::entropy::attach(transport);
     }
     blk::init(found.disks);
+    let (slots, free) = hal::bounce_slots();
+    log!("virtio: {slots} bounce slots, {free} free");
     crate::nvme::init(found.nvme);
     crate::block::scan();
     crate::usb::init(found.usb);

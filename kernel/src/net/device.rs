@@ -23,6 +23,8 @@ use smoltcp::time::Instant;
 
 /// Ethernet frame size including the 14-byte header: a 1500-byte IP MTU.
 const FRAME_MTU: usize = 1514;
+/// A frame to send is bounced whole, with its header, through one slot.
+const _: () = assert!((super::virtio_net::HEADER + FRAME_MTU) as u64 <= mm::bounce::SLOT_BYTES);
 
 /// Set once the card filled a receive buffer it was never given, so that is
 /// logged once, not on every poll after.

@@ -6,12 +6,13 @@
 //! against the disk and the buffer before it reaches the driver, which panics on
 //! a length that is not a whole number of sectors. The disks go to `block`.
 
-use super::hal::KernelHal;
+use super::hal::{self, KernelHal};
 use crate::{block, log, memory};
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use mm::PAGE_SIZE;
+use mm::bounce::{SLOT_BYTES, queue_slots};
 use mm::dma::{self, ReadError, SECTOR};
 use virtio_drivers::device::blk::VirtIOBlk;
 use virtio_drivers::transport::Transport;
@@ -33,6 +34,14 @@ const F_FLUSH: u64 = 1 << 9;
 /// one that is not whole blocks; virtio-drivers never reads it (G58).
 const F_BLK_SIZE: u64 = 1 << 6;
 const BLK_SIZE_AT: usize = 20;
+/// virtio-drivers 0.13's virtio-blk queue depth, which it keeps private.
+const QUEUE_SIZE: u64 = 16;
+/// Buffers one request shares: its header, its data and its status byte. The
+/// data is always the staging buffer, used in place; the header (16 bytes), the
+/// status, the device ID ([`ID_LEN`]) and an indirect list of 3 descriptors (48
+/// bytes) are bounced, each within a slot.
+const REQUEST_BUFFERS: u64 = 3;
+const _: () = assert!(ID_LEN as u64 <= SLOT_BYTES && 3 * 16 <= SLOT_BYTES);
 
 type Device = VirtIOBlk<KernelHal, PciTransport>;
 
@@ -72,6 +81,9 @@ impl Disk {
             }
             false => 1,
         };
+        // With or without indirect descriptors, whichever the device takes.
+        hal::add_slots(queue_slots(QUEUE_SIZE, REQUEST_BUFFERS, true))
+            .map_err(|_| "blk: no bounce slots for the disk's queue")?;
         let mut device = Device::new(transport).map_err(|_| "blk: virtio-blk setup failed")?;
         device.disable_interrupts();
         let mut id = [0u8; ID_LEN];

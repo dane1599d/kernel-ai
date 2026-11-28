@@ -162,6 +162,10 @@ impl Gpu {
         if !transport.get_status().contains(DeviceStatus::FEATURES_OK) {
             return Err("virtio-gpu: the device refused the features");
         }
+        // Requests and answers are in `commands`, used in place, so none is
+        // bounced today; the slots keep `share` safe if one ever is (P6 G66).
+        crate::virtio::hal::add_slots(2 * mm::bounce::queue_slots(QUEUE_SIZE as u64, 2, false))
+            .map_err(|_| "virtio-gpu: no bounce slots for its queues")?;
         let queue = |transport: &mut SplitTransport, index| {
             VirtQueue::new(transport, index, false, false)
                 .map_err(|_| "virtio-gpu: cannot set up a queue")
