@@ -512,30 +512,35 @@ fn refixed_tables_let_mutations_reach_the_readers() {
     assert!(fadt_read > 1_900, "{fadt_read} with no table left out");
 }
 
-/// Writes the `acpi_tables` target's seeds, one file each, to
-/// `$FUZZ_SEED_DIR/acpi_tables/`: the sample machine as a window, and QEMU's
-/// own IVRS tables (the target reads its input both ways).
+/// Writes the `acpi_tables` and `ivrs_tables` targets' seeds, one file each,
+/// to `$FUZZ_SEED_DIR/<target>/`: the sample machine as a window, and QEMU's
+/// own IVRS tables.
 #[test]
 #[ignore = "writes the fuzz corpus; run by the fuzz workflow"]
 fn write_fuzz_seeds() {
     let dir = std::env::var("FUZZ_SEED_DIR").expect("FUZZ_SEED_DIR names the corpus folder");
-    let folder = std::path::Path::new(&dir).join("acpi_tables");
-    std::fs::create_dir_all(&folder).unwrap();
-    let seeds: [(&str, Vec<u8>); 4] = [
-        ("machine", windowed(&with_fadt(fadt()))),
-        ("ivrs-q35", include_bytes!("fixtures/ivrs/q35.bin").to_vec()),
-        (
-            "ivrs-q35-devices",
-            include_bytes!("fixtures/ivrs/q35-devices.bin").to_vec(),
-        ),
-        (
-            "ivrs-q35-xtsup",
-            include_bytes!("fixtures/ivrs/q35-xtsup.bin").to_vec(),
-        ),
-    ];
-    for (name, bytes) in seeds {
-        std::fs::write(folder.join(name), bytes).unwrap();
-    }
+    let write = |target: &str, seeds: &[(&str, &[u8])]| {
+        let folder = std::path::Path::new(&dir).join(target);
+        std::fs::create_dir_all(&folder).unwrap();
+        for (name, bytes) in seeds {
+            std::fs::write(folder.join(name), bytes).unwrap();
+        }
+    };
+    write("acpi_tables", &[("machine", &windowed(&with_fadt(fadt())))]);
+    write(
+        "ivrs_tables",
+        &[
+            ("q35", &include_bytes!("fixtures/ivrs/q35.bin")[..]),
+            (
+                "q35-devices",
+                &include_bytes!("fixtures/ivrs/q35-devices.bin")[..],
+            ),
+            (
+                "q35-xtsup",
+                &include_bytes!("fixtures/ivrs/q35-xtsup.bin")[..],
+            ),
+        ],
+    );
 }
 
 #[test]
