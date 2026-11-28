@@ -1,3 +1,11 @@
+# Every file is checked out as committed, LF and all, on Windows too (no
+# core.autocrlf conversion): xtask reads committed files byte for byte, and a
+# CRLF copy is a different file. A model's chunk list in xtask/models/chunks
+# with CRLF is "not a kai-chunks 1 list" (kainet::chunks refuses it), which
+# stopped try-it-windows.yml's first boot (run 46110893489); goldens, NOTICES
+# and the files baked into the image would differ the same way.
+* -text
+
 # decisions.md is append-only: concurrent rows from two branches both stay.
 # This only helps our own merges (the batch's merge-tree); GitHub's mergeability check ignores
 # it, so a new row is a file in docs/decisions/rows/ instead (see its README). Keep the line until
