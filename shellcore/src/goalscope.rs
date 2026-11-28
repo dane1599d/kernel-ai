@@ -68,15 +68,6 @@ pub(crate) fn scope(
         }
         rows.push(row.name.to_string());
     }
-    // A word after "and" that is a row's one-word cue starts another order
-    // ("... and trash the drafts").
-    let starts_order = |word: &str| {
-        agentabi::ROWS
-            .iter()
-            .filter(|row| considered(row))
-            .flat_map(|row| row.cues.iter())
-            .any(|cue| !cue.contains(' ') && plain(cue).trim() == word)
-    };
     if let Some(path) = crate::goalkeep::kept_off(line, starts_order) {
         return Err(format!(
             "\"{path}\" is said not to be touched; name only the folders the goal works in"
@@ -104,6 +95,16 @@ pub(crate) fn scope(
 
 /// Whether a word naming `row` counts at all: not a goal row, and not one of
 /// the shell's pure helpers.
+/// Whether `word` is a row's one-word cue, so after "and" it starts another
+/// order ("... and trash the drafts").
+pub(crate) fn starts_order(word: &str) -> bool {
+    agentabi::ROWS
+        .iter()
+        .filter(|row| considered(row))
+        .flat_map(|row| row.cues.iter())
+        .any(|cue| !cue.contains(' ') && plain(cue).trim() == word)
+}
+
 fn considered(row: &Action) -> bool {
     !row.name.starts_with("goal_") && !(row.owner == Owner::Shell && row.facts.read_only)
 }

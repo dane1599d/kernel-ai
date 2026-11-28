@@ -43,6 +43,7 @@ mod fake_system;
 mod files;
 mod fuzz;
 mod goalkeep;
+mod goalkeep_hunt;
 mod goalreports;
 mod goals;
 mod goalsteps;
